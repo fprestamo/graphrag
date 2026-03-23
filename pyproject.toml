@@ -48,6 +48,15 @@ dev = [
     "semversioner~=2.0",
     "update-toml~=0.2",
     "pytest-xdist[psutil]~=3.8.0",
+    # Workspace packages (installed editable for development)
+    "graphrag",
+    "graphrag-cache",
+    "graphrag-chunking",
+    "graphrag-common",
+    "graphrag-input",
+    "graphrag-llm",
+    "graphrag-storage",
+    "graphrag-vectors",
 ]
 
 [tool.uv]
@@ -57,13 +66,14 @@ package = false
 members = ["packages/*"]
 
 [tool.uv.sources]
+graphrag = { workspace = true }
+graphrag-cache = { workspace = true }
 graphrag-chunking = { workspace = true }
 graphrag-common = { workspace = true }
 graphrag-input = { workspace = true }
-graphrag-storage = { workspace = true }
-graphrag-cache = { workspace = true }
-graphrag-vectors = { workspace = true }
 graphrag-llm = { workspace = true }
+graphrag-storage = { workspace = true }
+graphrag-vectors = { workspace = true }
 
 # Keep poethepoet for task management to minimize changes
 [tool.poe.tasks]
