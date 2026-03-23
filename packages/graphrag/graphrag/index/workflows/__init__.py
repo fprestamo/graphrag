@@ -73,6 +73,13 @@ from .update_text_units import (
     run_workflow as run_update_text_units,
 )
 
+from .bt_extract_graph import (
+    run_workflow as run_bt_extract_graph,
+)
+from .bt_create_community_reports import (
+    run_workflow as run_bt_create_community_reports,
+)
+
 # register all of our built-in workflows at once
 PipelineFactory.register_all({  # noqa: RUF067
     "load_input_documents": run_load_input_documents,
@@ -97,4 +104,6 @@ PipelineFactory.register_all({  # noqa: RUF067
     "update_covariates": run_update_covariates,
     "update_text_units": run_update_text_units,
     "update_clean_state": run_update_clean_state,
+    "bt_extract_graph": run_bt_extract_graph,
+    "bt_create_community_reports": run_bt_create_community_reports,
 })

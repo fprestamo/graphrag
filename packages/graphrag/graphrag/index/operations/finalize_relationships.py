@@ -8,7 +8,11 @@ from uuid import uuid4
 
 from graphrag_storage.tables.table import Table
 
-from graphrag.data_model.schemas import RELATIONSHIPS_FINAL_COLUMNS
+from graphrag.data_model.schemas import (
+    BT_RELATIONSHIPS_FINAL_COLUMNS,
+    RELATIONSHIPS_FINAL_COLUMNS,
+    T_VALID_START,
+)
 
 
 async def finalize_relationships(
@@ -37,6 +41,7 @@ async def finalize_relationships(
     sample_rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     human_readable_id = 0
+    columns: list[str] | None = None
 
     async for row in relationships_table:
         key = (row.get("source", ""), row.get("target", ""))
@@ -47,7 +52,16 @@ async def finalize_relationships(
         row["human_readable_id"] = human_readable_id
         row["id"] = str(uuid4())
         human_readable_id += 1
-        final = {col: row.get(col) for col in RELATIONSHIPS_FINAL_COLUMNS}
+
+        # Detect BT columns on first row and use extended column list
+        if columns is None:
+            columns = (
+                BT_RELATIONSHIPS_FINAL_COLUMNS
+                if T_VALID_START in row
+                else RELATIONSHIPS_FINAL_COLUMNS
+            )
+
+        final = {col: row.get(col) for col in columns}
         await relationships_table.write(final)
         if len(sample_rows) < 5:
             sample_rows.append(final)

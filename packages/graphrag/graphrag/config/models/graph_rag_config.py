@@ -36,6 +36,8 @@ from graphrag.config.models.summarize_descriptions_config import (
     SummarizeDescriptionsConfig,
 )
 
+from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
+
 
 class GraphRagConfig(BaseModel):
     """Base class for the Default-Configuration parameterization settings."""
@@ -249,6 +251,12 @@ class GraphRagConfig(BaseModel):
         description="The basic search configuration.", default=BasicSearchConfig()
     )
     """The basic search configuration."""
+
+    bt_graphrag: BTGraphRAGConfig = Field(
+        description="BT-GraphRAG bitemporal extension configuration.",
+        default_factory=BTGraphRAGConfig,
+    )
+    """BT-GraphRAG bitemporal extension configuration."""
 
     def _validate_vector_store(self) -> None:
         """Validate the vector store configuration specifically in the GraphRAG context. This checks and sets required dynamic defaults for the embeddings we require."""

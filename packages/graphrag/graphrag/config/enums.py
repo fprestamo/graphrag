@@ -52,6 +52,10 @@ class IndexingMethod(str, Enum):
     """Incremental update with standard indexing."""
     FastUpdate = "fast-update"
     """Incremental update with fast indexing."""
+    Bitemporal = "bitemporal"
+    """BT-GraphRAG: Temporal-aware indexing with bitemporal conflict detection and Neo4j dual write."""
+    BitemporalUpdate = "bitemporal-update"
+    """Incremental update with bitemporal indexing."""
 
 
 class NounPhraseExtractorType(str, Enum):

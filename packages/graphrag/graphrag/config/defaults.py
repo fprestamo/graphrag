@@ -338,6 +338,24 @@ class VectorStoreDefaults:
 
 
 @dataclass
+class BTGraphRAGDefaults:
+    """Default values for BT-GraphRAG bitemporal extension."""
+
+    enabled: bool = False
+    neo4j_uri: str = "neo4j://127.0.0.1:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "12345678"
+    neo4j_database: str = "btgraphrag"
+    late_arrival_threshold_days: int = 30
+    cger_enabled: bool = True
+    cger_merge_threshold: float = 0.85
+    etcdr_enabled: bool = True
+    etcdr_confidence_threshold: float = 0.7
+    community_update_k_hop: int = 2
+    temporal_decay_alpha: float = 0.1
+
+
+@dataclass
 class GraphRagConfigDefaults:
     """Default values for GraphRAG."""
 
@@ -375,6 +393,7 @@ class GraphRagConfigDefaults:
     global_search: GlobalSearchDefaults = field(default_factory=GlobalSearchDefaults)
     drift_search: DriftSearchDefaults = field(default_factory=DriftSearchDefaults)
     basic_search: BasicSearchDefaults = field(default_factory=BasicSearchDefaults)
+    bt_graphrag: BTGraphRAGDefaults = field(default_factory=BTGraphRAGDefaults)
     vector_store: VectorStoreDefaults = field(
         default_factory=lambda: VectorStoreDefaults()
     )

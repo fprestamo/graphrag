@@ -49,10 +49,12 @@ async def run_workflow(
 
     if config.snapshots.graphml:
         rels = await context.output_table_provider.read_dataframe("relationships")
+        ents = await context.output_table_provider.read_dataframe("entities")
         await snapshot_graphml(
             rels,
             name="graph",
             storage=context.output_storage,
+            entities=ents,
         )
 
     logger.info("Workflow completed: finalize_graph")

@@ -95,3 +95,35 @@ PipelineFactory.register_pipeline(
     IndexingMethod.FastUpdate,
     ["load_update_documents", *_fast_workflows, *_update_workflows],
 )
+
+# --- BT-GraphRAG (bitemporal) pipelines ---
+# These replace extract_graph and create_community_reports with temporal-aware versions
+_bitemporal_workflows = [
+    "create_base_text_units",
+    "create_final_documents",
+    "bt_extract_graph",
+    "finalize_graph",
+    "extract_covariates",
+    "create_communities",
+    "create_final_text_units",
+    "bt_create_community_reports",
+    "generate_text_embeddings",
+]
+_bitemporal_update_workflows = [
+    "update_final_documents",
+    "update_entities_relationships",
+    "update_text_units",
+    "update_covariates",
+    "update_communities",
+    "update_community_reports",
+    "update_text_embeddings",
+    "update_clean_state",
+]
+PipelineFactory.register_pipeline(
+    IndexingMethod.Bitemporal,
+    ["load_input_documents", *_bitemporal_workflows],
+)
+PipelineFactory.register_pipeline(
+    IndexingMethod.BitemporalUpdate,
+    ["load_update_documents", *_bitemporal_workflows, *_bitemporal_update_workflows],
+)

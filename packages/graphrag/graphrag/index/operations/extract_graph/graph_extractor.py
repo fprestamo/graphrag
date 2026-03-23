@@ -158,17 +158,24 @@ class GraphExtractor:
                 target = clean_str(record_attributes[2].upper())
                 edge_description = clean_str(record_attributes[3])
                 try:
-                    weight = float(record_attributes[-1])
+                    weight = float(record_attributes[4])
                 except ValueError:
                     weight = 1.0
 
-                relationships.append({
+                rel: dict[str, Any] = {
                     "source": source,
                     "target": target,
                     "description": edge_description,
                     "source_id": source_id,
                     "weight": weight,
-                })
+                }
+
+                # Capture temporal fields when present (BT-GraphRAG prompts)
+                if len(record_attributes) >= 7:
+                    rel["valid_time_start"] = clean_str(record_attributes[5])
+                    rel["valid_time_end"] = clean_str(record_attributes[6])
+
+                relationships.append(rel)
 
         entities_df = pd.DataFrame(entities) if entities else _empty_entities_df()
         relationships_df = (

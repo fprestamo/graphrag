@@ -66,6 +66,23 @@ N_TOKENS = "n_tokens"
 CREATION_DATE = "creation_date"
 RAW_DATA = "raw_data"
 
+# --- BT-GraphRAG temporal columns ---
+# Relationship temporal columns (match pipeline/Neo4j naming)
+T_VALID_START = "t_valid_start"
+T_VALID_END = "t_valid_end"
+T_TX_START = "t_tx_start"
+T_TX_END = "t_tx_end"
+CONFIDENCE = "confidence"
+STATUS = "status"
+SUPPORT_COUNT = "support_count"
+RELATION_TYPE = "relation_type"
+CARDINALITY = "cardinality"
+# Entity temporal columns
+ENTITY_FIRST_SEEN = "first_seen"
+ENTITY_LAST_SEEN = "last_seen"
+ENTITY_ACTIVE_START = "active_start"
+ENTITY_ACTIVE_END = "active_end"
+
 # the following lists define the final content and ordering of columns in the data model parquet outputs
 ENTITIES_FINAL_COLUMNS = [
     ID,
@@ -156,4 +173,28 @@ DOCUMENTS_FINAL_COLUMNS = [
     TEXT_UNIT_IDS,
     CREATION_DATE,
     RAW_DATA,
+]
+
+# --- BT-GraphRAG extended column lists ---
+# These are the FULL column sets used when bitemporal indexing is enabled.
+# Standard parquet files keep the original columns; BT adds temporal columns.
+BT_ENTITIES_FINAL_COLUMNS = [
+    *ENTITIES_FINAL_COLUMNS,
+    ENTITY_FIRST_SEEN,
+    ENTITY_LAST_SEEN,
+    ENTITY_ACTIVE_START,
+    ENTITY_ACTIVE_END,
+]
+
+BT_RELATIONSHIPS_FINAL_COLUMNS = [
+    *RELATIONSHIPS_FINAL_COLUMNS,
+    T_VALID_START,
+    T_VALID_END,
+    T_TX_START,
+    T_TX_END,
+    CONFIDENCE,
+    STATUS,
+    SUPPORT_COUNT,
+    RELATION_TYPE,
+    CARDINALITY,
 ]

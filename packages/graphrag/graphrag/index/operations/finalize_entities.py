@@ -8,7 +8,11 @@ from uuid import uuid4
 
 from graphrag_storage.tables.table import Table
 
-from graphrag.data_model.schemas import ENTITIES_FINAL_COLUMNS
+from graphrag.data_model.schemas import (
+    BT_ENTITIES_FINAL_COLUMNS,
+    ENTITIES_FINAL_COLUMNS,
+    ENTITY_FIRST_SEEN,
+)
 
 
 async def finalize_entities(
@@ -38,6 +42,7 @@ async def finalize_entities(
     sample_rows: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
     human_readable_id = 0
+    columns: list[str] | None = None
 
     async for row in entities_table:
         title = row.get("title")
@@ -48,7 +53,16 @@ async def finalize_entities(
         row["human_readable_id"] = human_readable_id
         row["id"] = str(uuid4())
         human_readable_id += 1
-        out = {col: row.get(col) for col in ENTITIES_FINAL_COLUMNS}
+
+        # Detect BT columns on first row and use extended column list
+        if columns is None:
+            columns = (
+                BT_ENTITIES_FINAL_COLUMNS
+                if ENTITY_FIRST_SEEN in row
+                else ENTITIES_FINAL_COLUMNS
+            )
+
+        out = {col: row.get(col) for col in columns}
         await entities_table.write(out)
         if len(sample_rows) < 5:
             sample_rows.append(out)
