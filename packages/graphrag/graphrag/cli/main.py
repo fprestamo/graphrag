@@ -150,7 +150,7 @@ def _index_cli(
         autocompletion=ROOT_AUTOCOMPLETE,
     ),
     method: IndexingMethod = typer.Option(
-        IndexingMethod.Standard.value,
+        IndexingMethod.Bitemporal.value,
         "--method",
         "-m",
         help="The indexing method to use.",
@@ -208,7 +208,7 @@ def _update_cli(
         autocompletion=ROOT_AUTOCOMPLETE,
     ),
     method: IndexingMethod = typer.Option(
-        IndexingMethod.Standard.value,
+        IndexingMethod.Bitemporal.value,
         "--method",
         "-m",
         help="The indexing method to use.",

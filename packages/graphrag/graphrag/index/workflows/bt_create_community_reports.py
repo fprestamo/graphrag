@@ -22,7 +22,6 @@ from graphrag.bt_graphrag.community_update import (
     run_incremental_community_update,
 )
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
-from graphrag.bt_graphrag.prompts import TEMPORAL_COMMUNITY_REPORT_PROMPT
 from graphrag.cache.cache_key_creator import cache_key_creator
 from graphrag.config.models.graph_rag_config import GraphRagConfig
 from graphrag.data_model.data_reader import DataReader
@@ -134,8 +133,8 @@ async def run_workflow(
         cache_key_creator=cache_key_creator,
     )
 
-    # Use temporal prompt for community reports
-    prompt = TEMPORAL_COMMUNITY_REPORT_PROMPT
+    # Use temporal prompt for community reports (from config file or built-in)
+    prompt = bt_config.resolved_community_report_prompt()
 
     print("\n" + "-" * 70)
     print("  Stage 6: Selective Community Summarization")

@@ -16,11 +16,6 @@ from graphrag_llm.completion import create_completion
 
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 from graphrag.bt_graphrag.pipeline import run_bt_pipeline
-from graphrag.bt_graphrag.prompts import (
-    TEMPORAL_CONTINUE_PROMPT,
-    TEMPORAL_GRAPH_EXTRACTION_PROMPT,
-    TEMPORAL_LOOP_PROMPT,
-)
 from graphrag.bt_graphrag.temporal_extraction.temporal_normalization import (
     assign_document_timestamps,
 )
@@ -265,8 +260,8 @@ def _build_temporal_prompt(
 ) -> str:
     """Build the temporal-aware extraction prompt with document date context.
 
-    Uses the TEMPORAL_GRAPH_EXTRACTION_PROMPT which includes date-aware
-    extraction instructions and temporal field extraction.
+    Reads the prompt from the configured file path (bt_graphrag.extraction_prompt)
+    if set, otherwise falls back to the built-in TEMPORAL_GRAPH_EXTRACTION_PROMPT.
     """
     # Determine the document date for the prompt
     doc_date = "unknown"
@@ -279,9 +274,8 @@ def _build_temporal_prompt(
             doc_date = t_valid.strftime("%Y-%m-%d")
             break  # Use first document's date as reference
 
-    return TEMPORAL_GRAPH_EXTRACTION_PROMPT.replace(
-        "{document_date}", doc_date
-    )
+    prompt_template = bt_config.resolved_extraction_prompt()
+    return prompt_template.replace("{document_date}", doc_date)
 
 
 def _parse_temporal_fields_from_extraction(

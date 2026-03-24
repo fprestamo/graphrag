@@ -137,6 +137,35 @@ basic_search:
   completion_model_id: {graphrag_config_defaults.basic_search.completion_model_id}
   embedding_model_id: {graphrag_config_defaults.basic_search.embedding_model_id}
   prompt: "prompts/basic_search_system_prompt.txt"
+
+### BT-GraphRAG settings ###
+## Bitemporal extension for temporal-aware knowledge graphs.
+## To use: graphrag index --method bitemporal
+## Requires Neo4j running for Stages 2-4 (CGER, ETCDR, graph store).
+
+bt_graphrag:
+  enabled: true
+  # Prompt files (customizable)
+  extraction_prompt: "prompts/bt_extract_graph.txt"
+  community_report_prompt: "prompts/bt_community_report.txt"
+  cardinality_prompt: "prompts/bt_cardinality_classification.txt"
+  # Neo4j connection
+  neo4j_uri: "neo4j://127.0.0.1:7687"
+  neo4j_user: "neo4j"
+  neo4j_password: "changeme"
+  neo4j_database: "btgraphrag"
+  # Stage 1: Temporal Extraction
+  late_arrival_threshold_days: 30
+  # Stage 2: CGER (Cross-Graph Entity Resolution)
+  cger_enabled: true
+  cger_merge_threshold: 0.85
+  # Stage 3: ETCDR (Conflict Detection)
+  etcdr_enabled: true
+  etcdr_confidence_threshold: 0.7
+  # Stages 5-6: Incremental Community Update
+  community_update_k_hop: 2
+  # Stage 7: Query Pipeline
+  temporal_decay_alpha: 0.1
 """
 
 INIT_DOTENV = """\

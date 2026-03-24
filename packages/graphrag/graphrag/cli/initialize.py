@@ -6,6 +6,11 @@
 import logging
 from pathlib import Path
 
+from graphrag.bt_graphrag.prompts import (
+    CARDINALITY_CLASSIFICATION_PROMPT,
+    TEMPORAL_COMMUNITY_REPORT_PROMPT,
+    TEMPORAL_GRAPH_EXTRACTION_PROMPT,
+)
 from graphrag.config.defaults import graphrag_config_defaults
 from graphrag.config.init_content import INIT_DOTENV, INIT_YAML
 from graphrag.prompts.index.community_report import (
@@ -93,6 +98,10 @@ def initialize_project_at(
         "local_search_system_prompt": LOCAL_SEARCH_SYSTEM_PROMPT,
         "basic_search_system_prompt": BASIC_SEARCH_SYSTEM_PROMPT,
         "question_gen_system_prompt": QUESTION_SYSTEM_PROMPT,
+        # BT-GraphRAG temporal prompts
+        "bt_extract_graph": TEMPORAL_GRAPH_EXTRACTION_PROMPT,
+        "bt_community_report": TEMPORAL_COMMUNITY_REPORT_PROMPT,
+        "bt_cardinality_classification": CARDINALITY_CLASSIFICATION_PROMPT,
     }
 
     for name, content in prompts.items():

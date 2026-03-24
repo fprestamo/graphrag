@@ -17,7 +17,7 @@ class BTGraphRAGConfig:
     """
 
     # --- Global ---
-    enabled: bool = False
+    enabled: bool = True
     """Whether to enable the BT-GraphRAG temporal pipeline."""
 
     # --- Neo4j Connection ---
@@ -32,6 +32,19 @@ class BTGraphRAGConfig:
 
     neo4j_database: str = "btgraphrag"
     """Neo4j database name."""
+
+    # --- Prompt paths (optional, override hardcoded prompts) ---
+    extraction_prompt: str | None = None
+    """Path to temporal graph extraction prompt .txt file.
+    If set, overrides the built-in TEMPORAL_GRAPH_EXTRACTION_PROMPT."""
+
+    community_report_prompt: str | None = None
+    """Path to temporal community report prompt .txt file.
+    If set, overrides the built-in TEMPORAL_COMMUNITY_REPORT_PROMPT."""
+
+    cardinality_prompt: str | None = None
+    """Path to cardinality classification prompt .txt file.
+    If set, overrides the built-in CARDINALITY_CLASSIFICATION_PROMPT."""
 
     # --- Stage 1: Temporal Extraction ---
     late_arrival_threshold_days: int = 30
@@ -116,6 +129,42 @@ class BTGraphRAGConfig:
         "INVESTED_IN": "NON_EXCLUSIVE",
     })
     """Seed cardinality map. LLM classification extends this at runtime."""
+
+    def resolved_extraction_prompt(self) -> str:
+        """Return the temporal extraction prompt, reading from file if configured."""
+        from pathlib import Path
+
+        from graphrag.bt_graphrag.prompts import TEMPORAL_GRAPH_EXTRACTION_PROMPT
+
+        if self.extraction_prompt:
+            p = Path(self.extraction_prompt)
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        return TEMPORAL_GRAPH_EXTRACTION_PROMPT
+
+    def resolved_community_report_prompt(self) -> str:
+        """Return the temporal community report prompt, reading from file if configured."""
+        from pathlib import Path
+
+        from graphrag.bt_graphrag.prompts import TEMPORAL_COMMUNITY_REPORT_PROMPT
+
+        if self.community_report_prompt:
+            p = Path(self.community_report_prompt)
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        return TEMPORAL_COMMUNITY_REPORT_PROMPT
+
+    def resolved_cardinality_prompt(self) -> str:
+        """Return the cardinality classification prompt, reading from file if configured."""
+        from pathlib import Path
+
+        from graphrag.bt_graphrag.prompts import CARDINALITY_CLASSIFICATION_PROMPT
+
+        if self.cardinality_prompt:
+            p = Path(self.cardinality_prompt)
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        return CARDINALITY_CLASSIFICATION_PROMPT
 
     def get_cardinality(self, relation_type: str) -> str:
         """Return the cardinality for a relation type, checking overrides first."""
