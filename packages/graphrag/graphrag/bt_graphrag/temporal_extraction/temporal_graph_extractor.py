@@ -90,18 +90,38 @@ class TemporalGraphExtractor(GraphExtractor):
                 source = clean_str(record_attributes[1].upper())
                 target = clean_str(record_attributes[2].upper())
                 edge_description = clean_str(record_attributes[3])
-                try:
-                    weight = float(record_attributes[4])
-                except ValueError:
-                    weight = 1.0
 
-                # Parse temporal fields (fields 5 and 6)
+                # Detect whether the LLM included relation_type (8 fields)
+                # or used the legacy format (7 fields: no relation_type).
+                # New format: desc | relation_type | strength | start | end
+                # Old format: desc | strength | start | end
+                relation_type: str | None = None
+                if len(record_attributes) >= 8:
+                    # New format — field 4 is relation_type
+                    relation_type = clean_str(record_attributes[4]).upper().replace(" ", "_")
+                    try:
+                        weight = float(record_attributes[5])
+                    except ValueError:
+                        weight = 1.0
+                    temporal_offset = 6
+                elif len(record_attributes) >= 5:
+                    # Legacy format — field 4 is strength
+                    try:
+                        weight = float(record_attributes[4])
+                    except ValueError:
+                        weight = 1.0
+                    temporal_offset = 5
+                else:
+                    weight = 1.0
+                    temporal_offset = 5
+
+                # Parse temporal fields
                 t_valid_start = None
                 t_valid_end = None
                 ref_date = self._document_date or datetime.now(timezone.utc)
 
-                if len(record_attributes) >= 6:
-                    start_str = clean_str(record_attributes[5])
+                if len(record_attributes) >= temporal_offset + 1:
+                    start_str = clean_str(record_attributes[temporal_offset])
                     if start_str and start_str.upper() not in (
                         "UNKNOWN", "N/A", "", "NONE"
                     ):
@@ -109,8 +129,8 @@ class TemporalGraphExtractor(GraphExtractor):
                             start_str, ref_date
                         )
 
-                if len(record_attributes) >= 7:
-                    end_str = clean_str(record_attributes[6])
+                if len(record_attributes) >= temporal_offset + 2:
+                    end_str = clean_str(record_attributes[temporal_offset + 1])
                     if end_str and end_str.upper() not in (
                         "UNKNOWN", "ONGOING", "N/A", "PRESENT", "", "NONE"
                     ):
@@ -125,6 +145,9 @@ class TemporalGraphExtractor(GraphExtractor):
                     "source_id": source_id,
                     "weight": weight,
                 }
+
+                if relation_type:
+                    rel_data["relation_type"] = relation_type
 
                 if t_valid_start:
                     rel_data["t_valid_start"] = t_valid_start.isoformat()

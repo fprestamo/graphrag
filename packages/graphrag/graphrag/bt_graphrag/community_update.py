@@ -129,6 +129,14 @@ async def run_incremental_community_update(
     """
     logger.info("BT-GraphRAG Stage 5: Incremental community update")
 
+    print(f"\n    [Stage 5] Incremental Community Update")
+    print(f"    Input communities: {len(communities_df)}")
+    print(f"    Input entities:    {len(entities_df)}")
+    print(f"    Input rels:        {len(relationships_df)}")
+    print(f"    Neo4j available:   {driver is not None}")
+    print(f"    Last update:       {last_update_time or 'None (first run)'}")
+    print(f"    k-hop radius:      {config.community_update_k_hop}")
+
     stale_community_ids: list[str] = []
 
     if driver is not None and last_update_time is not None:
@@ -138,11 +146,29 @@ async def run_incremental_community_update(
                 session, last_update_time
             )
 
+            print(f"\n    [Modified Entities] Found {len(modified_titles)} entities modified since {last_update_time.strftime('%Y-%m-%d %H:%M')}")
+            for i, title in enumerate(modified_titles[:15]):
+                print(f"      [{i}] {title[:50]}")
+            if len(modified_titles) > 15:
+                print(f"      ... and {len(modified_titles) - 15} more")
+
             if modified_titles:
                 # Get k-hop neighborhood
                 neighborhood = await get_k_hop_neighbors(
                     session, modified_titles, k=config.community_update_k_hop
                 )
+                expansion = len(neighborhood) - len(modified_titles)
+                print(f"\n    [k-Hop Expansion] {len(modified_titles)} modified -> {len(neighborhood)} in {config.community_update_k_hop}-hop neighborhood (+{expansion} neighbors)")
+
+                # Show sample of expanded neighborhood (entities not in modified set)
+                expanded_only = neighborhood - set(modified_titles)
+                if expanded_only:
+                    print(f"    Neighborhood expansion (sample):")
+                    for i, title in enumerate(list(expanded_only)[:10]):
+                        print(f"      + {title[:50]}")
+                    if len(expanded_only) > 10:
+                        print(f"      ... and {len(expanded_only) - 10} more")
+
                 logger.info(
                     "Stage 5: %d modified entities, %d in k-hop neighborhood",
                     len(modified_titles),
@@ -162,13 +188,67 @@ async def run_incremental_community_update(
                 stale_community_ids = identify_stale_communities(
                     communities_df, modified_entity_ids
                 )
+
+                total_communities = len(communities_df)
+                stale_count = len(stale_community_ids)
+                fresh_count = total_communities - stale_count
+                savings_pct = (fresh_count / total_communities * 100) if total_communities > 0 else 0
+
+                print(f"\n    [Stale Communities]")
+                print(f"      Total communities:   {total_communities}")
+                print(f"      Stale (need update): {stale_count}")
+                print(f"      Fresh (reusable):    {fresh_count}")
+                print(f"      Savings:             {savings_pct:.1f}% of communities can skip re-summarization")
+                if stale_community_ids:
+                    print(f"      Stale IDs (first 10): {stale_community_ids[:10]}")
+
                 logger.info(
                     "Stage 5: %d stale communities identified",
                     len(stale_community_ids),
                 )
+            else:
+                print(f"\n    No modified entities found — all communities are fresh!")
     else:
         # Full re-cluster needed if no Neo4j or no prior timestamp
         stale_community_ids = list(communities_df["id"].astype(str)) if "id" in communities_df.columns else []
+        reason = "no Neo4j driver" if driver is None else "no prior update timestamp"
+        print(f"\n    FULL REBUILD required ({reason})")
+        print(f"    All {len(stale_community_ids)} communities marked as stale")
+
+    # --- Verification ---
+    print(f"\n    {'=' * 55}")
+    print(f"    STAGE 5 VERIFICATION")
+    print(f"    {'=' * 55}")
+
+    # Check community DataFrame structure
+    has_id = "id" in communities_df.columns
+    has_entity_ids = "entity_ids" in communities_df.columns
+    print(f"    Communities DataFrame has 'id' column:         {has_id}")
+    print(f"    Communities DataFrame has 'entity_ids' column: {has_entity_ids}")
+    print(f"    Communities DataFrame columns:                 {list(communities_df.columns)}")
+
+    # Verify all stale IDs are valid community IDs
+    if has_id and stale_community_ids:
+        all_ids = set(communities_df["id"].astype(str))
+        invalid_stale = [sid for sid in stale_community_ids if sid not in all_ids]
+        if invalid_stale:
+            print(f"    WARNING: {len(invalid_stale)} stale IDs not found in communities DataFrame!")
+        else:
+            print(f"    Stale ID validity check:                       PASS")
+
+    # Entity coverage: how many entities are in communities
+    if has_entity_ids:
+        community_entity_count = 0
+        for _, row in communities_df.iterrows():
+            eids = row.get("entity_ids", [])
+            if isinstance(eids, list):
+                community_entity_count += len(eids)
+            elif isinstance(eids, str):
+                community_entity_count += len([e for e in eids.split(",") if e.strip()])
+        print(f"    Entities referenced in communities:             {community_entity_count}")
+        print(f"    Entities in DataFrame:                         {len(entities_df)}")
+
+    print(f"    {'=' * 55}")
 
     return communities_df, stale_community_ids
 
@@ -189,13 +269,22 @@ def filter_stale_communities(
     Communities with existing up-to-date reports are excluded.
     """
     if not stale_community_ids:
+        print("    [Stage 6 Filter] No stale communities — returning empty DataFrame")
         return pd.DataFrame()
 
     id_col = "id" if "id" in communities_df.columns else "community"
     stale_set = set(stale_community_ids)
 
     mask = communities_df[id_col].astype(str).isin(stale_set)
-    return communities_df[mask].copy()
+    stale_df = communities_df[mask].copy()
+    fresh_count = len(communities_df) - len(stale_df)
+
+    print(f"    [Stage 6 Filter] {len(stale_df)} stale communities need re-summarization")
+    print(f"    [Stage 6 Filter] {fresh_count} fresh communities can reuse existing reports")
+    if len(community_reports_df) > 0:
+        print(f"    [Stage 6 Filter] Existing reports available: {len(community_reports_df)}")
+
+    return stale_df
 
 
 def merge_community_reports(
@@ -208,10 +297,17 @@ def merge_community_reports(
     Replaces reports for stale communities with new reports,
     keeps existing reports for non-stale communities.
     """
+    print(f"\n    [Stage 6 Merge] Merging community reports...")
+    print(f"      Existing reports:   {len(existing_reports_df)}")
+    print(f"      New reports:        {len(new_reports_df)}")
+    print(f"      Stale IDs to swap:  {len(stale_community_ids)}")
+
     if new_reports_df.empty:
+        print(f"      Result: Keeping all {len(existing_reports_df)} existing (no new reports)")
         return existing_reports_df
 
     if existing_reports_df.empty:
+        print(f"      Result: Using all {len(new_reports_df)} new (no existing reports)")
         return new_reports_df
 
     # Determine the ID column
@@ -223,7 +319,12 @@ def merge_community_reports(
     kept = existing_reports_df[keep_mask]
 
     # Combine with new reports
-    return pd.concat([kept, new_reports_df], ignore_index=True)
+    merged = pd.concat([kept, new_reports_df], ignore_index=True)
+    print(f"      Kept from existing: {len(kept)}")
+    print(f"      Added from new:     {len(new_reports_df)}")
+    print(f"      Final merged total: {len(merged)}")
+
+    return merged
 
 
 def annotate_community_reports_temporal(

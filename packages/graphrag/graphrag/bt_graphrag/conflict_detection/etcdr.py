@@ -442,6 +442,7 @@ async def detect_and_resolve(
     model: "LLMCompletion | None" = None,
     is_late_arrival: bool = False,
     t_event: datetime | None = None,
+    edge_index: int = -1,
 ) -> ConflictResult:
     """Run bidirectional conflict detection and resolve conflicts.
 
@@ -455,6 +456,7 @@ async def detect_and_resolve(
         model: Optional LLM for the Decision Router.
         is_late_arrival: Whether this document is a late arrival.
         t_event: Event timestamp for late-arrival historical queries.
+        edge_index: Index of the edge being processed (for display).
 
     Returns:
         ConflictResult with strategy and resolved conflicts.
@@ -467,6 +469,17 @@ async def detect_and_resolve(
     )
     candidate.cardinality = cardinality
 
+    # --- Diagnostic: show candidate edge details ---
+    quad_c = candidate.temporal_quad
+    tv_start = quad_c.t_valid_start.strftime("%Y-%m-%d") if quad_c and quad_c.t_valid_start else "?"
+    tv_end = "INF" if (quad_c and quad_c.t_valid_end >= INFINITY) else (quad_c.t_valid_end.strftime("%Y-%m-%d") if quad_c else "?")
+    prefix = f"      [{edge_index}]" if edge_index >= 0 else "      "
+    print(f"{prefix} Candidate: ({candidate.source[:25]}) -[{candidate.relation_type[:25]}]-> ({candidate.target[:25]})")
+    print(f"{prefix}   Valid=[{tv_start} -> {tv_end}]  conf={candidate.confidence:.2f}  "
+          f"cardinality={cardinality.value}")
+    if is_late_arrival:
+        print(f"{prefix}   LATE ARRIVAL — querying historical state at t_event={t_event}")
+
     # --- Sub-query S: subject-side ---
     subject_conflict_records = await run_subject_side_query(
         session=session,
@@ -477,7 +490,8 @@ async def detect_and_resolve(
 
     # --- Sub-query O: object-side (only for exclusive relations) ---
     object_conflict_records: list[dict[str, Any]] = []
-    if cardinality in (RelationCardinality.OBJECT_EXCLUSIVE, RelationCardinality.BOTH_EXCLUSIVE):
+    run_object_query = cardinality in (RelationCardinality.OBJECT_EXCLUSIVE, RelationCardinality.BOTH_EXCLUSIVE)
+    if run_object_query:
         object_conflict_records = await run_object_side_query(
             session=session,
             subject=candidate.source,
@@ -485,6 +499,26 @@ async def detect_and_resolve(
             obj=candidate.target,
             t_event=query_time,
         )
+
+    # --- Diagnostic: query results ---
+    print(f"{prefix}   Sub-query S (subject-side): {len(subject_conflict_records)} conflict(s)")
+    for i, rec in enumerate(subject_conflict_records[:3]):
+        obj_title = rec.get("_object_title", "?")
+        desc = str(rec.get("description", ""))[:40]
+        print(f"{prefix}     S[{i}]: -> ({obj_title[:25]})  desc='{desc}'")
+    if len(subject_conflict_records) > 3:
+        print(f"{prefix}     ... and {len(subject_conflict_records) - 3} more")
+
+    if run_object_query:
+        print(f"{prefix}   Sub-query O (object-side):  {len(object_conflict_records)} conflict(s)")
+        for i, rec in enumerate(object_conflict_records[:3]):
+            subj_title = rec.get("_subject_title", "?")
+            desc = str(rec.get("description", ""))[:40]
+            print(f"{prefix}     O[{i}]: ({subj_title[:25]}) ->  desc='{desc}'")
+        if len(object_conflict_records) > 3:
+            print(f"{prefix}     ... and {len(object_conflict_records) - 3} more")
+    else:
+        print(f"{prefix}   Sub-query O: SKIPPED (cardinality={cardinality.value} does not require object-side check)")
 
     # Convert raw records to TemporalRelationship objects
     def _to_temporal_rel(record: dict[str, Any], is_object_side: bool = False) -> TemporalRelationship:
@@ -527,9 +561,11 @@ async def detect_and_resolve(
         # No conflicts: candidate can be written as-is
         conflict_result.strategy = ResolutionStrategy.CORROBORATION
         conflict_result.confidence = 1.0
+        print(f"{prefix}   Result: NO CONFLICT — insert as new edge")
         return conflict_result
 
     # Run Decision Router
+    print(f"{prefix}   CONFLICT DETECTED — running Decision Router...")
     strategy, confidence = await route_conflict(
         candidate=candidate,
         conflict_result=conflict_result,
@@ -539,31 +575,53 @@ async def detect_and_resolve(
     conflict_result.strategy = strategy
     conflict_result.confidence = confidence
 
+    # --- Diagnostic: resolution decision ---
+    strategy_symbols = {
+        ResolutionStrategy.EVOLUTION: "EVOLUTION (close old valid_end, insert new)",
+        ResolutionStrategy.CORRECTION: "CORRECTION (retract old tx_end, insert corrected)",
+        ResolutionStrategy.CORROBORATION: "CORROBORATION (increment support_count)",
+        ResolutionStrategy.DISAGREEMENT: "DISAGREEMENT (insert as disputed)",
+    }
+    print(f"{prefix}   Decision: {strategy_symbols.get(strategy, strategy.value)}  confidence={confidence:.2f}")
+
     # --- Apply resolution actions ---
     all_conflicts = subject_conflicts + object_conflicts
+    actions_applied = 0
 
     if strategy == ResolutionStrategy.EVOLUTION:
         for existing in all_conflicts:
             if existing.id:
                 await apply_evolution(session, existing.id, candidate, t_now)
+                actions_applied += 1
+                e_quad = existing.temporal_quad
+                print(f"{prefix}   Action: Closed edge '{existing.id[:12]}...' valid_end -> "
+                      f"{candidate.temporal_quad.t_valid_start.strftime('%Y-%m-%d') if candidate.temporal_quad else '?'}")
 
     elif strategy == ResolutionStrategy.CORRECTION:
         for existing in all_conflicts:
             if existing.id:
                 await apply_correction(session, existing.id, t_now)
+                actions_applied += 1
+                print(f"{prefix}   Action: Retracted edge '{existing.id[:12]}...' tx_end -> {t_now.strftime('%Y-%m-%d')}")
 
     elif strategy == ResolutionStrategy.CORROBORATION:
         for existing in all_conflicts:
             if existing.id:
                 await apply_corroboration(session, existing.id, candidate)
+                actions_applied += 1
+                print(f"{prefix}   Action: Incremented support_count on '{existing.id[:12]}...'")
 
     elif strategy == ResolutionStrategy.DISAGREEMENT:
         candidate.status = "disputed"
+        print(f"{prefix}   Action: Marked candidate as DISPUTED (no existing edges modified)")
         logger.info(
             "ETCDR [DISAGREEMENT]: Marking candidate (%s, %s, %s) as disputed",
             candidate.source,
             candidate.relation_type,
             candidate.target,
         )
+
+    if actions_applied > 0:
+        print(f"{prefix}   Applied {actions_applied} resolution action(s) in Neo4j")
 
     return conflict_result

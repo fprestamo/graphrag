@@ -117,13 +117,18 @@ def _merge_entities(entity_dfs) -> pd.DataFrame:
 
 def _merge_relationships(relationship_dfs) -> pd.DataFrame:
     all_relationships = pd.concat(relationship_dfs, ignore_index=False)
+    agg_kwargs: dict = {
+        "description": ("description", list),
+        "text_unit_ids": ("source_id", list),
+        "weight": ("weight", "sum"),
+    }
+    # Preserve relation_type when present (BT-GraphRAG extended format).
+    # "first" picks the first non-NaN value per group.
+    if "relation_type" in all_relationships.columns:
+        agg_kwargs["relation_type"] = ("relation_type", "first")
     return (
         all_relationships
         .groupby(["source", "target"], sort=False)
-        .agg(
-            description=("description", list),
-            text_unit_ids=("source_id", list),
-            weight=("weight", "sum"),
-        )
+        .agg(**agg_kwargs)
         .reset_index()
     )

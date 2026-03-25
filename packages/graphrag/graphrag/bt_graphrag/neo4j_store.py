@@ -69,14 +69,15 @@ async def init_schema(driver: "AsyncDriver", database: str = "neo4j") -> None:
 async def upsert_entity(
     session: "AsyncSession",
     entity: TemporalEntity,
-) -> None:
+    verbose: bool = True,
+) -> str:
     """Insert or update an entity node in Neo4j.
 
     If the node exists (by title), merge and update temporal fields.
-    Otherwise create a new node.
+    Otherwise create a new node. Returns "CREATED" or "MATCHED".
     """
     props = entity.to_neo4j_properties()
-    await session.run(
+    result = await session.run(
         """
         MERGE (n:Entity {title: $title})
         ON CREATE SET
@@ -86,14 +87,17 @@ async def upsert_entity(
             n.first_seen = $first_seen,
             n.last_seen = $last_seen,
             n.active_start = $active_start,
-            n.active_end = $active_end
+            n.active_end = $active_end,
+            n._action = 'CREATED'
         ON MATCH SET
             n.description = CASE
                 WHEN n.description IS NULL OR size(n.description) < size($description) THEN $description
                 ELSE n.description
             END,
             n.last_seen = $last_seen,
-            n.active_end = CASE WHEN $active_end = $infinity THEN n.active_end ELSE $active_end END
+            n.active_end = CASE WHEN $active_end = $infinity THEN n.active_end ELSE $active_end END,
+            n._action = 'MATCHED'
+        RETURN n._action AS action
         """,
         title=props["title"],
         id=props["id"],
@@ -105,6 +109,16 @@ async def upsert_entity(
         active_end=props.get("active_end"),
         infinity=INFINITY_ISO,
     )
+    record = await result.single()
+    action = record["action"] if record else "UNKNOWN"
+
+    # Clean up temporary property
+    await session.run(
+        "MATCH (n:Entity {title: $title}) REMOVE n._action",
+        title=props["title"],
+    )
+
+    return action
 
 
 async def upsert_entities_batch(
@@ -135,6 +149,33 @@ async def insert_relationship(
 
     props = rel.to_neo4j_properties()
 
+    # Verify source and target entities exist before inserting
+    check_result = await session.run(
+        """
+        OPTIONAL MATCH (s:Entity {title: $source})
+        OPTIONAL MATCH (t:Entity {title: $target})
+        RETURN s IS NOT NULL AS source_exists, t IS NOT NULL AS target_exists
+        """,
+        source=rel.source,
+        target=rel.target,
+    )
+    check_rec = await check_result.single()
+    source_ok = check_rec["source_exists"] if check_rec else False
+    target_ok = check_rec["target_exists"] if check_rec else False
+
+    if not source_ok or not target_ok:
+        missing = []
+        if not source_ok:
+            missing.append(f"source='{rel.source[:30]}'")
+        if not target_ok:
+            missing.append(f"target='{rel.target[:30]}'")
+        logger.warning(
+            "insert_relationship: Missing node(s) %s — edge %s will be skipped",
+            ", ".join(missing), rel.id,
+        )
+        print(f"      WARNING: Skipping edge — missing node(s): {', '.join(missing)}")
+        return rel.id
+
     await session.run(
         """
         MATCH (s:Entity {title: $source})
@@ -146,9 +187,17 @@ async def insert_relationship(
         target=rel.target,
         props=props,
     )
+
+    # Derive epistemic state for display
+    quad = rel.temporal_quad
+    if quad:
+        state = quad.epistemic_state.value
+    else:
+        state = "UNKNOWN"
+
     logger.debug(
-        "Inserted edge %s: (%s)-[%s]->(%s)",
-        rel.id, rel.source, rel.relation_type, rel.target,
+        "Inserted edge %s: (%s)-[%s]->(%s) [%s]",
+        rel.id, rel.source, rel.relation_type, rel.target, state,
     )
     return rel.id
 

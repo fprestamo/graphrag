@@ -115,30 +115,47 @@ def parse_temporal_extraction_result(
             source = clean_str(record_attributes[1].upper())
             target = clean_str(record_attributes[2].upper())
             edge_description = clean_str(record_attributes[3])
-            try:
-                weight = float(record_attributes[4])
-            except (ValueError, IndexError):
-                weight = 1.0
+
+            # Detect whether the LLM included relation_type (8 fields)
+            # or used the legacy format (7 fields: no relation_type).
+            # New format: desc | relation_type | strength | start | end
+            # Old format: desc | strength | start | end
+            relation_type: str | None = None
+            if len(record_attributes) >= 8:
+                # New format — field 4 is relation_type
+                relation_type = clean_str(record_attributes[4]).upper().replace(" ", "_")
+                try:
+                    weight = float(record_attributes[5])
+                except (ValueError, IndexError):
+                    weight = 1.0
+                temporal_offset = 6
+            else:
+                # Legacy format — field 4 is strength
+                try:
+                    weight = float(record_attributes[4])
+                except (ValueError, IndexError):
+                    weight = 1.0
+                temporal_offset = 5
 
             # Parse temporal fields
             t_valid_start = document_t_valid
             t_valid_end: float | datetime = INFINITY
 
-            if len(record_attributes) >= 6:
-                start_str = record_attributes[5].strip()
+            if len(record_attributes) >= temporal_offset + 1:
+                start_str = record_attributes[temporal_offset].strip()
                 if start_str and start_str.upper() not in ("UNKNOWN", "N/A", ""):
                     parsed = parse_date_from_string(start_str, document_t_valid)
                     if parsed:
                         t_valid_start = parsed
 
-            if len(record_attributes) >= 7:
-                end_str = record_attributes[6].strip()
+            if len(record_attributes) >= temporal_offset + 2:
+                end_str = record_attributes[temporal_offset + 1].strip()
                 if end_str and end_str.upper() not in ("UNKNOWN", "ONGOING", "N/A", "PRESENT", ""):
                     parsed = parse_date_from_string(end_str, document_t_valid)
                     if parsed:
                         t_valid_end = parsed
 
-            relationships.append({
+            rel_data = {
                 "source": source,
                 "target": target,
                 "description": edge_description,
@@ -149,7 +166,12 @@ def parse_temporal_extraction_result(
                 "t_tx_start": document_t_tx.isoformat(),
                 "t_tx_end": None,  # Open-ended: currently believed
                 "confidence": weight / 10.0,  # Normalize strength to 0-1
-            })
+            }
+
+            if relation_type:
+                rel_data["relation_type"] = relation_type
+
+            relationships.append(rel_data)
 
     entities_df = pd.DataFrame(entities) if entities else pd.DataFrame(
         columns=["title", "type", "description", "source_id"]

@@ -157,10 +157,23 @@ class GraphExtractor:
                 source = clean_str(record_attributes[1].upper())
                 target = clean_str(record_attributes[2].upper())
                 edge_description = clean_str(record_attributes[3])
-                try:
-                    weight = float(record_attributes[4])
-                except ValueError:
-                    weight = 1.0
+
+                # Detect new format (8 fields: desc|relation_type|strength|start|end)
+                # vs legacy format (7 fields: desc|strength|start|end)
+                relation_type: str | None = None
+                if len(record_attributes) >= 8:
+                    relation_type = clean_str(record_attributes[4]).upper().replace(" ", "_")
+                    try:
+                        weight = float(record_attributes[5])
+                    except ValueError:
+                        weight = 1.0
+                    temporal_offset = 6
+                else:
+                    try:
+                        weight = float(record_attributes[4])
+                    except ValueError:
+                        weight = 1.0
+                    temporal_offset = 5
 
                 rel: dict[str, Any] = {
                     "source": source,
@@ -170,10 +183,13 @@ class GraphExtractor:
                     "weight": weight,
                 }
 
+                if relation_type:
+                    rel["relation_type"] = relation_type
+
                 # Capture temporal fields when present (BT-GraphRAG prompts)
-                if len(record_attributes) >= 7:
-                    rel["valid_time_start"] = clean_str(record_attributes[5])
-                    rel["valid_time_end"] = clean_str(record_attributes[6])
+                if len(record_attributes) >= temporal_offset + 2:
+                    rel["valid_time_start"] = clean_str(record_attributes[temporal_offset])
+                    rel["valid_time_end"] = clean_str(record_attributes[temporal_offset + 1])
 
                 relationships.append(rel)
 

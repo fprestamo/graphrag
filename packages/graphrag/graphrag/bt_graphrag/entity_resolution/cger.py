@@ -91,15 +91,18 @@ def temporal_overlap_score(
 
     inf = math.inf
 
-    def _to_ts(v: datetime | float | None) -> float:
+    def _to_ts(v: datetime | float | str | None) -> float:
         if v is None or v == inf:
             return 1e18  # far future
         if isinstance(v, datetime):
             return v.timestamp()
-        return v
+        if isinstance(v, str):
+            from dateutil.parser import parse as _parse
+            return _parse(v).timestamp()
+        return float(v)
 
-    s1, e1 = e1_start.timestamp(), _to_ts(e1_end)
-    s2, e2 = e2_start.timestamp(), _to_ts(e2_end)
+    s1, e1 = _to_ts(e1_start), _to_ts(e1_end)
+    s2, e2 = _to_ts(e2_start), _to_ts(e2_end)
 
     overlap_start = max(s1, s2)
     overlap_end = min(e1, e2)
@@ -138,11 +141,14 @@ def compute_composite_score(
     new_entity: dict[str, Any],
     existing_entity: dict[str, Any],
     config: BTGraphRAGConfig,
-) -> float:
+    verbose: bool = False,
+) -> tuple[float, dict[str, float]]:
     """Compute the five-signal composite entity resolution score.
 
     score = w1*cosine(desc) + w2*BM25(name) + w3*Jaccard(name)
             + w4*TemporalOverlap + w5*RelationContext
+
+    Returns (composite_score, signal_breakdown_dict).
     """
     # Signal 1: Description embedding cosine similarity
     emb_new = new_entity.get("description_embedding", [])
@@ -171,13 +177,54 @@ def compute_composite_score(
         existing_entity.get("relation_types", []),
     )
 
-    return (
+    composite = (
         config.cger_embedding_weight * s1
         + config.cger_bm25_weight * s2
         + config.cger_jaccard_weight * s3
         + config.cger_temporal_overlap_weight * s4
         + config.cger_relation_context_weight * s5
     )
+
+    # When description embeddings are unavailable on either side, signal S1 is
+    # always 0 and the embedding weight acts as a dead penalty on every comparison.
+    # Normalize the composite to the range [0, 1] relative to the signals that
+    # are actually available, so thresholds retain their intended meaning.
+    embedding_available = bool(emb_new) and bool(emb_existing)
+    if not embedding_available:
+        available_weight = (
+            config.cger_bm25_weight
+            + config.cger_jaccard_weight
+            + config.cger_temporal_overlap_weight
+            + config.cger_relation_context_weight
+        )
+        if available_weight > 0:
+            composite = composite / available_weight
+
+    breakdown = {
+        "cosine_emb": s1,
+        "bm25_name": s2,
+        "jaccard_name": s3,
+        "temporal_overlap": s4,
+        "relation_ctx": s5,
+        "normalized": not embedding_available,
+        "w_cosine": config.cger_embedding_weight * s1,
+        "w_bm25": config.cger_bm25_weight * s2,
+        "w_jaccard": config.cger_jaccard_weight * s3,
+        "w_temporal": config.cger_temporal_overlap_weight * s4,
+        "w_relation": config.cger_relation_context_weight * s5,
+    }
+
+    if verbose:
+        print(f"      Score breakdown: '{name_new}' vs '{name_existing}'"
+              + (" [NORMALIZED — no embeddings]" if not embedding_available else ""))
+        print(f"        S1 Cosine(desc):    {s1:.4f} × {config.cger_embedding_weight} = {config.cger_embedding_weight * s1:.4f}")
+        print(f"        S2 BM25(name):      {s2:.4f} × {config.cger_bm25_weight} = {config.cger_bm25_weight * s2:.4f}")
+        print(f"        S3 Jaccard(name):   {s3:.4f} × {config.cger_jaccard_weight} = {config.cger_jaccard_weight * s3:.4f}")
+        print(f"        S4 TemporalOverlap: {s4:.4f} × {config.cger_temporal_overlap_weight} = {config.cger_temporal_overlap_weight * s4:.4f}")
+        print(f"        S5 RelationCtx:     {s5:.4f} × {config.cger_relation_context_weight} = {config.cger_relation_context_weight * s5:.4f}")
+        print(f"        COMPOSITE:          {composite:.4f}")
+
+    return composite, breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +307,7 @@ async def resolve_entities(
     existing_entities: pd.DataFrame,
     config: BTGraphRAGConfig,
     model: "LLMCompletion | None" = None,
-) -> tuple[pd.DataFrame, dict[str, str]]:
+) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve new entities against the existing graph.
 
     For each new entity, computes composite scores against all existing
@@ -270,58 +317,266 @@ async def resolve_entities(
     Returns:
         resolved_entities: The new entities DataFrame with merged IDs
         merge_map: Dict mapping merged entity titles to their canonical titles
+        phase_b_log: Debug log entries from Phase B (intra-batch) resolution
     """
     merge_map: dict[str, str] = {}
+    phase_b_log: list[dict[str, Any]] = []
 
-    if existing_entities.empty or new_entities.empty:
-        return new_entities, merge_map
+    if new_entities.empty:
+        print("    [CGER] Skipping — no new entities to process")
+        return new_entities, merge_map, phase_b_log
 
-    existing_records = existing_entities.to_dict("records")
+    auto_merges = 0
+    llm_merges = 0
+    llm_rejections = 0
+    no_match_count = 0
+    below_threshold_count = 0
 
-    for idx, new_row in new_entities.iterrows():
-        new_entity = dict(new_row)
-        best_score = 0.0
-        best_match: dict[str, Any] | None = None
+    # --- Phase A: Resolve new entities against existing graph ---
+    existing_records = existing_entities.to_dict("records") if not existing_entities.empty else []
 
-        for existing in existing_records:
-            score = compute_composite_score(new_entity, existing, config)
-            if score > best_score:
-                best_score = score
-                best_match = existing
+    if not existing_records:
+        print(f"    [CGER] Phase A: Skipping — graph is empty (first run); "
+              f"proceeding to intra-batch Phase B for {len(new_entities)} entities")
+    else:
+        print(f"\n    [CGER] Phase A: Resolving {len(new_entities)} new entities "
+              f"against {len(existing_records)} existing")
+        print(f"    [CGER] Thresholds: auto_merge >= {config.cger_merge_threshold}, "
+              f"LLM_zone = [{config.cger_llm_threshold_low}, {config.cger_merge_threshold})")
+        print(f"    [CGER] Weights: emb={config.cger_embedding_weight}, bm25={config.cger_bm25_weight}, "
+              f"jaccard={config.cger_jaccard_weight}, temporal={config.cger_temporal_overlap_weight}, "
+              f"relation={config.cger_relation_context_weight}")
+        print()
 
-        if best_match is None:
-            continue
+        for idx, new_row in new_entities.iterrows():
+            new_entity = dict(new_row)
+            best_score = 0.0
+            best_breakdown: dict[str, float] = {}
+            best_match: dict[str, Any] | None = None
 
-        if best_score >= config.cger_merge_threshold:
-            # Automatic merge
-            merge_map[new_entity["title"]] = best_match["title"]
-            logger.info(
-                "CGER: Auto-merging '%s' -> '%s' (score=%.3f)",
-                new_entity["title"], best_match["title"], best_score,
-            )
-        elif best_score >= config.cger_llm_threshold_low and model is not None:
-            # LLM verification for hard cases
-            verdict = await llm_verify_entity_match(new_entity, best_match, model)
-            if verdict == "SAME":
+            for existing in existing_records:
+                score, breakdown = compute_composite_score(new_entity, existing, config)
+                if score > best_score:
+                    best_score = score
+                    best_breakdown = breakdown
+                    best_match = existing
+
+            entity_title = str(new_entity.get("title", "?"))
+
+            if best_match is None:
+                no_match_count += 1
+                print(f"    [{idx}] '{entity_title[:35]}' — no candidates found")
+                continue
+
+            match_title = str(best_match.get("title", "?"))
+
+            if best_score >= config.cger_merge_threshold:
                 merge_map[new_entity["title"]] = best_match["title"]
+                auto_merges += 1
+                print(f"    [{idx}] AUTO-MERGE: '{entity_title[:30]}' -> '{match_title[:30]}'  score={best_score:.4f}")
+                print(f"         Signals: cosine={best_breakdown.get('cosine_emb', 0):.3f}  "
+                      f"bm25={best_breakdown.get('bm25_name', 0):.3f}  "
+                      f"jaccard={best_breakdown.get('jaccard_name', 0):.3f}  "
+                      f"temporal={best_breakdown.get('temporal_overlap', 0):.3f}  "
+                      f"relation={best_breakdown.get('relation_ctx', 0):.3f}")
                 logger.info(
-                    "CGER: LLM-confirmed merge '%s' -> '%s' (score=%.3f)",
+                    "CGER: Auto-merging '%s' -> '%s' (score=%.3f)",
                     new_entity["title"], best_match["title"], best_score,
                 )
+            elif best_score >= config.cger_llm_threshold_low and model is not None:
+                print(f"    [{idx}] LLM-ZONE: '{entity_title[:30]}' vs '{match_title[:30]}'  score={best_score:.4f}")
+                print(f"         Signals: cosine={best_breakdown.get('cosine_emb', 0):.3f}  "
+                      f"bm25={best_breakdown.get('bm25_name', 0):.3f}  "
+                      f"jaccard={best_breakdown.get('jaccard_name', 0):.3f}  "
+                      f"temporal={best_breakdown.get('temporal_overlap', 0):.3f}  "
+                      f"relation={best_breakdown.get('relation_ctx', 0):.3f}")
+                verdict = await llm_verify_entity_match(new_entity, best_match, model)
+                if verdict == "SAME":
+                    merge_map[new_entity["title"]] = best_match["title"]
+                    llm_merges += 1
+                    print(f"         LLM verdict: SAME -> MERGED")
+                    logger.info(
+                        "CGER: LLM-confirmed merge '%s' -> '%s' (score=%.3f)",
+                        new_entity["title"], best_match["title"], best_score,
+                    )
+                else:
+                    llm_rejections += 1
+                    print(f"         LLM verdict: {verdict} -> KEPT SEPARATE")
+                    logger.info(
+                        "CGER: LLM rejected merge '%s' vs '%s' (score=%.3f, verdict=%s)",
+                        new_entity["title"], best_match["title"], best_score, verdict,
+                    )
             else:
-                logger.info(
-                    "CGER: LLM rejected merge '%s' vs '%s' (score=%.3f, verdict=%s)",
-                    new_entity["title"], best_match["title"], best_score, verdict,
-                )
+                below_threshold_count += 1
+                if best_score > 0.3:
+                    print(f"    [{idx}] BELOW THRESHOLD: '{entity_title[:30]}' best='{match_title[:30]}'  score={best_score:.4f}")
 
-    # Apply merge map to new entities
+    # Apply Phase A merge map to new entities
     if merge_map:
         new_entities = new_entities.copy()
         new_entities["title"] = new_entities["title"].map(
             lambda t: merge_map.get(t, t)
         )
 
-    return new_entities, merge_map
+    # --- Phase B: Intra-batch resolution (new vs new) ---
+    # Only process entities not already remapped to an existing graph entity.
+    unmerged = new_entities[~new_entities["title"].isin(merge_map.values())]
+
+    intra_auto_merges = 0
+    intra_llm_merges = 0
+    intra_rejections = 0
+
+    if len(unmerged) > 1:
+        print(f"\n    [CGER] Phase B: Intra-batch resolution ({len(unmerged)} unmerged entities)")
+        intra_merge_map: dict[str, str] = {}
+        seen_entities: list[dict[str, Any]] = []
+
+        for _, row in unmerged.iterrows():
+            entity = dict(row)
+            entity_title = str(entity.get("title", ""))
+
+            # Skip if already resolved in Phase A (guards against chain-merge edge cases)
+            if entity_title in merge_map:
+                continue
+
+            if not seen_entities:
+                seen_entities.append(entity)
+                continue
+
+            best_score = 0.0
+            best_breakdown: dict[str, float] = {}
+            best_match: dict[str, Any] | None = None
+
+            for seen in seen_entities:
+                score, breakdown = compute_composite_score(entity, seen, config)
+                if score > best_score:
+                    best_score = score
+                    best_breakdown = breakdown
+                    best_match = seen
+
+            match_title = str(best_match.get("title", "?")) if best_match else ""
+
+            if best_match is not None and best_score >= config.cger_merge_threshold:
+                intra_merge_map[entity_title] = match_title
+                intra_auto_merges += 1
+                phase_b_log.append({
+                    "phase": "B_intra_batch",
+                    "entity": entity_title,
+                    "type": str(entity.get("type", "?")),
+                    "best_match": match_title,
+                    "best_score": round(best_score, 4),
+                    "decision": "AUTO_MERGE",
+                    "top_comparisons": [],
+                })
+                print(f"    [INTRA] AUTO-MERGE: '{entity_title[:30]}' -> '{match_title[:30]}'  "
+                      f"score={best_score:.4f}")
+                print(f"           cosine={best_breakdown.get('cosine_emb', 0):.3f}  "
+                      f"bm25={best_breakdown.get('bm25_name', 0):.3f}  "
+                      f"jaccard={best_breakdown.get('jaccard_name', 0):.3f}  "
+                      f"temporal={best_breakdown.get('temporal_overlap', 0):.3f}  "
+                      f"relation={best_breakdown.get('relation_ctx', 0):.3f}")
+                logger.info(
+                    "CGER: Intra-batch merge '%s' -> '%s' (score=%.3f)",
+                    entity_title, match_title, best_score,
+                )
+            elif (best_match is not None
+                  and best_score >= config.cger_llm_threshold_low
+                  and model is not None):
+                print(f"    [INTRA] LLM-ZONE: '{entity_title[:30]}' vs '{match_title[:30]}'  "
+                      f"score={best_score:.4f}")
+                verdict = await llm_verify_entity_match(entity, best_match, model)
+                if verdict == "SAME":
+                    intra_merge_map[entity_title] = match_title
+                    intra_llm_merges += 1
+                    phase_b_log.append({
+                        "phase": "B_intra_batch",
+                        "entity": entity_title,
+                        "type": str(entity.get("type", "?")),
+                        "best_match": match_title,
+                        "best_score": round(best_score, 4),
+                        "decision": "LLM_MERGE",
+                        "top_comparisons": [],
+                    })
+                    print(f"           LLM verdict: SAME -> MERGED")
+                    logger.info(
+                        "CGER: Intra-batch LLM merge '%s' -> '%s' (score=%.3f)",
+                        entity_title, match_title, best_score,
+                    )
+                else:
+                    intra_rejections += 1
+                    phase_b_log.append({
+                        "phase": "B_intra_batch",
+                        "entity": entity_title,
+                        "type": str(entity.get("type", "?")),
+                        "best_match": match_title,
+                        "best_score": round(best_score, 4),
+                        "decision": "LLM_ZONE_REJECTED",
+                        "top_comparisons": [],
+                    })
+                    print(f"           LLM verdict: {verdict} -> KEPT SEPARATE")
+                    seen_entities.append(entity)
+            else:
+                if best_score > 0.3:
+                    phase_b_log.append({
+                        "phase": "B_intra_batch",
+                        "entity": entity_title,
+                        "type": str(entity.get("type", "?")),
+                        "best_match": match_title,
+                        "best_score": round(best_score, 4),
+                        "decision": "BELOW_THRESHOLD",
+                        "top_comparisons": [],
+                    })
+                    print(f"    [INTRA] BELOW: '{entity_title[:30]}' best='{match_title[:30]}'  "
+                          f"score={best_score:.4f}")
+                seen_entities.append(entity)
+
+        if intra_merge_map:
+            new_entities = new_entities.copy()
+            new_entities["title"] = new_entities["title"].map(
+                lambda t: intra_merge_map.get(t, t)
+            )
+            merge_map.update(intra_merge_map)
+        else:
+            print(f"    [CGER] Intra-batch: no additional merges found")
+    else:
+        print(f"\n    [CGER] Phase B: Intra-batch skipped (0-1 unmerged entities)")
+
+    # Deduplicate entity rows created by Phase A/B merging
+    # (e.g. two new entities both resolved to the same canonical title)
+    _before_dedup = len(new_entities)
+    new_entities = new_entities.drop_duplicates(subset=["title"], keep="first").reset_index(drop=True)
+    _dedup_dropped = _before_dedup - len(new_entities)
+    if _dedup_dropped:
+        print(f"\n    [CGER] Deduplicated {_dedup_dropped} entity row(s) after merging")
+
+    # --- Verification Summary ---
+    print(f"\n    {'=' * 55}")
+    print(f"    CGER VERIFICATION SUMMARY")
+    print(f"    {'=' * 55}")
+    print(f"    Total new entities processed:   {len(new_entities)}")
+    print(f"    Existing entities compared:     {len(existing_records)}")
+    print(f"    Phase A auto-merges:            {auto_merges}")
+    print(f"    Phase A LLM-confirmed:          {llm_merges}")
+    print(f"    Phase A LLM-rejected:           {llm_rejections}")
+    print(f"    Phase A below threshold:        {below_threshold_count}")
+    print(f"    Phase A no candidates:          {no_match_count}")
+    print(f"    Phase B intra auto-merges:      {intra_auto_merges}")
+    print(f"    Phase B intra LLM-confirmed:    {intra_llm_merges}")
+    print(f"    Phase B intra LLM-rejected:     {intra_rejections}")
+    print(f"    Total merges (A+B):             {len(merge_map)}")
+
+    # Verify no circular merges
+    circular = False
+    for src, dst in merge_map.items():
+        if dst in merge_map and merge_map[dst] != dst:
+            circular = True
+            print(f"    WARNING: Potential chain merge: '{src}' -> '{dst}' -> '{merge_map[dst]}'")
+    if not circular:
+        print(f"    Circular merge check:           PASS")
+
+    print(f"    {'=' * 55}")
+
+    return new_entities, merge_map, phase_b_log
 
 
 def apply_merge_map_to_relationships(

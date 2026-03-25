@@ -32,6 +32,7 @@ For each pair of related entities, extract the following information:
 - source_entity: name of the source entity, as identified in step 1
 - target_entity: name of the target entity, as identified in step 1
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
+- relation_type: A short, canonical predicate label in UPPER_SNAKE_CASE that describes the nature of the relationship between the source and target entities. This MUST be a generic, reusable predicate — it must NOT contain entity names, proper nouns, or instance-specific details. Think of it as the edge label in a knowledge graph ontology. Good examples: IS_CEO_OF, ACQUIRED, HEADQUARTERED_IN, FOUNDED, INVESTED_IN, EMPLOYED_AT, COLLABORATED_WITH, REPORTED_ON. Bad examples: JOHN_SMITH_IS_CEO (contains entity name), TECHCORP_ACQUIRED_DATASOFT (contains entity names), SERVES_AS_CEO_OF_TECHCORP (contains entity name).
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity (1-10)
 - valid_time_start: When this relationship started being true. Use ISO date format (YYYY-MM-DD) when possible. If the text says "since 2020", use "2020-01-01". If the text says "As of Q3 2023", use "2023-07-01". Use "UNKNOWN" only if truly unknowable.
 - valid_time_end: When this relationship stopped being true. Use ISO date format. Use "ONGOING" if the relationship is still active. Use "UNKNOWN" only if truly unknowable.
@@ -46,7 +47,7 @@ IMPORTANT temporal rules:
 - "former", "ex-", "previously" → the relationship has ended, valid_time_end should be before {document_date}
 - If no temporal info is available, set valid_time_start to {document_date} and valid_time_end to ONGOING.
 
-Format each relationship as ("relationship"<|><source_entity><|><target_entity><|><relationship_description><|><relationship_strength><|><valid_time_start><|><valid_time_end>)
+Format each relationship as ("relationship"<|><source_entity><|><target_entity><|><relationship_description><|><relation_type><|><relationship_strength><|><valid_time_start><|><valid_time_end>)
 
 3. Return output in English as a single list of all the entities and relationships identified in steps 1 and 2. Use **##** as the list delimiter.
 
@@ -70,11 +71,11 @@ Output:
 ##
 ("entity"<|>GLOBALTECH<|>ORGANIZATION<|>GlobalTech is a company that acquired DataSoft)
 ##
-("relationship"<|>JOHN SMITH<|>TECHCORP<|>John Smith serves as CEO of TechCorp since March 2021<|>9<|>2021-03-01<|>ONGOING)
+("relationship"<|>JOHN SMITH<|>TECHCORP<|>John Smith serves as CEO of TechCorp since March 2021<|>IS_CEO_OF<|>9<|>2021-03-01<|>ONGOING)
 ##
-("relationship"<|>JOHN SMITH<|>DATASOFT<|>John Smith previously led DataSoft from 2015 to 2020<|>7<|>2015-01-01<|>2020-12-31)
+("relationship"<|>JOHN SMITH<|>DATASOFT<|>John Smith previously led DataSoft from 2015 to 2020<|>LED<|>7<|>2015-01-01<|>2020-12-31)
 ##
-("relationship"<|>GLOBALTECH<|>DATASOFT<|>GlobalTech acquired DataSoft<|>8<|>2020-01-01<|>ONGOING)
+("relationship"<|>GLOBALTECH<|>DATASOFT<|>GlobalTech acquired DataSoft<|>ACQUIRED<|>8<|>2020-01-01<|>ONGOING)
 <|COMPLETE|>
 
 ######################
@@ -93,11 +94,11 @@ Output:
 ##
 ("entity"<|>MARIA GARCIA<|>PERSON<|>Maria Garcia is the CFO of Nexon who oversaw the headquarters relocation)
 ##
-("relationship"<|>NEXON<|>BERLIN<|>Nexon was headquartered in Berlin before relocating<|>6<|>UNKNOWN<|>2023-04-01)
+("relationship"<|>NEXON<|>BERLIN<|>Nexon was headquartered in Berlin before relocating<|>HEADQUARTERED_IN<|>6<|>UNKNOWN<|>2023-04-01)
 ##
-("relationship"<|>NEXON<|>MUNICH<|>Nexon relocated its headquarters to Munich during Q2 2023<|>8<|>2023-04-01<|>ONGOING)
+("relationship"<|>NEXON<|>MUNICH<|>Nexon relocated its headquarters to Munich during Q2 2023<|>HEADQUARTERED_IN<|>8<|>2023-04-01<|>ONGOING)
 ##
-("relationship"<|>MARIA GARCIA<|>NEXON<|>Maria Garcia serves as CFO of Nexon and oversaw the headquarters relocation<|>8<|>2022-01-01<|>ONGOING)
+("relationship"<|>MARIA GARCIA<|>NEXON<|>Maria Garcia serves as CFO of Nexon and oversaw the headquarters relocation<|>IS_CFO_OF<|>8<|>2022-01-01<|>ONGOING)
 <|COMPLETE|>
 
 ######################

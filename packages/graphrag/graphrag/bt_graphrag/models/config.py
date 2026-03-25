@@ -88,6 +88,25 @@ class BTGraphRAGConfig:
     cger_candidate_top_k: int = 20
     """Number of candidates to retrieve from each signal."""
 
+    # --- Stage 2b: CGRR (Cross-Graph Relationship Resolution) ---
+    cgrr_enabled: bool = True
+    """Enable Cross-Graph Relationship Resolution."""
+
+    cgrr_bm25_weight: float = 0.35
+    """Weight w1 for BM25 lexical matching of relation type strings."""
+
+    cgrr_semantic_weight: float = 0.40
+    """Weight w2 for semantic (description embedding) similarity."""
+
+    cgrr_endpoint_weight: float = 0.25
+    """Weight w3 for endpoint (same subject+object pair) match signal."""
+
+    cgrr_merge_threshold: float = 0.80
+    """Score above which relation types are automatically normalized."""
+
+    cgrr_llm_threshold_low: float = 0.50
+    """Score between this and merge_threshold triggers LLM verification."""
+
     # --- Stage 3: ETCDR ---
     etcdr_enabled: bool = True
     """Enable Edge-Level Temporal Conflict Detection and Resolution."""
@@ -100,6 +119,11 @@ class BTGraphRAGConfig:
     """Manual overrides for relation cardinality classification.
     Keys are relation types (uppercased), values are one of:
     SUBJECT_EXCLUSIVE, OBJECT_EXCLUSIVE, BOTH_EXCLUSIVE, NON_EXCLUSIVE."""
+
+    # --- Debug / Diagnostics ---
+    debug_output_dir: str | None = None
+    """Directory to write debug files (CGER entities, CGRR relationships, ETCDR conflicts).
+    If None, debug files are not written."""
 
     # --- Stage 5-6: Incremental Community Update ---
     community_update_k_hop: int = 2

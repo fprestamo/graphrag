@@ -159,9 +159,14 @@ bt_graphrag:
   # Stage 2: CGER (Cross-Graph Entity Resolution)
   cger_enabled: true
   cger_merge_threshold: 0.85
+  # Stage 2b: CGRR (Cross-Graph Relationship Resolution)
+  cgrr_enabled: true
+  cgrr_merge_threshold: 0.80
   # Stage 3: ETCDR (Conflict Detection)
   etcdr_enabled: true
   etcdr_confidence_threshold: 0.7
+  # Debug: save per-stage CSV/JSON files for CGER, CGRR, ETCDR
+  debug_output_dir: "output/bt_debug"
   # Stages 5-6: Incremental Community Update
   community_update_k_hop: 2
   # Stage 7: Query Pipeline
