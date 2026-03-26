@@ -12,11 +12,21 @@ from graphrag.bt_graphrag.entity_resolution.cgrr import (
     get_existing_relations_for_entities,
     resolve_relationships,
 )
+from graphrag.bt_graphrag.entity_resolution.scorers import (
+    EntityScorer,
+    RelationshipScorer,
+    compute_entity_composite_score,
+    compute_relationship_composite_score,
+)
 
 __all__ = [
     "apply_merge_map_to_relationships",
     "apply_normalize_map_to_cardinality",
+    "compute_entity_composite_score",
+    "compute_relationship_composite_score",
+    "EntityScorer",
     "get_existing_relations_for_entities",
+    "RelationshipScorer",
     "resolve_entities",
     "resolve_relationships",
 ]

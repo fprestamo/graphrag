@@ -244,6 +244,8 @@ class TemporalRelationship:
     support_count: int = 1
     status: str = "active"  # active, disputed, retracted
     text_unit_ids: list[str] = field(default_factory=list)
+    description_embedding: list[float] | None = None
+    relation_type_embedding: list[float] | None = None
 
     def to_neo4j_properties(self) -> dict[str, Any]:
         """Convert to a flat dict suitable for Neo4j edge properties."""
@@ -259,6 +261,10 @@ class TemporalRelationship:
         }
         if self.temporal_quad:
             props.update(self.temporal_quad.to_dict())
+        if self.description_embedding:
+            props["description_embedding"] = self.description_embedding
+        if self.relation_type_embedding:
+            props["relation_type_embedding"] = self.relation_type_embedding
         return props
 
 
@@ -296,7 +302,7 @@ class TemporalEntity:
                 return INFINITY_ISO
             return v.isoformat()
 
-        return {
+        props: dict[str, Any] = {
             "id": self.id,
             "title": self.title,
             "type": self.type or "",
@@ -306,6 +312,9 @@ class TemporalEntity:
             "active_start": _ts(self.active_start),
             "active_end": _ts(self.active_end),
         }
+        if self.description_embedding:
+            props["description_embedding"] = self.description_embedding
+        return props
 
 
 # ---------------------------------------------------------------------------

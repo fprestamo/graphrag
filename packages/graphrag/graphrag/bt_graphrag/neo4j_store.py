@@ -88,6 +88,7 @@ async def upsert_entity(
             n.last_seen = $last_seen,
             n.active_start = $active_start,
             n.active_end = $active_end,
+            n.description_embedding = $description_embedding,
             n._action = 'CREATED'
         ON MATCH SET
             n.description = CASE
@@ -96,6 +97,10 @@ async def upsert_entity(
             END,
             n.last_seen = $last_seen,
             n.active_end = CASE WHEN $active_end = $infinity THEN n.active_end ELSE $active_end END,
+            n.description_embedding = CASE
+                WHEN $description_embedding IS NOT NULL THEN $description_embedding
+                ELSE n.description_embedding
+            END,
             n._action = 'MATCHED'
         RETURN n._action AS action
         """,
@@ -107,6 +112,7 @@ async def upsert_entity(
         last_seen=props.get("last_seen"),
         active_start=props.get("active_start"),
         active_end=props.get("active_end"),
+        description_embedding=props.get("description_embedding"),
         infinity=INFINITY_ISO,
     )
     record = await result.single()

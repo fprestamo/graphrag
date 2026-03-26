@@ -12,219 +12,21 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from graphrag.bt_graphrag.entity_resolution.scorers import (
+    EntityScorer,
+    compute_entity_composite_score as compute_composite_score,
+    embedding_only_entity_scorer,
+)
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 
 if TYPE_CHECKING:
     from graphrag_llm.completion import LLMCompletion
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Similarity Signals
-# ---------------------------------------------------------------------------
-
-
-def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two vectors."""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def jaccard_similarity(s1: str, s2: str) -> float:
-    """Character n-gram Jaccard similarity between two strings."""
-    n = 3  # trigram
-    if len(s1) < n or len(s2) < n:
-        return 1.0 if s1.lower() == s2.lower() else 0.0
-    set1 = {s1[i:i + n].lower() for i in range(len(s1) - n + 1)}
-    set2 = {s2[i:i + n].lower() for i in range(len(s2) - n + 1)}
-    intersection = set1 & set2
-    union = set1 | set2
-    return len(intersection) / len(union) if union else 0.0
-
-
-def bm25_name_score(query: str, candidate: str, k1: float = 1.5, b: float = 0.75) -> float:
-    """Simplified BM25 score for name matching.
-
-    Treats each name as a short document and scores term overlap.
-    """
-    q_terms = set(query.lower().split())
-    c_terms = candidate.lower().split()
-    if not q_terms or not c_terms:
-        return 0.0
-
-    avg_len = max(len(c_terms), 1)
-    score = 0.0
-    for term in q_terms:
-        tf = c_terms.count(term)
-        idf = 1.0  # single-document IDF approximation
-        numerator = tf * (k1 + 1)
-        denominator = tf + k1 * (1 - b + b * len(c_terms) / avg_len)
-        score += idf * numerator / denominator
-    return min(score / max(len(q_terms), 1), 1.0)
-
-
-def temporal_overlap_score(
-    e1_start: datetime | None,
-    e1_end: datetime | float | None,
-    e2_start: datetime | None,
-    e2_end: datetime | float | None,
-) -> float:
-    """Measure temporal overlap between two entities' active periods.
-
-    Returns 0-1 score. High overlap suggests same entity; low overlap
-    suggests different entities (e.g. company vs its spin-off).
-    """
-    if e1_start is None or e2_start is None:
-        return 0.5  # Unknown: neutral score
-
-    inf = math.inf
-
-    def _to_ts(v: datetime | float | str | None) -> float:
-        if v is None or v == inf:
-            return 1e18  # far future
-        if isinstance(v, datetime):
-            return v.timestamp()
-        if isinstance(v, str):
-            from dateutil.parser import parse as _parse
-            return _parse(v).timestamp()
-        return float(v)
-
-    s1, e1 = _to_ts(e1_start), _to_ts(e1_end)
-    s2, e2 = _to_ts(e2_start), _to_ts(e2_end)
-
-    overlap_start = max(s1, s2)
-    overlap_end = min(e1, e2)
-    overlap = max(0.0, overlap_end - overlap_start)
-
-    union_start = min(s1, s2)
-    union_end = max(e1, e2)
-    union = max(union_end - union_start, 1.0)
-
-    return overlap / union
-
-
-def relation_context_similarity(
-    e1_relations: list[str],
-    e2_relations: list[str],
-) -> float:
-    """Simple Jaccard-based relation context similarity.
-
-    Compares the sets of relation types/neighbors between two entities.
-    """
-    if not e1_relations or not e2_relations:
-        return 0.0
-    s1 = set(r.lower() for r in e1_relations)
-    s2 = set(r.lower() for r in e2_relations)
-    intersection = s1 & s2
-    union = s1 | s2
-    return len(intersection) / len(union) if union else 0.0
-
-
-# ---------------------------------------------------------------------------
-# Composite Scoring
-# ---------------------------------------------------------------------------
-
-
-def compute_composite_score(
-    new_entity: dict[str, Any],
-    existing_entity: dict[str, Any],
-    config: BTGraphRAGConfig,
-    verbose: bool = False,
-) -> tuple[float, dict[str, float]]:
-    """Compute the five-signal composite entity resolution score.
-
-    score = w1*cosine(desc) + w2*BM25(name) + w3*Jaccard(name)
-            + w4*TemporalOverlap + w5*RelationContext
-
-    Returns (composite_score, signal_breakdown_dict).
-    """
-    # Signal 1: Description embedding cosine similarity
-    emb_new = new_entity.get("description_embedding", [])
-    emb_existing = existing_entity.get("description_embedding", [])
-    s1 = cosine_similarity(emb_new, emb_existing)
-
-    # Signal 2: BM25 name score
-    name_new = new_entity.get("title", "")
-    name_existing = existing_entity.get("title", "")
-    s2 = bm25_name_score(name_new, name_existing)
-
-    # Signal 3: Jaccard name similarity
-    s3 = jaccard_similarity(name_new, name_existing)
-
-    # Signal 4: Temporal overlap
-    s4 = temporal_overlap_score(
-        new_entity.get("active_start"),
-        new_entity.get("active_end"),
-        existing_entity.get("active_start"),
-        existing_entity.get("active_end"),
-    )
-
-    # Signal 5: Relation context similarity
-    s5 = relation_context_similarity(
-        new_entity.get("relation_types", []),
-        existing_entity.get("relation_types", []),
-    )
-
-    composite = (
-        config.cger_embedding_weight * s1
-        + config.cger_bm25_weight * s2
-        + config.cger_jaccard_weight * s3
-        + config.cger_temporal_overlap_weight * s4
-        + config.cger_relation_context_weight * s5
-    )
-
-    # When description embeddings are unavailable on either side, signal S1 is
-    # always 0 and the embedding weight acts as a dead penalty on every comparison.
-    # Normalize the composite to the range [0, 1] relative to the signals that
-    # are actually available, so thresholds retain their intended meaning.
-    embedding_available = bool(emb_new) and bool(emb_existing)
-    if not embedding_available:
-        available_weight = (
-            config.cger_bm25_weight
-            + config.cger_jaccard_weight
-            + config.cger_temporal_overlap_weight
-            + config.cger_relation_context_weight
-        )
-        if available_weight > 0:
-            composite = composite / available_weight
-
-    breakdown = {
-        "cosine_emb": s1,
-        "bm25_name": s2,
-        "jaccard_name": s3,
-        "temporal_overlap": s4,
-        "relation_ctx": s5,
-        "normalized": not embedding_available,
-        "w_cosine": config.cger_embedding_weight * s1,
-        "w_bm25": config.cger_bm25_weight * s2,
-        "w_jaccard": config.cger_jaccard_weight * s3,
-        "w_temporal": config.cger_temporal_overlap_weight * s4,
-        "w_relation": config.cger_relation_context_weight * s5,
-    }
-
-    if verbose:
-        print(f"      Score breakdown: '{name_new}' vs '{name_existing}'"
-              + (" [NORMALIZED — no embeddings]" if not embedding_available else ""))
-        print(f"        S1 Cosine(desc):    {s1:.4f} × {config.cger_embedding_weight} = {config.cger_embedding_weight * s1:.4f}")
-        print(f"        S2 BM25(name):      {s2:.4f} × {config.cger_bm25_weight} = {config.cger_bm25_weight * s2:.4f}")
-        print(f"        S3 Jaccard(name):   {s3:.4f} × {config.cger_jaccard_weight} = {config.cger_jaccard_weight * s3:.4f}")
-        print(f"        S4 TemporalOverlap: {s4:.4f} × {config.cger_temporal_overlap_weight} = {config.cger_temporal_overlap_weight * s4:.4f}")
-        print(f"        S5 RelationCtx:     {s5:.4f} × {config.cger_relation_context_weight} = {config.cger_relation_context_weight * s5:.4f}")
-        print(f"        COMPOSITE:          {composite:.4f}")
-
-    return composite, breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +109,7 @@ async def resolve_entities(
     existing_entities: pd.DataFrame,
     config: BTGraphRAGConfig,
     model: "LLMCompletion | None" = None,
+    entity_scorer: EntityScorer = embedding_only_entity_scorer,
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve new entities against the existing graph.
 
@@ -355,7 +158,7 @@ async def resolve_entities(
             best_match: dict[str, Any] | None = None
 
             for existing in existing_records:
-                score, breakdown = compute_composite_score(new_entity, existing, config)
+                score, breakdown = entity_scorer(new_entity, existing, config)
                 if score > best_score:
                     best_score = score
                     best_breakdown = breakdown
@@ -448,7 +251,7 @@ async def resolve_entities(
             best_match: dict[str, Any] | None = None
 
             for seen in seen_entities:
-                score, breakdown = compute_composite_score(entity, seen, config)
+                score, breakdown = entity_scorer(entity, seen, config)
                 if score > best_score:
                     best_score = score
                     best_breakdown = breakdown

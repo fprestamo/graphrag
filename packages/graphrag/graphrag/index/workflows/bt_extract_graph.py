@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 from graphrag_llm.completion import create_completion
+from graphrag_llm.embedding import create_embedding
 
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 from graphrag.bt_graphrag.pipeline import run_bt_pipeline
@@ -179,6 +180,41 @@ async def run_workflow(
     )
     extracted_entities.drop(columns=["description"], inplace=True, errors="ignore")
     entities = extracted_entities.merge(entity_summaries, on="title", how="left")
+
+    # -----------------------------------------------------------------------
+    # Embedding enrichment — computed on summarized descriptions
+    # -----------------------------------------------------------------------
+    try:
+        embedding_model_config = config.get_embedding_model_config(
+            config.embed_text.embedding_model_id
+        )
+        embedding_model = create_embedding(
+            embedding_model_config,
+            cache=context.cache.child(config.embed_text.model_instance_name),
+            cache_key_creator=cache_key_creator,
+        )
+        from graphrag.bt_graphrag.temporal_extraction.embedding_enrichment import (
+            embed_dataframes,
+            enrich_entities_with_text_unit_embeddings,
+        )
+        entities, relationships = await embed_dataframes(
+            entities, relationships, embedding_model
+        )
+        entities = await enrich_entities_with_text_unit_embeddings(
+            entities, text_units, embedding_model
+        )
+        ent_has = entities["description_embedding"].apply(bool).sum() if "description_embedding" in entities.columns else 0
+        ent_cite_has = entities["text_unit_embedding"].apply(bool).sum() if "text_unit_embedding" in entities.columns else 0
+        rel_has = relationships["description_embedding"].apply(bool).sum() if "description_embedding" in relationships.columns else 0
+        rel_type_has = relationships["relation_type_embedding"].apply(bool).sum() if "relation_type_embedding" in relationships.columns else 0
+        print(f"\n  ✓ Embeddings computed:")
+        print(f"    entity description_embedding       : {ent_has} / {len(entities)}")
+        print(f"    entity text_unit_embedding         : {ent_cite_has} / {len(entities)}")
+        print(f"    relationship description_embedding : {rel_has} / {len(relationships)}")
+        print(f"    relationship relation_type_embedding: {rel_type_has} / {len(relationships)}")
+    except Exception as exc:
+        logger.warning("Embedding enrichment failed — continuing without embeddings: %s", exc)
+        print(f"\n  ⚠ Embedding enrichment skipped: {exc}")
 
     # -----------------------------------------------------------------------
     # Stages 2-4: BT Pipeline (CGER, ETCDR, Neo4j write)

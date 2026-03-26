@@ -82,6 +82,9 @@ ENTITY_FIRST_SEEN = "first_seen"
 ENTITY_LAST_SEEN = "last_seen"
 ENTITY_ACTIVE_START = "active_start"
 ENTITY_ACTIVE_END = "active_end"
+# Embedding columns
+DESCRIPTION_EMBEDDING = "description_embedding"
+RELATION_TYPE_EMBEDDING = "relation_type_embedding"
 
 # the following lists define the final content and ordering of columns in the data model parquet outputs
 ENTITIES_FINAL_COLUMNS = [
@@ -184,6 +187,7 @@ BT_ENTITIES_FINAL_COLUMNS = [
     ENTITY_LAST_SEEN,
     ENTITY_ACTIVE_START,
     ENTITY_ACTIVE_END,
+    DESCRIPTION_EMBEDDING,
 ]
 
 BT_RELATIONSHIPS_FINAL_COLUMNS = [
@@ -197,4 +201,6 @@ BT_RELATIONSHIPS_FINAL_COLUMNS = [
     SUPPORT_COUNT,
     RELATION_TYPE,
     CARDINALITY,
+    DESCRIPTION_EMBEDDING,
+    RELATION_TYPE_EMBEDDING,
 ]

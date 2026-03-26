@@ -1242,6 +1242,7 @@ async def _write_to_neo4j(
         # Write entities
         print(f"\n    [Entities] Writing {len(entities_df)} entities...")
         for i, (_, row) in enumerate(entities_df.iterrows()):
+            _emb = row.get("description_embedding")
             entity = TemporalEntity(
                 id=str(row.get("id", str(uuid4()))),
                 title=str(row.get("title", "")),
@@ -1263,6 +1264,7 @@ async def _write_to_neo4j(
                     else utcnow()
                 ),
                 active_end=INFINITY,
+                description_embedding=_emb if isinstance(_emb, list) else None,
             )
             action = await upsert_entity(session, entity)
             entity_actions[action] += 1
@@ -1318,6 +1320,8 @@ async def _write_to_neo4j(
                 t_tx_end=t_tx_end,
             )
 
+            _desc_emb = row.get("description_embedding")
+            _type_emb = row.get("relation_type_embedding")
             rel = TemporalRelationship(
                 id=str(row.get("id", str(uuid4()))),
                 source=str(row.get("source", "")),
@@ -1329,6 +1333,8 @@ async def _write_to_neo4j(
                 temporal_quad=quad,
                 status=str(row.get("status", "active")),
                 support_count=int(row.get("support_count", 1)),
+                description_embedding=_desc_emb if isinstance(_desc_emb, list) else None,
+                relation_type_embedding=_type_emb if isinstance(_type_emb, list) else None,
             )
             edge_id = await insert_relationship(session, rel)
 

@@ -31,6 +31,7 @@ from graphrag.bt_graphrag.temporal_extraction.temporal_normalization import (
 
 if TYPE_CHECKING:
     from graphrag_llm.completion import LLMCompletion
+    from graphrag_llm.embedding import LLMEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ async def temporal_extract_graph(
     max_gleanings: int,
     document_t_valid: datetime,
     document_t_tx: datetime,
+    embedding_model: "LLMEmbedding | None" = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Extract entities and relationships with temporal annotations.
 
@@ -233,9 +235,19 @@ async def temporal_extract_graph(
             if response.content != "Y":
                 break
 
-    return parse_temporal_extraction_result(
+    entities_df, relationships_df = parse_temporal_extraction_result(
         results, source_id, document_t_valid, document_t_tx,
     )
+
+    if embedding_model is not None:
+        from graphrag.bt_graphrag.temporal_extraction.embedding_enrichment import (
+            embed_dataframes,
+        )
+        entities_df, relationships_df = await embed_dataframes(
+            entities_df, relationships_df, embedding_model,
+        )
+
+    return entities_df, relationships_df
 
 
 def enrich_text_units_with_temporal(

@@ -29,6 +29,7 @@ from graphrag.index.utils.string import clean_str
 
 if TYPE_CHECKING:
     from graphrag_llm.completion import LLMCompletion
+    from graphrag_llm.embedding import LLMEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class TemporalGraphExtractor(GraphExtractor):
     """
 
     _document_date: datetime | None
+    _embedding_model: "LLMEmbedding | None"
 
     def __init__(
         self,
@@ -50,9 +52,27 @@ class TemporalGraphExtractor(GraphExtractor):
         max_gleanings: int,
         document_date: datetime | None = None,
         on_error=None,
+        embedding_model: "LLMEmbedding | None" = None,
     ):
         super().__init__(model, prompt, max_gleanings, on_error)
         self._document_date = document_date
+        self._embedding_model = embedding_model
+
+    async def __call__(
+        self, text: str, entity_types: list[str], source_id: str
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Extract entities and relationships, then enrich with embeddings."""
+        entities_df, relationships_df = await super().__call__(text, entity_types, source_id)
+
+        if self._embedding_model is not None:
+            from graphrag.bt_graphrag.temporal_extraction.embedding_enrichment import (
+                embed_dataframes,
+            )
+            entities_df, relationships_df = await embed_dataframes(
+                entities_df, relationships_df, self._embedding_model,
+            )
+
+        return entities_df, relationships_df
 
     def _process_result(
         self,

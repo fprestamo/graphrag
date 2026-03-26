@@ -21,6 +21,10 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from graphrag.bt_graphrag.entity_resolution.scorers import (
+    RelationshipScorer,
+    compute_relationship_composite_score as compute_relationship_score,
+)
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 
 if TYPE_CHECKING:
@@ -28,130 +32,6 @@ if TYPE_CHECKING:
     from neo4j import AsyncSession
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Similarity Signals
-# ---------------------------------------------------------------------------
-
-
-def bm25_relation_score(
-    query: str, candidate: str, k1: float = 1.5, b: float = 0.75
-) -> float:
-    """BM25 lexical similarity between two relation type strings.
-
-    Normalizes both to tokens (splits on underscores and spaces) before
-    computing term overlap.
-    """
-    def _tokenize(s: str) -> list[str]:
-        return [w.lower() for w in s.replace("_", " ").split() if w]
-
-    q_terms = set(_tokenize(query))
-    c_terms = _tokenize(candidate)
-    if not q_terms or not c_terms:
-        return 0.0
-
-    avg_len = max(len(c_terms), 1)
-    score = 0.0
-    for term in q_terms:
-        tf = c_terms.count(term)
-        idf = 1.0  # single-document IDF approximation
-        numerator = tf * (k1 + 1)
-        denominator = tf + k1 * (1 - b + b * len(c_terms) / avg_len)
-        score += idf * numerator / denominator
-    return min(score / max(len(q_terms), 1), 1.0)
-
-
-def semantic_description_similarity(
-    desc_a: str, desc_b: str
-) -> float:
-    """Word-overlap proxy for semantic similarity between descriptions.
-
-    Uses Jaccard similarity on word sets as a lightweight approximation.
-    When embedding vectors are available, cosine similarity should be
-    used instead.
-    """
-    if not desc_a or not desc_b:
-        return 0.0
-    words_a = set(desc_a.lower().split())
-    words_b = set(desc_b.lower().split())
-    if not words_a or not words_b:
-        return 0.0
-    intersection = words_a & words_b
-    union = words_a | words_b
-    return len(intersection) / len(union) if union else 0.0
-
-
-def endpoint_match_score(
-    candidate_source: str,
-    candidate_target: str,
-    existing_source: str,
-    existing_target: str,
-) -> float:
-    """Binary signal boosted when candidate shares same endpoints as existing.
-
-    Returns 1.0 if both source AND target match, 0.5 if one matches, 0.0 otherwise.
-    Comparison is case-insensitive.
-    """
-    source_match = candidate_source.strip().lower() == existing_source.strip().lower()
-    target_match = candidate_target.strip().lower() == existing_target.strip().lower()
-    if source_match and target_match:
-        return 1.0
-    if source_match or target_match:
-        return 0.5
-    return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Composite Scoring
-# ---------------------------------------------------------------------------
-
-
-def compute_relationship_score(
-    candidate_rel_type: str,
-    candidate_description: str,
-    candidate_source: str,
-    candidate_target: str,
-    existing_rel_type: str,
-    existing_description: str,
-    existing_source: str,
-    existing_target: str,
-    config: BTGraphRAGConfig,
-) -> tuple[float, dict[str, float]]:
-    """Compute the three-signal composite relationship resolution score.
-
-    score = w1*BM25(type) + w2*SemanticSim(desc) + w3*EndpointMatch
-
-    Returns (composite_score, signal_breakdown_dict).
-    """
-    # Signal 1: BM25 lexical matching on relation type
-    s1 = bm25_relation_score(candidate_rel_type, existing_rel_type)
-
-    # Signal 2: Semantic similarity of descriptions
-    s2 = semantic_description_similarity(candidate_description, existing_description)
-
-    # Signal 3: Endpoint match
-    s3 = endpoint_match_score(
-        candidate_source, candidate_target,
-        existing_source, existing_target,
-    )
-
-    composite = (
-        config.cgrr_bm25_weight * s1
-        + config.cgrr_semantic_weight * s2
-        + config.cgrr_endpoint_weight * s3
-    )
-
-    breakdown = {
-        "bm25_type": s1,
-        "semantic_desc": s2,
-        "endpoint_match": s3,
-        "w_bm25": config.cgrr_bm25_weight * s1,
-        "w_semantic": config.cgrr_semantic_weight * s2,
-        "w_endpoint": config.cgrr_endpoint_weight * s3,
-    }
-
-    return composite, breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +189,7 @@ async def resolve_relationships(
     config: BTGraphRAGConfig,
     session: "AsyncSession",
     model: "LLMCompletion | None" = None,
+    relationship_scorer: RelationshipScorer = compute_relationship_score,
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve candidate relationship types against existing graph predicates.
 
@@ -425,16 +306,11 @@ async def resolve_relationships(
                 if not cand_entities.intersection(existing_entities_set):
                     skipped_no_overlap += 1
                     continue
-                score, breakdown = compute_relationship_score(
-                    candidate_rel_type=cand_type,
-                    candidate_description=cand_desc,
-                    candidate_source=cand_source,
-                    candidate_target=cand_target,
-                    existing_rel_type=existing["relation_type"],
-                    existing_description=existing["description"],
-                    existing_source=existing["source"],
-                    existing_target=existing["target"],
-                    config=config,
+                score, breakdown = relationship_scorer(
+                    cand_type, cand_desc, cand_source, cand_target,
+                    existing["relation_type"], existing["description"],
+                    existing["source"], existing["target"],
+                    config,
                 )
                 scored_matches.append((score, breakdown, existing))
 
@@ -552,16 +428,11 @@ async def resolve_relationships(
             best_canon: dict[str, str] | None = None
 
             for canon in canonical_types:
-                score, breakdown = compute_relationship_score(
-                    candidate_rel_type=rt,
-                    candidate_description=cand_desc,
-                    candidate_source=cand_src,
-                    candidate_target=cand_tgt,
-                    existing_rel_type=canon["relation_type"],
-                    existing_description=canon["description"],
-                    existing_source=canon["source"],
-                    existing_target=canon["target"],
-                    config=config,
+                score, breakdown = relationship_scorer(
+                    rt, cand_desc, cand_src, cand_tgt,
+                    canon["relation_type"], canon["description"],
+                    canon["source"], canon["target"],
+                    config,
                 )
                 if score > best_score:
                     best_score = score
