@@ -458,3 +458,88 @@ def compute_relationship_composite_score(
     }
 
     return composite, breakdown
+
+
+# ---------------------------------------------------------------------------
+# Alternative Relationship Scorers (CGRR)
+# ---------------------------------------------------------------------------
+
+
+def bm25_only_relationship_scorer(
+    candidate_rel_type: str,
+    candidate_description: str,
+    candidate_source: str,
+    candidate_target: str,
+    existing_rel_type: str,
+    existing_description: str,
+    existing_source: str,
+    existing_target: str,
+    config: "BTGraphRAGConfig",
+) -> tuple[float, dict[str, float]]:
+    """Score two relation types using only BM25 lexical similarity on the type string.
+
+    Useful as a baseline that ignores descriptions and endpoint context entirely.
+
+    score = BM25(candidate_rel_type, existing_rel_type)
+    """
+    s1 = bm25_relation_score(candidate_rel_type, existing_rel_type)
+    return s1, {"bm25_type": s1, "semantic_desc": 0.0, "endpoint_match": 0.0}
+
+
+def semantic_only_relationship_scorer(
+    candidate_rel_type: str,
+    candidate_description: str,
+    candidate_source: str,
+    candidate_target: str,
+    existing_rel_type: str,
+    existing_description: str,
+    existing_source: str,
+    existing_target: str,
+    config: "BTGraphRAGConfig",
+) -> tuple[float, dict[str, float]]:
+    """Score two relations using only word-overlap semantic similarity of descriptions.
+
+    Falls back to Jaccard on the type string if either description is empty.
+
+    score = SemanticSim(candidate_description, existing_description)
+         or Jaccard(candidate_rel_type, existing_rel_type) if descriptions absent
+    """
+    if candidate_description and existing_description:
+        s2 = semantic_description_similarity(candidate_description, existing_description)
+    else:
+        s2 = jaccard_similarity(candidate_rel_type, existing_rel_type)
+    return s2, {"bm25_type": 0.0, "semantic_desc": s2, "endpoint_match": 0.0}
+
+
+def type_and_endpoint_relationship_scorer(
+    candidate_rel_type: str,
+    candidate_description: str,
+    candidate_source: str,
+    candidate_target: str,
+    existing_rel_type: str,
+    existing_description: str,
+    existing_source: str,
+    existing_target: str,
+    config: "BTGraphRAGConfig",
+) -> tuple[float, dict[str, float]]:
+    """Score two relations using BM25 on type string plus endpoint match.
+
+    Ignores descriptions — useful when descriptions are sparse or noisy.
+
+    score = (w_bm25 * BM25(type) + w_endpoint * EndpointMatch)
+            / (w_bm25 + w_endpoint)     [renormalized to two signals]
+    """
+    s1 = bm25_relation_score(candidate_rel_type, existing_rel_type)
+    s3 = endpoint_match_score(
+        candidate_source, candidate_target,
+        existing_source, existing_target,
+    )
+    total_w = config.cgrr_bm25_weight + config.cgrr_endpoint_weight
+    score = (config.cgrr_bm25_weight * s1 + config.cgrr_endpoint_weight * s3) / total_w if total_w > 0 else (s1 + s3) / 2.0
+    return score, {
+        "bm25_type": s1,
+        "semantic_desc": 0.0,
+        "endpoint_match": s3,
+        "w_bm25": config.cgrr_bm25_weight * s1,
+        "w_endpoint": config.cgrr_endpoint_weight * s3,
+    }
