@@ -43,6 +43,8 @@ from uuid import uuid4
 
 import pandas as pd
 
+import os
+
 from graphrag.bt_graphrag.entity_resolution.cger import (
     apply_merge_map_to_relationships,
     resolve_entities,
@@ -117,13 +119,19 @@ def _df(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _mock_llm(responses: list[str]):
-    """MockLLMCompletion with canned responses (cycles in order)."""
+def _real_llm():
+    """Build a real LiteLLM completion using OpenAI (gpt-4.1-mini).
+
+    Requires the GRAPHRAG_API_KEY environment variable to be set.
+    """
+    api_key = os.environ.get("GRAPHRAG_API_KEY", "")
+    if not api_key:
+        print("[WARN] GRAPHRAG_API_KEY not set — LLM calls will fail.", file=sys.stderr)
     cfg = ModelConfig(
-        type=LLMProviderType.MockLLM,
-        model_provider="mock",
-        model="mock-model",
-        mock_responses=responses,
+        type=LLMProviderType.LiteLLM,
+        model_provider="openai",
+        model="gpt-4.1-mini",
+        api_key=api_key,
     )
     return create_completion(cfg)
 
@@ -147,7 +155,7 @@ def _print_merge_map(merge_map: dict[str, str], label: str = "") -> None:
 # Scenario 1 — First run (empty graph)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_1_empty_graph() -> None:
+async def run_scenario_1_empty_graph(model) -> None:
     _sep("SCENARIO 1 — First run: empty graph (Phase A skipped)")
 
     # Two duplicates in the incoming batch ("SpaceX" / "Space X")
@@ -170,7 +178,7 @@ async def run_scenario_1_empty_graph() -> None:
         new_entities=new_entities,
         existing_entities=existing_entities,
         config=CONFIG,
-        model=_mock_llm(["SAME"]),   # will only be called if LLM zone triggered
+        model=model,
         entity_scorer=compute_entity_composite_score,
     )
 
@@ -187,7 +195,7 @@ async def run_scenario_1_empty_graph() -> None:
 # Scenario 2 — Auto-merge: identical entity already in graph
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_2_auto_merge() -> None:
+async def run_scenario_2_auto_merge(model) -> None:
     _sep("SCENARIO 2 — Auto-merge: identical name already in graph")
 
     existing_entities = _df([
@@ -219,7 +227,7 @@ async def run_scenario_2_auto_merge() -> None:
         new_entities=new_entities,
         existing_entities=existing_entities,
         config=CONFIG,
-        model=_mock_llm(["DIFFERENT"]),  # should not be called for exact match
+        model=model,  # should not be called for exact match (auto-merge)
         entity_scorer=compute_entity_composite_score,
     )
 
@@ -234,8 +242,8 @@ async def run_scenario_2_auto_merge() -> None:
 # Scenario 3 — LLM zone: alias confirmed as SAME
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_3_llm_same() -> None:
-    _sep("SCENARIO 3 — LLM zone: alias confirmed SAME by mock LLM")
+async def run_scenario_3_llm_same(model) -> None:
+    _sep("SCENARIO 3 — LLM zone: alias verification by real LLM")
 
     existing_entities = _df([
         _entity_row("Tesla, Inc.", "organization",
@@ -252,20 +260,20 @@ async def run_scenario_3_llm_same() -> None:
 
     print(f"  Existing : 'Tesla, Inc.'")
     print(f"  Candidate: 'Tesla Inc'")
-    print(f"  Mock LLM : SAME  (will merge)\n")
+    print(f"  LLM      : real (gpt-4.1-mini)\n")
 
     resolved, merge_map, _ = await resolve_entities(
         new_entities=new_entities,
         existing_entities=existing_entities,
         config=CONFIG,
-        model=_mock_llm(["SAME"]),
+        model=model,
         entity_scorer=compute_entity_composite_score,
     )
 
     print(f"\n  Resolved entities: {len(resolved)}")
     _print_merge_map(merge_map)
     merged = "Tesla Inc" in merge_map
-    print(f"\n  → {'✓' if merged else 'ℹ️  score fell outside LLM zone,'} "
+    print(f"\n  → {'✓' if merged else 'ℹ️  score fell outside LLM zone or LLM said DIFFERENT,'} "
           f"'Tesla Inc' merged: {merged}")
 
 
@@ -273,8 +281,8 @@ async def run_scenario_3_llm_same() -> None:
 # Scenario 4 — LLM zone: alias rejected as DIFFERENT
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_4_llm_different() -> None:
-    _sep("SCENARIO 4 — LLM zone: alias rejected DIFFERENT by mock LLM")
+async def run_scenario_4_llm_different(model) -> None:
+    _sep("SCENARIO 4 — LLM zone: alias verification by real LLM")
 
     existing_entities = _df([
         _entity_row("OpenAI", "organization",
@@ -291,13 +299,13 @@ async def run_scenario_4_llm_different() -> None:
 
     print(f"  Existing : 'OpenAI'")
     print(f"  Candidate: 'Open AI Foundation'")
-    print(f"  Mock LLM : DIFFERENT  (will keep separate)\n")
+    print(f"  LLM      : real (gpt-4.1-mini)\n")
 
     resolved, merge_map, _ = await resolve_entities(
         new_entities=new_entities,
         existing_entities=existing_entities,
         config=CONFIG,
-        model=_mock_llm(["DIFFERENT"]),
+        model=model,
         entity_scorer=compute_entity_composite_score,
     )
 
@@ -311,7 +319,7 @@ async def run_scenario_4_llm_different() -> None:
 # Scenario 5 — Below threshold: completely different entities
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_5_below_threshold() -> None:
+async def run_scenario_5_below_threshold(model) -> None:
     _sep("SCENARIO 5 — Below threshold: no similarity → no merges")
 
     existing_entities = _df([
@@ -338,7 +346,7 @@ async def run_scenario_5_below_threshold() -> None:
         new_entities=new_entities,
         existing_entities=existing_entities,
         config=CONFIG,
-        model=_mock_llm(["DIFFERENT"]),
+        model=model,
         entity_scorer=compute_entity_composite_score,
     )
 
@@ -428,21 +436,24 @@ async def run_scenario_7_score_breakdown() -> None:
 
 async def main() -> None:
     print("╔══════════════════════════════════════════════════════════════════════╗")
-    print("║          CGER Evaluation — Cross-Graph Entity Resolution            ║")
+    print("║          CGER Evaluation — Cross-Graph Entity Resolution (real LLM)  ║")
     print("╚══════════════════════════════════════════════════════════════════════╝")
     print(f"  Merge threshold  : {CONFIG.cger_merge_threshold}")
     print(f"  LLM zone low     : {CONFIG.cger_llm_threshold_low}")
+    print(f"  LLM              : openai/gpt-4.1-mini (real)")
     print(f"  Weights (emb=0)  : bm25={CONFIG.cger_bm25_weight}  "
           f"jaccard={CONFIG.cger_jaccard_weight}  "
           f"temporal={CONFIG.cger_temporal_overlap_weight}  "
           f"relation={CONFIG.cger_relation_context_weight}")
 
+    model = _real_llm()
+
     try:
-        await run_scenario_1_empty_graph()
-        await run_scenario_2_auto_merge()
-        await run_scenario_3_llm_same()
-        await run_scenario_4_llm_different()
-        await run_scenario_5_below_threshold()
+        await run_scenario_1_empty_graph(model)
+        await run_scenario_2_auto_merge(model)
+        await run_scenario_3_llm_same(model)
+        await run_scenario_4_llm_different(model)
+        await run_scenario_5_below_threshold(model)
         await run_scenario_6_apply_to_relationships()
         await run_scenario_7_score_breakdown()
     except Exception as exc:

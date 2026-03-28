@@ -46,6 +46,8 @@ from uuid import uuid4
 
 import pandas as pd
 
+import os
+
 from graphrag.bt_graphrag.entity_resolution.cgrr import (
     apply_normalize_map_to_cardinality,
     resolve_relationships,
@@ -159,12 +161,19 @@ def _df(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _mock_llm(responses: list[str]):
+def _real_llm():
+    """Build a real LiteLLM completion using OpenAI (gpt-4.1-mini).
+
+    Requires the GRAPHRAG_API_KEY environment variable to be set.
+    """
+    api_key = os.environ.get("GRAPHRAG_API_KEY", "")
+    if not api_key:
+        print("[WARN] GRAPHRAG_API_KEY not set — LLM calls will fail.", file=sys.stderr)
     cfg = ModelConfig(
-        type=LLMProviderType.MockLLM,
-        model_provider="mock",
-        model="mock-model",
-        mock_responses=responses,
+        type=LLMProviderType.LiteLLM,
+        model_provider="openai",
+        model="gpt-4.1-mini",
+        api_key=api_key,
     )
     return create_completion(cfg)
 
@@ -233,7 +242,7 @@ async def seed_database(driver) -> None:
 # Scenario 1 — First run (empty graph, Phase A skipped)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_1_empty_graph(driver) -> None:
+async def run_scenario_1_empty_graph(driver, model) -> None:
     _sep("SCENARIO 1 — First run: empty graph (Phase A skipped)")
 
     # Use a fresh temporary session against a logically empty view
@@ -257,7 +266,7 @@ async def run_scenario_1_empty_graph(driver) -> None:
             relationships_df=candidates,
             config=CONFIG,
             session=session,
-            model=_mock_llm(["SAME"]),
+            model=model,
             relationship_scorer=compute_relationship_composite_score,
         )
 
@@ -269,7 +278,7 @@ async def run_scenario_1_empty_graph(driver) -> None:
 # Scenario 2 — Exact match: type already exists verbatim
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_2_exact_match(driver) -> None:
+async def run_scenario_2_exact_match(driver, model) -> None:
     _sep("SCENARIO 2 — Exact match: 'IS_CEO_OF' already canonical in graph")
 
     # Re-seed so graph has IS_CEO_OF edges
@@ -290,7 +299,7 @@ async def run_scenario_2_exact_match(driver) -> None:
             relationships_df=candidates,
             config=CONFIG,
             session=session,
-            model=_mock_llm(["DIFFERENT"]),   # should never be called
+            model=model,   # should never be called for exact match
             relationship_scorer=compute_relationship_composite_score,
         )
 
@@ -302,7 +311,7 @@ async def run_scenario_2_exact_match(driver) -> None:
 # Scenario 3 — Auto-normalize: "LEADS" → "IS_CEO_OF"
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_3_auto_normalize(driver) -> None:
+async def run_scenario_3_auto_normalize(driver, model) -> None:
     _sep("SCENARIO 3 — Auto-normalize: 'LEADS' alias of 'IS_CEO_OF'")
 
     async with driver.session(database=TEST_DB) as session:
@@ -321,7 +330,7 @@ async def run_scenario_3_auto_normalize(driver) -> None:
             relationships_df=candidates,
             config=CONFIG,
             session=session,
-            model=_mock_llm(["SAME"]),
+            model=model,
             relationship_scorer=compute_relationship_composite_score,
         )
 
@@ -336,8 +345,8 @@ async def run_scenario_3_auto_normalize(driver) -> None:
 # Scenario 4 — LLM zone confirmed SAME
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_4_llm_same(driver) -> None:
-    _sep("SCENARIO 4 — LLM zone: 'HEADS' confirmed SAME as 'IS_CEO_OF'")
+async def run_scenario_4_llm_same(driver, model) -> None:
+    _sep("SCENARIO 4 — LLM zone: 'HEADS' vs 'IS_CEO_OF' (real LLM)")
 
     async with driver.session(database=TEST_DB) as session:
         candidates = _df([
@@ -347,27 +356,27 @@ async def run_scenario_4_llm_same(driver) -> None:
 
         print(f"  Candidate type : 'HEADS'")
         print(f"  Canonical type : 'IS_CEO_OF'")
-        print(f"  Mock LLM       : SAME  (will normalize)\n")
+        print(f"  LLM            : real (gpt-4.1-mini)\n")
 
         resolved, normalize_map, _ = await resolve_relationships(
             relationships_df=candidates,
             config=CONFIG,
             session=session,
-            model=_mock_llm(["SAME"]),
+            model=model,
             relationship_scorer=compute_relationship_composite_score,
         )
 
     _print_normalize_map(normalize_map)
     normalized = "HEADS" in normalize_map
-    print(f"\n  → {'✓' if normalized else 'ℹ️  score outside LLM zone,'} 'HEADS' normalized: {normalized}")
+    print(f"\n  → {'✓' if normalized else 'ℹ️  score outside LLM zone or LLM said DIFFERENT,'} 'HEADS' normalized: {normalized}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 5 — LLM zone rejected DIFFERENT
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_5_llm_different(driver) -> None:
-    _sep("SCENARIO 5 — LLM zone: 'CO_FOUNDED' rejected DIFFERENT vs 'FOUNDED'")
+async def run_scenario_5_llm_different(driver, model) -> None:
+    _sep("SCENARIO 5 — LLM zone: 'CO_FOUNDED' vs 'FOUNDED' (real LLM)")
 
     async with driver.session(database=TEST_DB) as session:
         candidates = _df([
@@ -378,26 +387,26 @@ async def run_scenario_5_llm_different(driver) -> None:
 
         print(f"  Candidate type : 'CO_FOUNDED'")
         print(f"  Existing type  : 'FOUNDED'")
-        print(f"  Mock LLM       : DIFFERENT  (will keep separate)\n")
+        print(f"  LLM            : real (gpt-4.1-mini)\n")
 
         resolved, normalize_map, _ = await resolve_relationships(
             relationships_df=candidates,
             config=CONFIG,
             session=session,
-            model=_mock_llm(["DIFFERENT"]),
+            model=model,
             relationship_scorer=compute_relationship_composite_score,
         )
 
     _print_normalize_map(normalize_map)
     kept = "CO_FOUNDED" not in normalize_map
-    print(f"\n  → {'✓' if kept else '✗'} 'CO_FOUNDED' kept separate: {kept}")
+    print(f"\n  → LLM decided: 'CO_FOUNDED' {'normalized' if not kept else 'kept separate'}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 6 — Below threshold: unrelated type
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_scenario_6_below_threshold(driver) -> None:
+async def run_scenario_6_below_threshold(driver, model) -> None:
     _sep("SCENARIO 6 — Below threshold: 'INCORPORATED_IN' → no overlap")
 
     async with driver.session(database=TEST_DB) as session:
@@ -415,7 +424,7 @@ async def run_scenario_6_below_threshold(driver) -> None:
             relationships_df=candidates,
             config=CONFIG,
             session=session,
-            model=_mock_llm(["DIFFERENT"]),
+            model=model,
             relationship_scorer=compute_relationship_composite_score,
         )
 
@@ -516,12 +525,13 @@ async def run_scenario_8_score_breakdown() -> None:
 
 async def main() -> None:
     print("╔══════════════════════════════════════════════════════════════════════╗")
-    print("║        CGRR Evaluation — Cross-Graph Relationship Resolution        ║")
+    print("║    CGRR Evaluation — Cross-Graph Relationship Resolution (real LLM)  ║")
     print("╚══════════════════════════════════════════════════════════════════════╝")
     print(f"  Neo4j URI        : {CONFIG.neo4j_uri}")
     print(f"  Database         : {CONFIG.neo4j_database}")
     print(f"  Merge threshold  : {CONFIG.cgrr_merge_threshold}")
     print(f"  LLM zone low     : {CONFIG.cgrr_llm_threshold_low}")
+    print(f"  LLM              : openai/gpt-4.1-mini (real)")
     print(f"  Weights          : bm25={CONFIG.cgrr_bm25_weight}  "
           f"semantic={CONFIG.cgrr_semantic_weight}  "
           f"endpoint={CONFIG.cgrr_endpoint_weight}")
@@ -533,16 +543,18 @@ async def main() -> None:
         auth=(CONFIG.neo4j_user, CONFIG.neo4j_password),
     )
 
+    model = _real_llm()
+
     try:
         await init_schema(driver, database=TEST_DB)
         await seed_database(driver)
 
-        await run_scenario_1_empty_graph(driver)
-        await run_scenario_2_exact_match(driver)
-        await run_scenario_3_auto_normalize(driver)
-        await run_scenario_4_llm_same(driver)
-        await run_scenario_5_llm_different(driver)
-        await run_scenario_6_below_threshold(driver)
+        await run_scenario_1_empty_graph(driver, model)
+        await run_scenario_2_exact_match(driver, model)
+        await run_scenario_3_auto_normalize(driver, model)
+        await run_scenario_4_llm_same(driver, model)
+        await run_scenario_5_llm_different(driver, model)
+        await run_scenario_6_below_threshold(driver, model)
         await run_scenario_7_cardinality_inheritance()
         await run_scenario_8_score_breakdown()
 

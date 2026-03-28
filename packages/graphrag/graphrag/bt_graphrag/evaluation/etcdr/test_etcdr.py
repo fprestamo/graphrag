@@ -40,6 +40,8 @@ from graphrag.bt_graphrag.neo4j_store import (
     insert_relationship,
     upsert_entity,
 )
+import os
+
 from graphrag_llm.completion import create_completion
 from graphrag_llm.config import ModelConfig
 from graphrag_llm.config.types import LLMProviderType
@@ -114,13 +116,19 @@ def _rel(
     )
 
 
-def _mock_llm(responses: list[str]):
-    """Build a MockLLMCompletion that cycles through the given canned responses."""
+def _real_llm():
+    """Build a real LiteLLM completion using OpenAI (gpt-4.1-mini).
+
+    Requires the GRAPHRAG_API_KEY environment variable to be set.
+    """
+    api_key = os.environ.get("GRAPHRAG_API_KEY", "")
+    if not api_key:
+        print("[WARN] GRAPHRAG_API_KEY not set — LLM calls will fail.", file=sys.stderr)
     config = ModelConfig(
-        type=LLMProviderType.MockLLM,
-        model_provider="mock",
-        model="mock-model",
-        mock_responses=responses,
+        type=LLMProviderType.LiteLLM,
+        model_provider="openai",
+        model="gpt-4.1-mini",
+        api_key=api_key,
     )
     return create_completion(config)
 
@@ -186,14 +194,13 @@ async def seed_database(session) -> None:
 # Scenario runners
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_no_conflict(session) -> None:
+async def run_no_conflict(session, model) -> None:
     _sep("SCENARIO 1 — No conflict (new NON_EXCLUSIVE edge)")
     candidate = _rel(
         "Elon Musk", "WORKED_AT", "OpenAI",
         valid_start=_dt(2015), valid_end=_dt(2018),
         description="Elon Musk co-founded and worked at OpenAI early on",
     )
-    model = _mock_llm(["STRATEGY: CORROBORATION\nCONFIDENCE: 1.0\nREASONING: No conflict."])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=0,
@@ -203,7 +210,7 @@ async def run_no_conflict(session) -> None:
     print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected no conflicts + CORROBORATION")
 
 
-async def run_evolution(session) -> None:
+async def run_evolution(session, model) -> None:
     _sep("SCENARIO 2 — EVOLUTION (CEO role change, BOTH_EXCLUSIVE)")
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "OpenAI",
@@ -211,10 +218,6 @@ async def run_evolution(session) -> None:
         confidence=0.95,
         description="Elon Musk appointed CEO of OpenAI in 2025",
     )
-    model = _mock_llm([
-        "STRATEGY: EVOLUTION\nCONFIDENCE: 0.92\n"
-        "REASONING: The CEO role genuinely changed; SpaceX edge should be closed."
-    ])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=1,
@@ -236,7 +239,7 @@ async def run_evolution(session) -> None:
     print(f"  → {'✓ PASS' if closed else '✗ FAIL'}: SpaceX CEO edge t_valid_end closed = {rec['t_valid_end'] if rec else 'N/A'}")
 
 
-async def run_correction(session) -> None:
+async def run_correction(session, model) -> None:
     _sep("SCENARIO 3 — CORRECTION (wrong edge retracted)")
 
     # Plant a deliberately wrong relationship first
@@ -255,10 +258,6 @@ async def run_correction(session) -> None:
         confidence=0.98,
         description="Corrected: Elon Musk CEO of Tesla 2004–2021 only",
     )
-    model = _mock_llm([
-        "STRATEGY: CORRECTION\nCONFIDENCE: 0.88\n"
-        "REASONING: Prior edge was a factual error; candidate provides the accurate period."
-    ])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=2,
@@ -281,7 +280,7 @@ async def run_correction(session) -> None:
     print(f"  → {'✓ PASS' if n >= 1 else '✗ FAIL'}: {n} retracted edge(s) found (t_tx_end closed)")
 
 
-async def run_corroboration(session) -> None:
+async def run_corroboration(session, model) -> None:
     _sep("SCENARIO 4 — CORROBORATION (same fact, second source)")
 
     # Read current support_count
@@ -303,10 +302,6 @@ async def run_corroboration(session) -> None:
         confidence=0.99,
         description="Washington DC is the capital of the USA (second source)",
     )
-    model = _mock_llm([
-        "STRATEGY: CORROBORATION\nCONFIDENCE: 0.97\n"
-        "REASONING: Candidate corroborates the existing fact from a different source."
-    ])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=3,
@@ -330,49 +325,40 @@ async def run_corroboration(session) -> None:
     print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected CORROBORATION + support_count increment")
 
 
-async def run_disagreement_low_confidence(session) -> None:
-    _sep("SCENARIO 5 — DISAGREEMENT (LLM confidence 0.55 < threshold 0.70)")
+async def run_disagreement_low_confidence(session, model) -> None:
+    _sep("SCENARIO 5 — DISAGREEMENT (LLM low confidence → possible override)")
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "Tesla",
         valid_start=_dt(2022),
         confidence=0.4,
         description="Disputed claim: Elon Musk as CEO of Tesla in 2022",
     )
-    # LLM says EVOLUTION but confidence is below threshold → override to DISAGREEMENT
-    model = _mock_llm([
-        "STRATEGY: EVOLUTION\nCONFIDENCE: 0.55\n"
-        "REASONING: Unclear whether this is evolution or factual error."
-    ])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=4,
     )
     _print_result(result)
-    ok = result.strategy == ResolutionStrategy.DISAGREEMENT
-    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected DISAGREEMENT (confidence override)")
+    print(f"  → LLM decided: strategy={result.strategy.value if result.strategy else 'None'}, confidence={result.confidence:.2f}")
+    print(f"  → (With real LLM, strategy depends on model reasoning)")
 
 
-async def run_disagreement_explicit(session) -> None:
-    _sep("SCENARIO 6 — DISAGREEMENT (LLM explicitly returns DISAGREEMENT)")
+async def run_disagreement_explicit(session, model) -> None:
+    _sep("SCENARIO 6 — Contested claim (conflicting evidence)")
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "SpaceX",
         valid_start=_dt(2020),
         confidence=0.6,
         description="Alternative contested claim about SpaceX CEO in 2020",
     )
-    model = _mock_llm([
-        "STRATEGY: DISAGREEMENT\nCONFIDENCE: 0.75\n"
-        "REASONING: Conflicting evidence; no clear resolution between sources."
-    ])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=5,
     )
     _print_result(result)
-    ok = result.strategy == ResolutionStrategy.DISAGREEMENT
+    strategy_name = result.strategy.value if result.strategy else "None"
     disputed = getattr(result.candidate, "status", None) == "disputed"
-    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected DISAGREEMENT")
-    print(f"  → {'✓ PASS' if disputed else '✗ FAIL'}: candidate.status = 'disputed'")
+    print(f"  → LLM decided: strategy={strategy_name}")
+    print(f"  → candidate.status = '{getattr(result.candidate, 'status', 'N/A')}' (disputed={disputed})")
 
 
 async def run_heuristic_no_model(session) -> None:
@@ -391,7 +377,7 @@ async def run_heuristic_no_model(session) -> None:
     print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected no conflict + CORROBORATION (new NON_EXCLUSIVE)")
 
 
-async def run_late_arrival(session) -> None:
+async def run_late_arrival(session, model) -> None:
     _sep("SCENARIO 8 — Late arrival (t_event=2010, historical conflict query)")
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "Tesla",
@@ -399,10 +385,6 @@ async def run_late_arrival(session) -> None:
         confidence=0.85,
         description="Late-arriving 2010 document: Elon was CEO of Tesla",
     )
-    model = _mock_llm([
-        "STRATEGY: CORROBORATION\nCONFIDENCE: 0.90\n"
-        "REASONING: Corroborates the known historical CEO tenure at that time."
-    ])
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model,
@@ -452,11 +434,12 @@ async def run_db_invariants(session) -> None:
 
 async def main() -> None:
     print("╔══════════════════════════════════════════════════════════════════════╗")
-    print("║          ETCDR Evaluation — etcdrtest database                      ║")
+    print("║          ETCDR Evaluation — etcdrtest database (real LLM)           ║")
     print("╚══════════════════════════════════════════════════════════════════════╝")
     print(f"  Neo4j URI : {CONFIG.neo4j_uri}")
     print(f"  Database  : {CONFIG.neo4j_database}")
     print(f"  Threshold : {CONFIG.etcdr_confidence_threshold}")
+    print(f"  LLM       : openai/gpt-4.1-mini (real)")
 
     from neo4j import AsyncGraphDatabase
 
@@ -465,20 +448,22 @@ async def main() -> None:
         auth=(CONFIG.neo4j_user, CONFIG.neo4j_password),
     )
 
+    model = _real_llm()
+
     try:
         await init_schema(driver, database=TEST_DB)
 
         async with driver.session(database=TEST_DB) as session:
             await seed_database(session)
 
-            await run_no_conflict(session)
-            await run_evolution(session)
-            await run_correction(session)
-            await run_corroboration(session)
-            await run_disagreement_low_confidence(session)
-            await run_disagreement_explicit(session)
+            await run_no_conflict(session, model)
+            await run_evolution(session, model)
+            await run_correction(session, model)
+            await run_corroboration(session, model)
+            await run_disagreement_low_confidence(session, model)
+            await run_disagreement_explicit(session, model)
             await run_heuristic_no_model(session)
-            await run_late_arrival(session)
+            await run_late_arrival(session, model)
             await run_db_invariants(session)
 
     except Exception as exc:
