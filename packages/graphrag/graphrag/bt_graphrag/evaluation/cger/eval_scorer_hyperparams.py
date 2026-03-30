@@ -35,12 +35,14 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import math
 import os
 import sys
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
@@ -1613,18 +1615,22 @@ def print_score_distributions(pairs: list[LabelledPair]) -> None:
 # Real LLM verification
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_llm_verification(pairs: list[LabelledPair]) -> None:
+async def run_llm_verification(pairs: list[LabelledPair]) -> dict:
     """Call the real LLM on every ground-truth pair and measure its accuracy.
 
     This validates the assumption that LLM-zone pairs would be 100% correctly
     resolved.  The results show how accurate the LLM actually is, which informs
     how much to trust the 'F1_with_llm' metric from the grid search.
+
+    Returns a dict with accuracy summary and per-pair outcomes for JSON export.
     """
     _sep("REAL LLM VERIFICATION — calling gpt-4.1-mini on all pairs")
     model = _real_llm()
 
     correct = 0
     total = len(pairs)
+    per_pair: list[dict] = []
+
     print(f"\n  {'#':>2} {'Label':8s} {'LLM':10s} {'Match':>5}  Description")
     print(f"  {'--':>2} {'--------':8s} {'----------':10s} {'-----':>5}  -----------")
 
@@ -1638,6 +1644,15 @@ async def run_llm_verification(pairs: list[LabelledPair]) -> None:
             correct += 1
         mark = "✓" if is_correct else "✗"
         print(f"  {i+1:2d} {pair.label:8s} {llm_answer:10s} {mark:>5}  {pair.description}")
+        per_pair.append({
+            "index": i + 1,
+            "entity_a": pair.entity_a.get("title", ""),
+            "entity_b": pair.entity_b.get("title", ""),
+            "ground_truth": pair.label,
+            "llm_answer": llm_answer,
+            "correct": is_correct,
+            "description": pair.description,
+        })
 
     accuracy = correct / max(total, 1)
     print(f"\n  LLM Accuracy: {correct}/{total} = {accuracy:.1%}")
@@ -1645,6 +1660,138 @@ async def run_llm_verification(pairs: list[LabelledPair]) -> None:
         print(f"  ⚠  LLM is not perfect — the F1_with_llm metric overestimates actual performance")
     else:
         print(f"  ✓  LLM is 100% accurate — F1_with_llm metric is trustworthy")
+
+    return {
+        "model": "gpt-4.1-mini",
+        "total_pairs": total,
+        "correct": correct,
+        "accuracy": round(accuracy, 6),
+        "per_pair": per_pair,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON export helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _result_to_dict(r: EvalResult) -> dict:
+    """Serialise an EvalResult (including all computed properties) to a plain dict."""
+    return {
+        "scorer_name":      r.scorer_name,
+        "config_label":     r.config_label,
+        "merge_threshold":  r.merge_threshold,
+        "llm_threshold_low": r.llm_threshold_low,
+        "extra_params":     r.extra_params,
+        # raw counts
+        "tp":       r.tp,
+        "tn":       r.tn,
+        "fp":       r.fp,
+        "fn":       r.fn,
+        "llm_same": r.llm_same,
+        "llm_diff": r.llm_diff,
+        "n_total":  r.n_total,
+        # computed metrics
+        "llm_calls":          r.llm_calls,
+        "llm_call_rate":      round(r.llm_call_rate, 6),
+        "precision":          round(r.precision, 6),
+        "recall":             round(r.recall, 6),
+        "recall_with_llm":    round(r.recall_with_llm, 6),
+        "accuracy":           round(r.accuracy, 6),
+        "accuracy_with_llm":  round(r.accuracy_with_llm, 6),
+        "f1":                 round(r.f1, 6),
+        "f1_with_llm":        round(r.f1_with_llm, 6),
+        # objective per lambda
+        "objectives": {str(lam): round(r.objective(lam), 6) for lam in LAMBDAS},
+    }
+
+
+def _pareto_entry(results: list[EvalResult], lam: float) -> dict:
+    best = max(results, key=lambda r: r.objective(lam))
+    return _result_to_dict(best)
+
+
+def save_results_to_json(
+    emb_results: list[EvalResult],
+    cite_results: list[EvalResult],
+    comp_results: list[EvalResult],
+    llm_verification: dict,
+    pairs: list[LabelledPair],
+    output_path: str | None = None,
+) -> str:
+    """Serialise all eval results to a JSON file and return the path."""
+    if output_path is None:
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        output_path = str(
+            Path(__file__).parent / f"eval_results_{ts}.json"
+        )
+
+    # Ground-truth summary (no embeddings — they're huge float lists)
+    gt_summary = [
+        {
+            "index": i + 1,
+            "entity_a": p.entity_a.get("title", ""),
+            "entity_b": p.entity_b.get("title", ""),
+            "label": p.label,
+            "description": p.description,
+        }
+        for i, p in enumerate(pairs)
+    ]
+
+    # Best configs per scorer per lambda
+    def _pareto_for(results: list[EvalResult]) -> dict:
+        return {
+            str(lam): _pareto_entry(results, lam)
+            for lam in LAMBDAS
+        }
+
+    payload = {
+        "metadata": {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "n_pairs": len(pairs),
+            "n_same": sum(1 for p in pairs if p.label == "SAME"),
+            "n_different": sum(1 for p in pairs if p.label == "DIFFERENT"),
+            "lambdas": LAMBDAS,
+            "threshold_grid": {
+                "merge_threshold": THRESHOLD_GRID["merge_threshold"],
+                "llm_threshold_low": THRESHOLD_GRID["llm_threshold_low"],
+            },
+            "composite_weight_profiles": COMPOSITE_WEIGHT_PROFILES,
+            "citation_weight_profiles": CITATION_WEIGHT_PROFILES,
+        },
+        "ground_truth": gt_summary,
+        "llm_verification": llm_verification,
+        "scorers": {
+            "embedding_only": {
+                "n_configs": len(emb_results),
+                "pareto": _pareto_for(emb_results),
+                "all_results": [_result_to_dict(r) for r in emb_results],
+            },
+            "citation_and_description": {
+                "n_configs": len(cite_results),
+                "pareto": _pareto_for(cite_results),
+                "all_results": [_result_to_dict(r) for r in cite_results],
+            },
+            "composite_5signal": {
+                "n_configs": len(comp_results),
+                "pareto": _pareto_for(comp_results),
+                "all_results": [_result_to_dict(r) for r in comp_results],
+            },
+        },
+        "cross_comparison": {
+            str(lam): {
+                "embedding_only":          _pareto_entry(emb_results,  lam),
+                "citation_and_description": _pareto_entry(cite_results, lam),
+                "composite_5signal":        _pareto_entry(comp_results, lam),
+            }
+            for lam in LAMBDAS
+        },
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    print(f"\n  📄 Results saved to: {output_path}")
+    return output_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1672,7 +1819,7 @@ async def main() -> None:
     print_score_distributions(pairs)
 
     # Real LLM verification (validates the "LLM is perfect" assumption)
-    await run_llm_verification(pairs)
+    llm_verification = await run_llm_verification(pairs)
 
     # Run each scorer
     try:
@@ -1683,6 +1830,12 @@ async def main() -> None:
     except Exception as exc:
         print(f"\n[ERROR] {exc}", file=sys.stderr)
         raise
+
+    # Save everything to JSON
+    save_results_to_json(
+        emb_results, cite_results, comp_results,
+        llm_verification, pairs,
+    )
 
     print("\n" + "═" * 80)
     print("  Hyperparameter optimisation complete.")
