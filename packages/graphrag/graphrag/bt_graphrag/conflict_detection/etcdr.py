@@ -199,6 +199,129 @@ async def run_object_side_query(
 
 
 # ---------------------------------------------------------------------------
+# Intra-Batch Conflict Detection
+# ---------------------------------------------------------------------------
+
+
+def _is_temporally_active(
+    rel: TemporalRelationship,
+    t_event: datetime | None = None,
+) -> bool:
+    """Check if a relationship is temporally active (mirrors Neo4j query conditions)."""
+    quad = rel.temporal_quad
+    if quad is None:
+        return True  # no temporal info, assume active
+
+    if t_event is not None:
+        # Late-arrival: check if active at t_event
+        return (
+            quad.t_valid_start <= t_event
+            and quad.t_valid_end > t_event
+            and quad.t_tx_start <= t_event
+            and quad.t_tx_end > t_event
+        )
+    # Normal: check if currently active (end times = INFINITY)
+    return quad.t_valid_end >= INFINITY and quad.t_tx_end >= INFINITY
+
+
+def find_intra_batch_subject_conflicts(
+    candidate: TemporalRelationship,
+    accepted_batch: list[TemporalRelationship],
+    t_event: datetime | None = None,
+) -> list[TemporalRelationship]:
+    """Subject-side conflict detection within the current batch.
+
+    Mirrors run_subject_side_query but checks in-memory batch relationships
+    instead of Neo4j. Finds batch members where the same subject already holds
+    the same relation type.
+    """
+    conflicts = []
+    for rel in accepted_batch:
+        if (
+            rel.source == candidate.source
+            and rel.relation_type == candidate.relation_type
+            and rel.id != candidate.id
+            and _is_temporally_active(rel, t_event)
+        ):
+            conflicts.append(rel)
+    return conflicts
+
+
+def find_intra_batch_object_conflicts(
+    candidate: TemporalRelationship,
+    accepted_batch: list[TemporalRelationship],
+    t_event: datetime | None = None,
+) -> list[TemporalRelationship]:
+    """Object-side conflict detection within the current batch.
+
+    Mirrors run_object_side_query but checks in-memory batch relationships.
+    Finds batch members where a different subject holds this exclusive relation
+    to the same object.
+    """
+    conflicts = []
+    for rel in accepted_batch:
+        if (
+            rel.target == candidate.target
+            and rel.relation_type == candidate.relation_type
+            and rel.source != candidate.source
+            and rel.id != candidate.id
+            and _is_temporally_active(rel, t_event)
+        ):
+            conflicts.append(rel)
+    return conflicts
+
+
+# ---------------------------------------------------------------------------
+# Intra-Batch Resolution Actions
+# ---------------------------------------------------------------------------
+
+
+def apply_intra_batch_evolution(
+    existing: TemporalRelationship,
+    candidate: TemporalRelationship,
+    t_now: datetime,
+) -> None:
+    """Evolution on a batch relationship: close its valid-time end in-memory."""
+    candidate_t_valid_start = (
+        candidate.temporal_quad.t_valid_start if candidate.temporal_quad else t_now
+    )
+    if existing.temporal_quad:
+        existing.temporal_quad.close_valid_time(candidate_t_valid_start)
+    logger.info(
+        "ETCDR [INTRA-BATCH EVOLUTION]: Closed batch edge %s valid_end at %s",
+        existing.id,
+        candidate_t_valid_start,
+    )
+
+
+def apply_intra_batch_correction(
+    existing: TemporalRelationship,
+    t_now: datetime,
+) -> None:
+    """Correction on a batch relationship: retract it in-memory."""
+    if existing.temporal_quad:
+        existing.temporal_quad.retract(t_now)
+    existing.status = "retracted"
+    logger.info(
+        "ETCDR [INTRA-BATCH CORRECTION]: Retracted batch edge %s",
+        existing.id,
+    )
+
+
+def apply_intra_batch_corroboration(
+    existing: TemporalRelationship,
+    candidate: TemporalRelationship,
+) -> None:
+    """Corroboration on a batch relationship: increment support in-memory."""
+    existing.support_count += 1
+    existing.confidence = min(existing.confidence + 0.05, 1.0)
+    logger.info(
+        "ETCDR [INTRA-BATCH CORROBORATION]: Incremented support on batch edge %s",
+        existing.id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Decision Router
 # ---------------------------------------------------------------------------
 
@@ -217,11 +340,18 @@ async def route_conflict(
     if not conflict_result.has_conflicts:
         return ResolutionStrategy.CORROBORATION, 1.0  # no real conflict
 
-    all_conflicts = conflict_result.subject_conflicts + conflict_result.object_conflicts
-    conflict_type = (
-        "SUBJECT_SIDE" if conflict_result.subject_conflicts else "OBJECT_SIDE"
+    # Merge Neo4j and intra-batch conflicts for routing
+    all_subject = (
+        conflict_result.subject_conflicts
+        + conflict_result.intra_batch_subject_conflicts
     )
-    if conflict_result.subject_conflicts and conflict_result.object_conflicts:
+    all_object = (
+        conflict_result.object_conflicts
+        + conflict_result.intra_batch_object_conflicts
+    )
+    all_conflicts = all_subject + all_object
+    conflict_type = "SUBJECT_SIDE" if all_subject else "OBJECT_SIDE"
+    if all_subject and all_object:
         conflict_type = "BOTH_SIDES"
 
     if model is not None:
@@ -443,8 +573,14 @@ async def detect_and_resolve(
     is_late_arrival: bool = False,
     t_event: datetime | None = None,
     edge_index: int = -1,
+    accepted_batch: list[TemporalRelationship] | None = None,
 ) -> ConflictResult:
     """Run bidirectional conflict detection and resolve conflicts.
+
+    Performs two-phase conflict detection:
+    1. **Neo4j conflicts**: queries already-persisted edges in the graph store.
+    2. **Intra-batch conflicts**: checks against other relationships extracted
+       in the same batch that have already been accepted.
 
     For OBJECT_EXCLUSIVE and BOTH_EXCLUSIVE relations, runs both
     subject-side and object-side queries before committing any edge.
@@ -457,6 +593,9 @@ async def detect_and_resolve(
         is_late_arrival: Whether this document is a late arrival.
         t_event: Event timestamp for late-arrival historical queries.
         edge_index: Index of the edge being processed (for display).
+        accepted_batch: Previously accepted relationships in the current batch.
+            Used for intra-batch conflict detection so that conflicts between
+            newly extracted relationships are caught before they reach Neo4j.
 
     Returns:
         ConflictResult with strategy and resolved conflicts.
@@ -551,10 +690,36 @@ async def detect_and_resolve(
     subject_conflicts = [_to_temporal_rel(r, False) for r in subject_conflict_records]
     object_conflicts = [_to_temporal_rel(r, True) for r in object_conflict_records]
 
+    # --- Intra-batch conflict detection ---
+    intra_subj: list[TemporalRelationship] = []
+    intra_obj: list[TemporalRelationship] = []
+    if accepted_batch:
+        intra_subj = find_intra_batch_subject_conflicts(
+            candidate, accepted_batch, t_event=query_time,
+        )
+        if run_object_query:
+            intra_obj = find_intra_batch_object_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
+
+        # Diagnostic output for intra-batch conflicts
+        if intra_subj or intra_obj:
+            print(f"{prefix}   Intra-batch S (subject-side): {len(intra_subj)} conflict(s)")
+            for i, rel in enumerate(intra_subj[:3]):
+                print(f"{prefix}     IB-S[{i}]: -> ({rel.target[:25]})  desc='{(rel.description or '')[:40]}'")
+            if run_object_query:
+                print(f"{prefix}   Intra-batch O (object-side):  {len(intra_obj)} conflict(s)")
+                for i, rel in enumerate(intra_obj[:3]):
+                    print(f"{prefix}     IB-O[{i}]: ({rel.source[:25]}) ->  desc='{(rel.description or '')[:40]}'")
+        else:
+            print(f"{prefix}   Intra-batch: no conflicts among {len(accepted_batch)} accepted batch edges")
+
     conflict_result = ConflictResult(
         candidate=candidate,
         subject_conflicts=subject_conflicts,
         object_conflicts=object_conflicts,
+        intra_batch_subject_conflicts=intra_subj,
+        intra_batch_object_conflicts=intra_obj,
     )
 
     if not conflict_result.has_conflicts:
@@ -585,30 +750,30 @@ async def detect_and_resolve(
     print(f"{prefix}   Decision: {strategy_symbols.get(strategy, strategy.value)}  confidence={confidence:.2f}")
 
     # --- Apply resolution actions ---
-    all_conflicts = subject_conflicts + object_conflicts
-    actions_applied = 0
+    # Phase 1: resolve against Neo4j-persisted edges
+    neo4j_conflicts = subject_conflicts + object_conflicts
+    neo4j_actions = 0
 
     if strategy == ResolutionStrategy.EVOLUTION:
-        for existing in all_conflicts:
+        for existing in neo4j_conflicts:
             if existing.id:
                 await apply_evolution(session, existing.id, candidate, t_now)
-                actions_applied += 1
-                e_quad = existing.temporal_quad
+                neo4j_actions += 1
                 print(f"{prefix}   Action: Closed edge '{existing.id[:12]}...' valid_end -> "
                       f"{candidate.temporal_quad.t_valid_start.strftime('%Y-%m-%d') if candidate.temporal_quad else '?'}")
 
     elif strategy == ResolutionStrategy.CORRECTION:
-        for existing in all_conflicts:
+        for existing in neo4j_conflicts:
             if existing.id:
                 await apply_correction(session, existing.id, t_now)
-                actions_applied += 1
+                neo4j_actions += 1
                 print(f"{prefix}   Action: Retracted edge '{existing.id[:12]}...' tx_end -> {t_now.strftime('%Y-%m-%d')}")
 
     elif strategy == ResolutionStrategy.CORROBORATION:
-        for existing in all_conflicts:
+        for existing in neo4j_conflicts:
             if existing.id:
                 await apply_corroboration(session, existing.id, candidate)
-                actions_applied += 1
+                neo4j_actions += 1
                 print(f"{prefix}   Action: Incremented support_count on '{existing.id[:12]}...'")
 
     elif strategy == ResolutionStrategy.DISAGREEMENT:
@@ -621,7 +786,60 @@ async def detect_and_resolve(
             candidate.target,
         )
 
-    if actions_applied > 0:
-        print(f"{prefix}   Applied {actions_applied} resolution action(s) in Neo4j")
+    if neo4j_actions > 0:
+        print(f"{prefix}   Applied {neo4j_actions} resolution action(s) in Neo4j")
+
+    # Phase 2: resolve against intra-batch edges (in-memory mutations)
+    intra_batch_conflicts = intra_subj + intra_obj
+    batch_actions = 0
+
+    if intra_batch_conflicts and strategy != ResolutionStrategy.DISAGREEMENT:
+        # Re-route specifically for intra-batch conflicts when Neo4j had none
+        if not neo4j_conflicts:
+            strategy, confidence = await route_conflict(
+                candidate=candidate,
+                conflict_result=ConflictResult(
+                    candidate=candidate,
+                    subject_conflicts=intra_subj,
+                    object_conflicts=intra_obj,
+                ),
+                config=config,
+                model=model,
+            )
+            conflict_result.strategy = strategy
+            conflict_result.confidence = confidence
+            strategy_symbols = {
+                ResolutionStrategy.EVOLUTION: "EVOLUTION",
+                ResolutionStrategy.CORRECTION: "CORRECTION",
+                ResolutionStrategy.CORROBORATION: "CORROBORATION",
+                ResolutionStrategy.DISAGREEMENT: "DISAGREEMENT",
+            }
+            print(f"{prefix}   Intra-batch decision: {strategy_symbols.get(strategy, strategy.value)}  "
+                  f"confidence={confidence:.2f}")
+
+        if strategy == ResolutionStrategy.EVOLUTION:
+            for existing in intra_batch_conflicts:
+                apply_intra_batch_evolution(existing, candidate, t_now)
+                batch_actions += 1
+                print(f"{prefix}   Batch action: Closed batch edge '{existing.id[:12]}...' valid_end (in-memory)")
+
+        elif strategy == ResolutionStrategy.CORRECTION:
+            for existing in intra_batch_conflicts:
+                apply_intra_batch_correction(existing, t_now)
+                batch_actions += 1
+                print(f"{prefix}   Batch action: Retracted batch edge '{existing.id[:12]}...' (in-memory)")
+
+        elif strategy == ResolutionStrategy.CORROBORATION:
+            for existing in intra_batch_conflicts:
+                apply_intra_batch_corroboration(existing, candidate)
+                batch_actions += 1
+                print(f"{prefix}   Batch action: Incremented support on batch edge '{existing.id[:12]}...'")
+
+        elif strategy == ResolutionStrategy.DISAGREEMENT:
+            candidate.status = "disputed"
+            print(f"{prefix}   Batch action: Marked candidate as DISPUTED (intra-batch conflict)")
+
+    if batch_actions > 0:
+        print(f"{prefix}   Applied {batch_actions} intra-batch resolution action(s) in-memory")
 
     return conflict_result

@@ -329,9 +329,34 @@ class ConflictResult:
     candidate: TemporalRelationship
     subject_conflicts: list[TemporalRelationship] = field(default_factory=list)
     object_conflicts: list[TemporalRelationship] = field(default_factory=list)
+    # Intra-batch conflicts (within the same extraction run)
+    intra_batch_subject_conflicts: list[TemporalRelationship] = field(
+        default_factory=list
+    )
+    intra_batch_object_conflicts: list[TemporalRelationship] = field(
+        default_factory=list
+    )
     strategy: ResolutionStrategy | None = None
     confidence: float = 0.0
 
     @property
     def has_conflicts(self) -> bool:
+        return (
+            len(self.subject_conflicts) > 0
+            or len(self.object_conflicts) > 0
+            or len(self.intra_batch_subject_conflicts) > 0
+            or len(self.intra_batch_object_conflicts) > 0
+        )
+
+    @property
+    def has_neo4j_conflicts(self) -> bool:
+        """Conflicts against already-persisted edges."""
         return len(self.subject_conflicts) > 0 or len(self.object_conflicts) > 0
+
+    @property
+    def has_intra_batch_conflicts(self) -> bool:
+        """Conflicts against other edges in the same extraction batch."""
+        return (
+            len(self.intra_batch_subject_conflicts) > 0
+            or len(self.intra_batch_object_conflicts) > 0
+        )

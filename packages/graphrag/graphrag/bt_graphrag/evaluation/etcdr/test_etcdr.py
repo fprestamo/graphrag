@@ -146,9 +146,12 @@ def _print_result(result, label: str = "") -> None:
     print(f"  {tag}has_conflicts : {result.has_conflicts}")
     print(f"  {tag}strategy     : {strategy_name}")
     print(f"  {tag}confidence   : {result.confidence:.2f}")
-    n_conflicts = len(result.subject_conflicts) + len(result.object_conflicts)
-    if n_conflicts:
-        print(f"  {tag}conflicts    : {n_conflicts} edge(s) ({len(result.subject_conflicts)} subject, {len(result.object_conflicts)} object)")
+    n_neo4j = len(result.subject_conflicts) + len(result.object_conflicts)
+    n_batch = len(result.intra_batch_subject_conflicts) + len(result.intra_batch_object_conflicts)
+    if n_neo4j:
+        print(f"  {tag}neo4j confl. : {n_neo4j} edge(s) ({len(result.subject_conflicts)} subject, {len(result.object_conflicts)} object)")
+    if n_batch:
+        print(f"  {tag}batch confl. : {n_batch} edge(s) ({len(result.intra_batch_subject_conflicts)} subject, {len(result.intra_batch_object_conflicts)} object)")
     if result.candidate and hasattr(result.candidate, "status"):
         print(f"  {tag}cand. status : {result.candidate.status}")
 
@@ -394,8 +397,45 @@ async def run_late_arrival(session, model) -> None:
     print(f"  → {'✓ PASS' if result.strategy is not None else '✗ FAIL'}: strategy produced for late arrival")
 
 
+async def run_intra_batch_conflict(session, model) -> None:
+    _sep("SCENARIO 9 — Intra-batch conflict (two batch edges contradict each other)")
+    # Two candidates in the same batch claim different CEOs for Tesla at
+    # overlapping times. The first should be accepted, the second should
+    # detect an intra-batch conflict and resolve it.
+    candidate_a = _rel(
+        "Elon Musk", "IS_CEO_OF", "Tesla",
+        valid_start=_dt(2025),
+        confidence=0.9,
+        description="Elon Musk appointed CEO of Tesla again in 2025",
+    )
+    candidate_b = _rel(
+        "Elon Musk", "IS_CEO_OF", "OpenAI",
+        valid_start=_dt(2025),
+        confidence=0.7,
+        description="Elon Musk appointed CEO of OpenAI in 2025",
+    )
+    # Simulate batch: candidate_a is already accepted
+    accepted_batch = [candidate_a]
+
+    result = await detect_and_resolve(
+        candidate=candidate_b, session=session, config=CONFIG, model=model,
+        edge_index=8, accepted_batch=accepted_batch,
+    )
+    _print_result(result, label="intra-batch")
+    ok = result.has_intra_batch_conflicts
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected intra-batch conflict detected")
+    print(f"  → strategy={result.strategy.value if result.strategy else 'None'}")
+    print(f"  → intra_batch_subject_conflicts={len(result.intra_batch_subject_conflicts)}, "
+          f"intra_batch_object_conflicts={len(result.intra_batch_object_conflicts)}")
+    # Verify the in-memory mutation on candidate_a
+    a_quad = candidate_a.temporal_quad
+    a_still_active = a_quad and a_quad.t_valid_end >= INFINITY and a_quad.t_tx_end >= INFINITY
+    print(f"  → candidate_a still fully active: {a_still_active}")
+    print(f"  → candidate_a status: {candidate_a.status}")
+
+
 async def run_db_invariants(session) -> None:
-    _sep("SCENARIO 9 — Database invariants (SCD2, entity integrity)")
+    _sep("SCENARIO 10 — Database invariants (SCD2, entity integrity)")
 
     # All entities present
     result = await session.run("MATCH (n:Entity) RETURN n.title AS title")
@@ -464,6 +504,7 @@ async def main() -> None:
             await run_disagreement_explicit(session, model)
             await run_heuristic_no_model(session)
             await run_late_arrival(session, model)
+            await run_intra_batch_conflict(session, model)
             await run_db_invariants(session)
 
     except Exception as exc:

@@ -61,28 +61,43 @@ class BTGraphRAGConfig:
     cger_enabled: bool = True
     """Enable Cross-Graph Entity Resolution."""
 
+    cger_scorer: str = "citation_and_description"
+    """Scorer to use for entity comparison.
+    Options: 'embedding_only', 'citation_and_description', 'composite'.
+    Default 'citation_and_description' balances F1 (0.87) with low LLM calls (8%)."""
+
+    cger_cosine_discard_threshold: float = 0.3
+    """Description cosine similarity below this value discards the pair
+    immediately (composite scorer pre-filter). Set to 0.0 to disable."""
+
     cger_embedding_weight: float = 0.3
-    """Weight w1 for cosine embedding similarity."""
+    """Weight w1 for cosine embedding similarity (composite scorer)."""
 
     cger_bm25_weight: float = 0.25
-    """Weight w2 for BM25 name matching."""
+    """Weight w2 for BM25 name matching (composite scorer)."""
 
     cger_jaccard_weight: float = 0.15
-    """Weight w3 for Jaccard character-level name similarity."""
+    """Weight w3 for Jaccard character-level name similarity (composite scorer)."""
 
     cger_temporal_overlap_weight: float = 0.15
-    """Weight w4 for temporal overlap score."""
+    """Weight w4 for temporal overlap score (composite scorer)."""
 
     cger_relation_context_weight: float = 0.15
-    """Weight w5 for relation-context embedding similarity."""
+    """Weight w5 for relation-context embedding similarity (composite scorer)."""
 
-    cger_merge_threshold: float = 0.85
+    cger_desc_weight: float = 0.4
+    """Weight for description embedding similarity (citation_and_description scorer)."""
+
+    cger_cite_weight: float = 0.6
+    """Weight for citation/text-unit embedding similarity (citation_and_description scorer)."""
+
+    cger_merge_threshold: float = 0.65
     """Score above which entities are automatically merged."""
 
-    cger_llm_threshold_low: float = 0.55
+    cger_llm_threshold_low: float = 0.625
     """Score below which entities are kept separate."""
 
-    cger_llm_threshold_high: float = 0.85
+    cger_llm_threshold_high: float = 0.65
     """Score above which entities are automatically merged (before LLM check)."""
 
     cger_candidate_top_k: int = 20
@@ -135,22 +150,77 @@ class BTGraphRAGConfig:
 
     # --- Cardinality Ontology (default seed) ---
     default_cardinality_map: dict[str, str] = field(default_factory=lambda: {
+        # BOTH_EXCLUSIVE — one-to-one on both sides at any point in time
         "IS_CEO_OF": "BOTH_EXCLUSIVE",
         "IS_PRESIDENT_OF": "BOTH_EXCLUSIVE",
         "IS_CHAIRMAN_OF": "BOTH_EXCLUSIVE",
-        "IS_CAPITAL_OF": "OBJECT_EXCLUSIVE",
-        "HAS_CAPITAL": "SUBJECT_EXCLUSIVE",
-        "IS_NATIONALITY_OF": "SUBJECT_EXCLUSIVE",
+        "IS_CFO_OF": "BOTH_EXCLUSIVE",
+        "IS_CTO_OF": "BOTH_EXCLUSIVE",
+        "IS_COO_OF": "BOTH_EXCLUSIVE",
         "IS_MARRIED_TO": "BOTH_EXCLUSIVE",
         "IS_SPOUSE_OF": "BOTH_EXCLUSIVE",
+        # SUBJECT_EXCLUSIVE — one subject holds one active instance
+        "IS_CAPITAL_OF": "SUBJECT_EXCLUSIVE",
+        "HAS_CAPITAL": "SUBJECT_EXCLUSIVE",
+        "IS_NATIONALITY_OF": "SUBJECT_EXCLUSIVE",
+        "HEADQUARTERED_IN": "SUBJECT_EXCLUSIVE",
         "IS_HEADQUARTERED_IN": "SUBJECT_EXCLUSIVE",
+        "BASED_IN": "SUBJECT_EXCLUSIVE",
         "HAS_POPULATION": "SUBJECT_EXCLUSIVE",
+        "RELOCATED_TO": "SUBJECT_EXCLUSIVE",
+        # OBJECT_EXCLUSIVE — one object holds one active subject
+        "IS_SUCCESSOR_OF": "OBJECT_EXCLUSIVE",
+        "SUCCEEDED_BY": "OBJECT_EXCLUSIVE",
+        # NON_EXCLUSIVE — multiple instances can coexist
+        "FOUNDED": "NON_EXCLUSIVE",
+        "CO_FOUNDED": "NON_EXCLUSIVE",
+        "FOUNDED_BY": "NON_EXCLUSIVE",
+        "ACQUIRED": "NON_EXCLUSIVE",
+        "MERGED_WITH": "NON_EXCLUSIVE",
+        "INVESTED_IN": "NON_EXCLUSIVE",
+        "PARTNERED_WITH": "NON_EXCLUSIVE",
+        "SUBSIDIARY_OF": "NON_EXCLUSIVE",
+        "PARENT_OF": "NON_EXCLUSIVE",
+        "DEVELOPED": "NON_EXCLUSIVE",
+        "RELEASED": "NON_EXCLUSIVE",
+        "PRODUCES": "NON_EXCLUSIVE",
+        "MANUFACTURES": "NON_EXCLUSIVE",
+        "LAUNCHED": "NON_EXCLUSIVE",
+        "ENACTED": "NON_EXCLUSIVE",
+        "SIGNED": "NON_EXCLUSIVE",
+        "REGULATED_BY": "NON_EXCLUSIVE",
+        "ENFORCED_BY": "NON_EXCLUSIVE",
+        "PROPOSED": "NON_EXCLUSIVE",
+        "EMPLOYED_AT": "NON_EXCLUSIVE",
+        "WORKS_FOR": "NON_EXCLUSIVE",
+        "SERVES_ON": "NON_EXCLUSIVE",
+        "MEMBER_OF": "NON_EXCLUSIVE",
+        "APPOINTED_TO": "NON_EXCLUSIVE",
+        "RESIGNED_FROM": "NON_EXCLUSIVE",
         "WORKED_AT": "NON_EXCLUSIVE",
         "COLLABORATED_WITH": "NON_EXCLUSIVE",
+        "COMPETED_WITH": "NON_EXCLUSIVE",
         "APPEARED_IN": "NON_EXCLUSIVE",
         "CO_AUTHORED": "NON_EXCLUSIVE",
         "PARTICIPATED_IN": "NON_EXCLUSIVE",
-        "INVESTED_IN": "NON_EXCLUSIVE",
+        "HOSTED": "NON_EXCLUSIVE",
+        "ORGANIZED": "NON_EXCLUSIVE",
+        "ATTENDED": "NON_EXCLUSIVE",
+        "DECLARED": "NON_EXCLUSIVE",
+        "OPERATES_IN": "NON_EXCLUSIVE",
+        "LOCATED_IN": "NON_EXCLUSIVE",
+        "AFFILIATED_WITH": "NON_EXCLUSIVE",
+        "SPONSORED": "NON_EXCLUSIVE",
+        "SUPPORTED": "NON_EXCLUSIVE",
+        "GOVERNS": "NON_EXCLUSIVE",
+        "REPRESENTS": "NON_EXCLUSIVE",
+        "CITIZEN_OF": "NON_EXCLUSIVE",
+        "SANCTIONED": "NON_EXCLUSIVE",
+        "ALLIED_WITH": "NON_EXCLUSIVE",
+        "LED": "NON_EXCLUSIVE",
+        "LEADS": "NON_EXCLUSIVE",
+        "IS_DIRECTOR_OF": "NON_EXCLUSIVE",
+        "SPUN_OFF": "NON_EXCLUSIVE",
     })
     """Seed cardinality map. LLM classification extends this at runtime."""
 

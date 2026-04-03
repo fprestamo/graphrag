@@ -400,34 +400,206 @@ async def run_scenario_7_score_breakdown() -> None:
     _sep("SCENARIO 7 — Score breakdown: per-signal inspection")
 
     pairs = [
-        ("Elon Musk",  "IS_CEO_OF", _dt(1971), "Elon Musk",       "IS_CEO_OF", _dt(1971), "Exact duplicate"),
-        ("Tesla Inc",  "HAS_CEO",   _dt(2003), "Tesla, Inc.",      "HAS_CEO",   _dt(2003), "Minor punctuation diff"),
-        ("SpaceX",     "OPERATES",  _dt(2002), "Space Exploration","OPERATES",  _dt(2002), "Partial token match"),
-        ("OpenAI",     "DEVELOPS",  _dt(2015), "Microsoft",        "PRODUCES",  _dt(1975), "Unrelated entities"),
+        ("Elon Musk",  "person", "IS_CEO_OF", _dt(1971), "Elon Musk",       "person", "IS_CEO_OF", _dt(1971), "Exact duplicate"),
+        ("Tesla Inc",  "organization", "HAS_CEO",   _dt(2003), "Tesla, Inc.",      "organization", "HAS_CEO",   _dt(2003), "Minor punctuation diff"),
+        ("SpaceX",     "organization", "OPERATES",  _dt(2002), "Space Exploration","organization", "OPERATES",  _dt(2002), "Partial token match"),
+        ("OpenAI",     "organization", "DEVELOPS",  _dt(2015), "Microsoft",        "organization", "PRODUCES",  _dt(1975), "Unrelated orgs"),
+        # Critical: person vs organization should NEVER merge
+        ("Jeff Bezos", "person", "FOUNDED", _dt(1964), "Amazon",           "organization", "HAS_CEO", _dt(1994), "Person vs org (TYPE GUARD)"),
+        ("Elon Musk",  "person", "IS_CEO_OF", _dt(1971), "Tesla",           "organization", "HAS_CEO", _dt(2003), "Person vs org (TYPE GUARD)"),
     ]
 
     print(f"  {'Entity A':25s}  {'Entity B':25s}  {'BM25':>6}  {'Jacc':>6}  {'Temp':>6}  {'Composite':>9}  Label")
     print(f"  {'-'*25}  {'-'*25}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*9}  --------")
 
-    for (title_a, rel_a, start_a, title_b, rel_b, start_b, label) in pairs:
+    for (title_a, type_a, rel_a, start_a, title_b, type_b, rel_b, start_b, label) in pairs:
         e_a = {
-            "title": title_a, "type": "person", "description": f"Entity {title_a}",
+            "title": title_a, "type": type_a, "description": f"Entity {title_a}",
             "active_start": start_a.isoformat(), "active_end": _dt(9999).isoformat(),
             "description_embedding": None, "relation_types": [rel_a],
         }
         e_b = {
-            "title": title_b, "type": "person", "description": f"Entity {title_b}",
+            "title": title_b, "type": type_b, "description": f"Entity {title_b}",
             "active_start": start_b.isoformat(), "active_end": _dt(9999).isoformat(),
             "description_embedding": None, "relation_types": [rel_b],
         }
         score, breakdown = compute_entity_composite_score(e_a, e_b, CONFIG)
+        type_block = " [TYPE BLOCKED]" if breakdown.get("type_mismatch") else ""
         print(
             f"  {title_a:25s}  {title_b:25s}  "
             f"{breakdown.get('bm25_name', 0):6.3f}  "
             f"{breakdown.get('jaccard_name', 0):6.3f}  "
             f"{breakdown.get('temporal_overlap', 0):6.3f}  "
-            f"{score:9.4f}  {label}"
+            f"{score:9.4f}  {label}{type_block}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 8 — Jeff Bezos ≠ Amazon (person vs org type guard)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_scenario_8_person_vs_org(model) -> None:
+    _sep("SCENARIO 8 — Type guard: Jeff Bezos ≠ Amazon (person vs org)")
+
+    existing_entities = _df([
+        _entity_row("Amazon", "organization",
+                    "E-commerce and cloud computing company founded by Jeff Bezos",
+                    _dt(1994), relation_types=["HAS_CEO", "OPERATES", "SELLS"]),
+    ])
+
+    new_entities = _df([
+        _entity_row("Jeff Bezos", "person",
+                    "Founder of Amazon and Blue Origin",
+                    _dt(1964), relation_types=["FOUNDED", "IS_CEO_OF"]),
+    ])
+
+    print(f"  Existing : 'Amazon' (organization)")
+    print(f"  Candidate: 'Jeff Bezos' (person)")
+    print(f"  Expected : NEVER merge (type guard blocks person vs org)\n")
+
+    resolved, merge_map, _ = await resolve_entities(
+        new_entities=new_entities,
+        existing_entities=existing_entities,
+        config=CONFIG,
+        model=model,
+        entity_scorer=compute_entity_composite_score,
+    )
+
+    kept = "Jeff Bezos" not in merge_map
+    print(f"\n  Resolved entities: {len(resolved)}")
+    _print_merge_map(merge_map)
+    print(f"\n  → {'✓' if kept else '✗ FAIL!'} 'Jeff Bezos' kept separate from 'Amazon': {kept}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 9 — Andy Jassy ≠ Jeff Bezos (different people, both CEOs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_scenario_9_different_ceos(model) -> None:
+    _sep("SCENARIO 9 — Different people: Andy Jassy ≠ Jeff Bezos")
+
+    existing_entities = _df([
+        _entity_row("Jeff Bezos", "person",
+                    "Founder of Amazon, executive chairman since 2021",
+                    _dt(1964), relation_types=["FOUNDED", "IS_CEO_OF", "IS_CHAIRMAN_OF"]),
+    ])
+
+    new_entities = _df([
+        _entity_row("Andy Jassy", "person",
+                    "CEO of Amazon since July 2021, previously led AWS",
+                    _dt(1968), relation_types=["IS_CEO_OF", "LED"]),
+    ])
+
+    print(f"  Existing : 'Jeff Bezos' (person)")
+    print(f"  Candidate: 'Andy Jassy' (person)")
+    print(f"  Expected : kept separate (different people despite shared relations)\n")
+
+    resolved, merge_map, _ = await resolve_entities(
+        new_entities=new_entities,
+        existing_entities=existing_entities,
+        config=CONFIG,
+        model=model,
+        entity_scorer=compute_entity_composite_score,
+    )
+
+    kept = "Andy Jassy" not in merge_map
+    print(f"\n  Resolved entities: {len(resolved)}")
+    _print_merge_map(merge_map)
+    print(f"\n  → {'✓' if kept else '✗ FAIL!'} 'Andy Jassy' kept separate from 'Jeff Bezos': {kept}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 10 — Satya Nadella ≠ Microsoft (person vs org)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_scenario_10_ceo_vs_company(model) -> None:
+    _sep("SCENARIO 10 — Type guard: Satya Nadella ≠ Microsoft")
+
+    existing_entities = _df([
+        _entity_row("Microsoft", "organization",
+                    "Technology company producing Windows, Office, and Azure",
+                    _dt(1975), relation_types=["PRODUCES", "HAS_CEO", "DEVELOPS"]),
+        _entity_row("Satya Nadella", "person",
+                    "CEO of Microsoft since 2014",
+                    _dt(1967), relation_types=["IS_CEO_OF"]),
+    ])
+
+    new_entities = _df([
+        _entity_row("Satya Nadella", "person",
+                    "Technology executive, CEO of Microsoft",
+                    _dt(1967), relation_types=["IS_CEO_OF", "LEADS"]),
+        _entity_row("Microsoft Corporation", "organization",
+                    "American multinational technology corporation",
+                    _dt(1975), relation_types=["PRODUCES", "DEVELOPS"]),
+    ])
+
+    print(f"  Expected: 'Satya Nadella' merges with existing 'Satya Nadella' (same person)")
+    print(f"  Expected: 'Microsoft Corporation' merges with 'Microsoft' (same org)")
+    print(f"  Expected: NEVER merge a person into an org\n")
+
+    resolved, merge_map, _ = await resolve_entities(
+        new_entities=new_entities,
+        existing_entities=existing_entities,
+        config=CONFIG,
+        model=model,
+        entity_scorer=compute_entity_composite_score,
+    )
+
+    print(f"\n  Resolved entities: {len(resolved)}")
+    _print_merge_map(merge_map)
+
+    nadella_ok = merge_map.get("Satya Nadella") == "Satya Nadella" or "Satya Nadella" not in merge_map
+    msft_ok = merge_map.get("Microsoft Corporation") == "Microsoft"
+
+    # Verify no person→org cross-merge exists
+    cross_merge = False
+    for src, dst in merge_map.items():
+        src_row = new_entities[new_entities["title"] == src]
+        # Find dst in existing
+        dst_row = existing_entities[existing_entities["title"] == dst]
+        if not src_row.empty and not dst_row.empty:
+            src_type = str(src_row.iloc[0].get("type", ""))
+            dst_type = str(dst_row.iloc[0].get("type", ""))
+            if src_type != dst_type:
+                cross_merge = True
+                print(f"  ✗ CROSS-TYPE MERGE: '{src}' ({src_type}) → '{dst}' ({dst_type})")
+
+    print(f"\n  → {'✓' if not cross_merge else '✗ FAIL!'} No cross-type merges: {not cross_merge}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scenario 11 — Elon Musk ≠ OpenAI (related but different types)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_scenario_11_founder_vs_company(model) -> None:
+    _sep("SCENARIO 11 — Type guard: Elon Musk ≠ OpenAI")
+
+    existing_entities = _df([
+        _entity_row("OpenAI", "organization",
+                    "AI safety research lab co-founded by Elon Musk and Sam Altman",
+                    _dt(2015), relation_types=["FOUNDED_BY", "DEVELOPS"]),
+    ])
+
+    new_entities = _df([
+        _entity_row("Elon Musk", "person",
+                    "Technology entrepreneur, co-founded OpenAI",
+                    _dt(1971), relation_types=["CO_FOUNDED", "IS_CEO_OF"]),
+    ])
+
+    print(f"  Existing : 'OpenAI' (organization)")
+    print(f"  Candidate: 'Elon Musk' (person)")
+    print(f"  Context  : Musk co-founded OpenAI — highly related but DIFFERENT entities\n")
+
+    resolved, merge_map, _ = await resolve_entities(
+        new_entities=new_entities,
+        existing_entities=existing_entities,
+        config=CONFIG,
+        model=model,
+        entity_scorer=compute_entity_composite_score,
+    )
+
+    kept = "Elon Musk" not in merge_map
+    print(f"\n  → {'✓' if kept else '✗ FAIL!'} 'Elon Musk' kept separate from 'OpenAI': {kept}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,6 +628,10 @@ async def main() -> None:
         await run_scenario_5_below_threshold(model)
         await run_scenario_6_apply_to_relationships()
         await run_scenario_7_score_breakdown()
+        await run_scenario_8_person_vs_org(model)
+        await run_scenario_9_different_ceos(model)
+        await run_scenario_10_ceo_vs_company(model)
+        await run_scenario_11_founder_vs_company(model)
     except Exception as exc:
         print(f"\n[ERROR] {exc}", file=sys.stderr)
         raise

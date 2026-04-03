@@ -278,7 +278,10 @@ async def run_bt_pipeline(
     # -----------------------------------------------------------------------
     # Stage 3: ETCDR (Conflict Detection)
     # -----------------------------------------------------------------------
-    if config.etcdr_enabled and neo4j_driver is not None and neo4j_has_data:
+    # Run ETCDR even on first iteration: while Neo4j has no pre-existing
+    # edges, intra-batch conflict detection still catches contradictions
+    # between relationships extracted in the same run.
+    if config.etcdr_enabled and neo4j_driver is not None:
         relationships_df = await _run_etcdr(
             relationships_df=relationships_df,
             documents_df=documents_df,
@@ -582,6 +585,7 @@ async def _run_cger(
                 "existing_entity": ex_title,
                 "score": round(score, 4),
                 "cosine_emb": round(breakdown.get("cosine_emb", 0), 4),
+                "discarded_by_cosine": breakdown.get("discarded_by_cosine", False),
                 "bm25_name": round(breakdown.get("bm25_name", 0), 4),
                 "jaccard_name": round(breakdown.get("jaccard_name", 0), 4),
                 "temporal_overlap": round(breakdown.get("temporal_overlap", 0), 4),
@@ -609,12 +613,39 @@ async def _run_cger(
             "top_comparisons": all_comparisons[:10],
         })
 
+    # Select entity scorer based on config
+    scorer_name = getattr(config, "cger_scorer", "citation_and_description")
+    if scorer_name == "composite":
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            compute_entity_composite_score,
+        )
+        entity_scorer = compute_entity_composite_score
+    elif scorer_name == "citation_and_description":
+        from functools import partial
+
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            citation_and_description_entity_scorer,
+        )
+        w_desc = getattr(config, "cger_desc_weight", 0.4)
+        w_cite = getattr(config, "cger_cite_weight", 0.6)
+        entity_scorer = partial(
+            citation_and_description_entity_scorer, w_desc=w_desc, w_cite=w_cite
+        )
+    else:
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            embedding_only_entity_scorer,
+        )
+        entity_scorer = embedding_only_entity_scorer
+
+    print(f"  CGER scorer: {scorer_name}")
+
     # resolve_entities handles Phase A (new vs existing) and Phase B (intra-batch)
     resolved_entities, merge_map, phase_b_log = await resolve_entities(
         new_entities=entities_df,
         existing_entities=existing_entities_df,
         config=config,
         model=model,
+        entity_scorer=entity_scorer,
     )
 
     # Apply full merge map to relationships
@@ -1018,7 +1049,12 @@ async def _run_etcdr(
     print(f"    Late arrival threshold: {config.late_arrival_threshold_days} days")
     print(f"    Confidence threshold:   {config.etcdr_confidence_threshold}")
     print(f"    LLM available:          {model is not None}")
+    print(f"    Intra-batch detection:  ENABLED")
     print()
+
+    # Accepted batch tracks relationships that passed ETCDR so far, enabling
+    # intra-batch conflict detection for subsequent candidates.
+    accepted_batch: list[TemporalRelationship] = []
 
     async with driver.session(database=config.neo4j_database) as session:
         for edge_num, (idx, row) in enumerate(relationships_df.iterrows()):
@@ -1066,7 +1102,7 @@ async def _run_etcdr(
             card_val = config.get_cardinality(rel_type)
             cardinality_dist[card_val] = cardinality_dist.get(card_val, 0) + 1
 
-            # Run bidirectional conflict detection
+            # Run bidirectional conflict detection (Neo4j + intra-batch)
             conflict_result = await detect_and_resolve(
                 candidate=candidate,
                 session=session,
@@ -1075,6 +1111,7 @@ async def _run_etcdr(
                 is_late_arrival=batch_is_late,
                 t_event=batch_t_event,
                 edge_index=edge_num,
+                accepted_batch=accepted_batch,
             )
 
             statuses.append(conflict_result.candidate.status)
@@ -1082,6 +1119,10 @@ async def _run_etcdr(
             if conflict_result.strategy:
                 strategies_used.append(strategy_val)
             confidence_values.append(conflict_result.confidence)
+
+            # Track accepted (non-retracted) candidates for intra-batch detection
+            if candidate.status != "retracted":
+                accepted_batch.append(candidate)
 
             # Build per-edge debug record
             etcdr_debug_log.append({
@@ -1096,6 +1137,8 @@ async def _run_etcdr(
                 "is_late_arrival": batch_is_late,
                 "subject_conflicts_count": len(conflict_result.subject_conflicts),
                 "object_conflicts_count": len(conflict_result.object_conflicts),
+                "intra_batch_subject_conflicts_count": len(conflict_result.intra_batch_subject_conflicts),
+                "intra_batch_object_conflicts_count": len(conflict_result.intra_batch_object_conflicts),
                 "has_conflicts": conflict_result.has_conflicts,
                 "strategy": strategy_val,
                 "decision_confidence": conflict_result.confidence,
@@ -1120,6 +1163,26 @@ async def _run_etcdr(
                     }
                     for oc in conflict_result.object_conflicts
                 ],
+                "intra_batch_subject_conflicts": [
+                    {
+                        "id": isc.id,
+                        "source": isc.source,
+                        "target": isc.target,
+                        "relation_type": isc.relation_type,
+                        "description": isc.description,
+                    }
+                    for isc in conflict_result.intra_batch_subject_conflicts
+                ],
+                "intra_batch_object_conflicts": [
+                    {
+                        "id": ioc.id,
+                        "source": ioc.source,
+                        "target": ioc.target,
+                        "relation_type": ioc.relation_type,
+                        "description": ioc.description,
+                    }
+                    for ioc in conflict_result.intra_batch_object_conflicts
+                ],
             })
 
             # Print separator between edges (for readability)
@@ -1142,6 +1205,13 @@ async def _run_etcdr(
     print(f"    Total edges processed:  {len(relationships_df)}")
     print(f"    Late arrival batch:     {batch_is_late}")
 
+    # Count intra-batch conflicts
+    total_intra_batch = sum(
+        1 for e in etcdr_debug_log
+        if e.get("intra_batch_subject_conflicts_count", 0) > 0
+        or e.get("intra_batch_object_conflicts_count", 0) > 0
+    )
+
     print(f"\n    Edge Status Distribution:")
     for st, cnt in status_counts.most_common():
         bar = "#" * min(cnt, 40)
@@ -1151,6 +1221,9 @@ async def _run_etcdr(
     for st, cnt in strategy_counts.most_common():
         bar = "#" * min(cnt, 40)
         print(f"      {st:15s}: {cnt:5d}  {bar}")
+
+    print(f"\n    Intra-batch conflicts:    {total_intra_batch} edge(s) had within-batch conflicts")
+    print(f"    Accepted batch size:      {len(accepted_batch)} edge(s) tracked")
 
     print(f"\n    Cardinality Distribution:")
     for card, cnt in sorted(cardinality_dist.items()):
@@ -1181,8 +1254,8 @@ async def _run_etcdr(
         print(f"    ETCDR CONFLICT RESOLUTION DETAIL TABLE")
         print(f"    {'─' * 130}")
         print(f"    {'#':>4}  {'SOURCE':20s}  {'RELATION':22s}  {'TARGET':20s}  "
-              f"{'STRATEGY':15s}  {'CONF':5s}  {'S_CNF':5s}  {'O_CNF':5s}  {'STATUS':10s}  {'CARDINALITY':18s}")
-        print(f"    {'─' * 130}")
+              f"{'STRATEGY':15s}  {'CONF':5s}  {'S_CNF':5s}  {'O_CNF':5s}  {'IB_S':5s}  {'IB_O':5s}  {'STATUS':10s}  {'CARDINALITY':18s}")
+        print(f"    {'─' * 150}")
         for entry in etcdr_debug_log:
             print(f"    {entry['edge_index']:4d}  "
                   f"{str(entry['source'])[:20]:20s}  "
@@ -1192,13 +1265,32 @@ async def _run_etcdr(
                   f"{entry['decision_confidence']:.2f}   "
                   f"{entry['subject_conflicts_count']:5d}  "
                   f"{entry['object_conflicts_count']:5d}  "
+                  f"{entry.get('intra_batch_subject_conflicts_count', 0):5d}  "
+                  f"{entry.get('intra_batch_object_conflicts_count', 0):5d}  "
                   f"{str(entry['status'])[:10]:10s}  "
                   f"{entry['cardinality']:18s}")
-        print(f"    {'─' * 130}")
+        print(f"    {'─' * 150}")
 
     # Save ETCDR debug log to file
     debug_dir = _ensure_debug_dir(config)
     _save_debug_json(debug_dir, "stage3_etcdr_conflict_log.json", etcdr_debug_log)
+
+    # Save dedicated intra-batch conflict summary
+    intra_batch_entries = [
+        entry for entry in etcdr_debug_log
+        if entry.get("intra_batch_subject_conflicts_count", 0) > 0
+        or entry.get("intra_batch_object_conflicts_count", 0) > 0
+    ]
+    _save_debug_json(
+        debug_dir,
+        "stage3_etcdr_intra_batch_log.json",
+        {
+            "total_edges_processed": len(etcdr_debug_log),
+            "edges_with_intra_batch_conflicts": len(intra_batch_entries),
+            "accepted_batch_size": len(accepted_batch),
+            "entries": intra_batch_entries,
+        },
+    )
 
     return relationships_df
 

@@ -21,7 +21,7 @@ Given a text document that is potentially relevant to this activity, a list of e
 
 -Steps-
 1. Identify all entities. For each identified entity, extract the following information:
-- entity_name: Name of the entity, capitalized
+- entity_name: Name of the entity, capitalized. Use the most common, recognizable name (e.g., "JEFF BEZOS" not "JEFFREY PRESTON BEZOS").
 - entity_type: One of the following types: [{entity_types}]
 - entity_description: Comprehensive description of the entity's attributes and activities
 
@@ -30,12 +30,43 @@ Format each entity as ("entity"<|><entity_name><|><entity_type><|><entity_descri
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
 For each pair of related entities, extract the following information:
 - source_entity: name of the source entity, as identified in step 1
-- target_entity: name of the target entity, as identified in step 1
+- target_entity: name of the target entity, as identified in step 1. MUST be a DIFFERENT entity from source_entity — never create a relationship where source and target are the same entity.
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
-- relation_type: A short, canonical predicate label in UPPER_SNAKE_CASE that describes the nature of the relationship between the source and target entities. This MUST be a generic, reusable predicate — it must NOT contain entity names, proper nouns, or instance-specific details. Think of it as the edge label in a knowledge graph ontology. Good examples: IS_CEO_OF, ACQUIRED, HEADQUARTERED_IN, FOUNDED, INVESTED_IN, EMPLOYED_AT, COLLABORATED_WITH, REPORTED_ON. Bad examples: JOHN_SMITH_IS_CEO (contains entity name), TECHCORP_ACQUIRED_DATASOFT (contains entity names), SERVES_AS_CEO_OF_TECHCORP (contains entity name).
+- relation_type: A short, canonical predicate label in UPPER_SNAKE_CASE. This MUST be a generic, reusable predicate from the ontology below — it must NEVER contain entity names, proper nouns, dates, or instance-specific details.
+
+RELATION TYPE RULES (CRITICAL):
+  - Use ONLY short, reusable predicates. Think of it as a knowledge graph edge label.
+  - NEVER embed entity names, descriptions, or sentence fragments into the relation type.
+  - ALWAYS choose from the canonical list below when possible. Only create a new type if none fit.
+  - The relation_type describes the KIND of relationship, not the specific instance.
+
+  Canonical relation types (prefer these):
+    Leadership:     IS_CEO_OF, IS_PRESIDENT_OF, IS_CHAIRMAN_OF, IS_CFO_OF, IS_CTO_OF, IS_COO_OF, IS_DIRECTOR_OF, LEADS, APPOINTED_TO
+    Employment:     EMPLOYED_AT, WORKS_FOR, SERVES_ON, MEMBER_OF, RESIGNED_FROM, SUCCEEDED_BY
+    Founding:       FOUNDED, CO_FOUNDED, FOUNDED_BY
+    Corporate:      ACQUIRED, MERGED_WITH, INVESTED_IN, PARTNERED_WITH, SUBSIDIARY_OF, PARENT_OF, SPUN_OFF
+    Location:       HEADQUARTERED_IN, LOCATED_IN, OPERATES_IN, RELOCATED_TO, BASED_IN
+    Product:        DEVELOPED, RELEASED, PRODUCES, MANUFACTURES, LAUNCHED
+    Governance:     ENACTED, REGULATED_BY, SIGNED, RATIFIED, PROPOSED, VETOED, ENFORCED_BY
+    Events:         PARTICIPATED_IN, HOSTED, ORGANIZED, ATTENDED, DECLARED
+    Affiliation:    AFFILIATED_WITH, COLLABORATED_WITH, COMPETED_WITH, SPONSORED, SUPPORTED
+    Geopolitical:   GOVERNS, REPRESENTS, CITIZEN_OF, SANCTIONED, ALLIED_WITH, BORDERS
+
+  GOOD examples: IS_CEO_OF, ACQUIRED, HEADQUARTERED_IN, FOUNDED, INVESTED_IN
+  BAD examples (NEVER do this):
+    - THE_UNITED_STATES_GOVERNMENT_ISSUED  ← too long, contains entity name → use ENACTED or ISSUED
+    - THIERRY_BRETON_SERVED_AS_EUROPEAN    ← contains person name → use SERVES_ON or APPOINTED_TO
+    - ELON_MUSK_IS_CEO_OF_TESLA           ← contains entity names → use IS_CEO_OF
+    - COMPANY_RELOCATED_HEADQUARTERS_FROM  ← too verbose → use RELOCATED_TO
+
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity (1-10)
 - valid_time_start: When this relationship started being true. Use ISO date format (YYYY-MM-DD) when possible. If the text says "since 2020", use "2020-01-01". If the text says "As of Q3 2023", use "2023-07-01". Use "UNKNOWN" only if truly unknowable.
 - valid_time_end: When this relationship stopped being true. Use ISO date format. Use "ONGOING" if the relationship is still active. Use "UNKNOWN" only if truly unknowable.
+
+CRITICAL CONSTRAINTS:
+- source_entity and target_entity MUST be different entities. Self-loops are NEVER allowed.
+- Each entity should appear as EXACTLY one entity type. Do not create the same entity with different types.
+- The relation_type MUST be (UPPER_SNAKE_CASE).
 
 IMPORTANT temporal rules:
 - The document was written/published on {document_date}. Use this as the reference point for relative temporal expressions.
@@ -102,6 +133,37 @@ Output:
 <|COMPLETE|>
 
 ######################
+Example 3:
+Entity_types: ORGANIZATION,GEO,PERSON,EVENT
+Document_date: 2024-06-01
+Text:
+The European Union enacted the AI Act in March 2024, led by Commissioner Thierry Breton. Meanwhile, in the US, President Biden signed an executive order on AI safety in October 2023.
+######################
+Output:
+("entity"<|>EUROPEAN UNION<|>ORGANIZATION<|>The EU is a political and economic union that enacted the AI Act, the first comprehensive AI regulation)
+##
+("entity"<|>AI ACT<|>EVENT<|>The AI Act is the EU's comprehensive AI regulation enacted in March 2024)
+##
+("entity"<|>THIERRY BRETON<|>PERSON<|>Thierry Breton is the EU Commissioner who led the AI Act initiative)
+##
+("entity"<|>UNITED STATES<|>GEO<|>The United States, where President Biden signed an executive order on AI safety)
+##
+("entity"<|>JOE BIDEN<|>PERSON<|>Joe Biden is the President of the United States who signed the AI safety executive order)
+##
+("entity"<|>EXECUTIVE ORDER ON AI SAFETY<|>EVENT<|>Executive order on AI safety signed by President Biden in October 2023)
+##
+("relationship"<|>EUROPEAN UNION<|>AI ACT<|>The European Union enacted the AI Act in March 2024<|>ENACTED<|>9<|>2024-03-01<|>ONGOING)
+##
+("relationship"<|>THIERRY BRETON<|>AI ACT<|>Thierry Breton led the AI Act initiative as EU Commissioner<|>LED<|>8<|>2024-03-01<|>ONGOING)
+##
+("relationship"<|>THIERRY BRETON<|>EUROPEAN UNION<|>Thierry Breton serves as Commissioner of the EU<|>SERVES_ON<|>8<|>2019-12-01<|>ONGOING)
+##
+("relationship"<|>JOE BIDEN<|>UNITED STATES<|>Joe Biden serves as President of the United States<|>IS_PRESIDENT_OF<|>9<|>2021-01-20<|>ONGOING)
+##
+("relationship"<|>JOE BIDEN<|>EXECUTIVE ORDER ON AI SAFETY<|>President Biden signed the executive order on AI safety<|>SIGNED<|>9<|>2023-10-30<|>ONGOING)
+<|COMPLETE|>
+
+######################
 -Real Data-
 ######################
 Entity_types: [{entity_types}]
@@ -119,7 +181,7 @@ TEMPORAL_LOOP_PROMPT = "It appears some entities and relationships with temporal
 # Stage 3: Relation Cardinality Classification
 # ---------------------------------------------------------------------------
 
-CARDINALITY_CLASSIFICATION_PROMPT = """You are a knowledge graph ontology expert. Given a relationship type, classify its structural cardinality constraint.
+CARDINALITY_CLASSIFICATION_PROMPT = """You are a knowledge graph ontology expert. Given a relationship type and example edges from the graph, classify its structural cardinality constraint.
 
 Relationship Type: {relation_type}
 Context examples from the graph:
@@ -128,16 +190,37 @@ Context examples from the graph:
 The four cardinality types are:
 
 1. **SUBJECT_EXCLUSIVE**: One subject can hold at most one active instance of this relation at a time.
-   Examples: is_nationality_of (a person has one nationality at a time), is_headquartered_in (a company has one HQ at a time)
+   Examples:
+   - HEADQUARTERED_IN (a company has one HQ at a time)
+   - IS_NATIONALITY_OF (a person has one nationality at a time)
+   - HAS_CAPITAL (a country has one capital at a time)
+   - BASED_IN (an org is based in one location at a time)
+   - HAS_POPULATION (one population count per entity)
+   - RELOCATED_TO (one active relocation destination at a time)
 
 2. **OBJECT_EXCLUSIVE**: One object can have at most one active subject for this relation at a time.
-   Examples: has_capital_city (a country has one capital at a time), is_primary_language_of (one primary language per country)
+   Examples:
+   - IS_CAPITAL_OF (only one country's capital at a time)
+   - IS_PRIMARY_LANGUAGE_OF (one primary language per country)
+   - IS_SUCCESSOR_OF (one successor per predecessor)
 
-3. **BOTH_EXCLUSIVE**: One-to-one constraint on both sides simultaneously.
-   Examples: is_CEO_of (one CEO per company AND one CEO role per person at a time), is_married_to (one spouse per person at a time)
+3. **BOTH_EXCLUSIVE**: One-to-one constraint on BOTH sides simultaneously. One subject → one object AND one object → one subject at any point in time.
+   Examples:
+   - IS_CEO_OF (one CEO per company AND one CEO role per person at a time)
+   - IS_PRESIDENT_OF (one president per country AND one presidency per person at a time)
+   - IS_CHAIRMAN_OF (one chairman per board at a time)
+   - IS_MARRIED_TO (one spouse per person at a time in monogamous systems)
 
-4. **NON_EXCLUSIVE**: No exclusivity constraint; multiple instances can coexist.
-   Examples: worked_at, appeared_in, co-authored, invested_in, collaborated_with
+4. **NON_EXCLUSIVE**: No exclusivity constraint; multiple instances can coexist freely.
+   Examples:
+   - INVESTED_IN, COLLABORATED_WITH, PARTICIPATED_IN, MEMBER_OF
+   - FOUNDED, CO_FOUNDED, ACQUIRED, PARTNERED_WITH
+   - DEVELOPED, PRODUCES, MANUFACTURES, RELEASED
+   - ENACTED, SIGNED, ENFORCED_BY, REGULATED_BY
+   - EMPLOYED_AT, WORKS_FOR, SERVES_ON
+   - OPERATES_IN, LOCATED_IN, AFFILIATED_WITH
+
+IMPORTANT: Most relationship types are NON_EXCLUSIVE. Only classify as exclusive if there is a clear real-world constraint that prevents multiple active instances. When in doubt, choose NON_EXCLUSIVE.
 
 Respond with ONLY one of: SUBJECT_EXCLUSIVE, OBJECT_EXCLUSIVE, BOTH_EXCLUSIVE, NON_EXCLUSIVE
 """
