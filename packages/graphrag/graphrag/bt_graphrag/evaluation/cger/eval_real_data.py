@@ -55,6 +55,7 @@ import numpy as np
 
 _REPO_ROOT = Path(__file__).resolve().parents[7]
 _PACKAGES  = _REPO_ROOT / "packages" / "graphrag"
+_SCRIPT_DIR = Path(__file__).resolve().parent   # evaluation/cger/
 if str(_PACKAGES) not in sys.path:
     sys.path.insert(0, str(_PACKAGES))
 
@@ -759,8 +760,13 @@ def _save_json(
 async def main() -> None:
     _load_env()
 
-    input_dir  = Path(os.environ.get("CGER_INPUT_DIR",
-                      str(_REPO_ROOT / "ragtest" / "input" / "cger")))
+    input_dir  = Path(os.environ.get("CGER_INPUT_DIR", "") or "")
+    if not input_dir or not input_dir.is_dir():
+        # Default 1: input/ next to this script (committed sample texts)
+        local_input = _SCRIPT_DIR / "input"
+        # Default 2: ragtest/input/cger/ (user workspace)
+        ragtest_input = _REPO_ROOT / "ragtest" / "input" / "cger"
+        input_dir = local_input if local_input.is_dir() else ragtest_input
     max_pairs  = int(os.environ.get("CGER_MAX_PAIRS", "0")) or None
     lam        = float(os.environ.get("CGER_LAMBDA",   "0.2"))
     de_popsize = int(os.environ.get("CGER_DE_POPSIZE", "15"))
