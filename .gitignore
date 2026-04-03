@@ -41,7 +41,6 @@ __blobstorage*.json
 __blobstorage__/
 
 # Getting started example
-ragtest/
 .ragtest/
 .pipelines
 .pipeline
