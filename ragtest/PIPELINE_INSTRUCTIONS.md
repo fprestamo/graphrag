@@ -9,20 +9,14 @@ This document provides step-by-step instructions to run the full GraphRAG pipeli
 
 ## Prerequisites
 
-- Python 3.10–3.12 installed
-- An OpenAI API key (or Azure OpenAI credentials)
-- `graphrag` installed in your Python environment
+- An OpenAI API key
 
 ### Install GraphRAG
 
 ```bash
 # Create and activate a virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate       # Unix/macOS
-# .venv\Scripts\activate        # Windows
-
-# Install GraphRAG
-pip install graphrag
+uv sync
+source .venv/bin/activate
 ```
 
 ---
@@ -103,7 +97,7 @@ After copying, your `workspace/input/` folder should contain:
 
 ```bash
 cd workspace
-graphrag index
+uv run poe index
 ```
 
 > ⚠️ This operation calls your LLM and will consume API credits. For a first run, keep the document set small. The process may take several minutes depending on document size and API rate limits.
