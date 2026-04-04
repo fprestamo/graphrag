@@ -19,6 +19,7 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 
 from graphrag.bt_graphrag.entity_resolution.scorers import (
@@ -32,6 +33,47 @@ if TYPE_CHECKING:
     from neo4j import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cosine similarity helper for top-K pre-filtering
+# ---------------------------------------------------------------------------
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    va = np.asarray(a, dtype=np.float64)
+    vb = np.asarray(b, dtype=np.float64)
+    norm_a = np.linalg.norm(va)
+    norm_b = np.linalg.norm(vb)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float(np.dot(va, vb) / (norm_a * norm_b))
+
+
+def _top_k_by_embedding(
+    query_embedding: list[float] | None,
+    existing_types: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    """Return the top-K existing relation types by description embedding cosine similarity.
+
+    Falls back to all existing types if the query embedding is missing.
+    """
+    if query_embedding is None or not existing_types:
+        return existing_types
+
+    scored = []
+    for et in existing_types:
+        emb = et.get("description_embedding")
+        if emb is not None:
+            sim = _cosine_similarity(query_embedding, emb)
+        else:
+            sim = 0.0
+        scored.append((sim, et))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [et for _, et in scored[:top_k]]
 
 
 # ---------------------------------------------------------------------------
@@ -229,18 +271,26 @@ async def resolve_relationships(
         + relationships_df["target"].dropna().unique().tolist()
     ))
 
-    existing_types = await get_existing_relations_for_entities(session, batch_entities)
+    # Fetch existing relation types WITH description embeddings for top-K pre-filter
+    from graphrag.bt_graphrag.neo4j_store import get_existing_relation_types_with_embeddings
+
+    existing_types = await get_existing_relation_types_with_embeddings(
+        session, entity_titles=batch_entities,
+    )
 
     # Get unique candidate relation types from the batch
     candidate_types = relationships_df["relation_type"].unique().tolist()
     cand_type_counts = relationships_df["relation_type"].value_counts().to_dict()
+
+    # Top-K setting for embedding pre-filter
+    cgrr_top_k = getattr(config, "cgrr_candidate_top_k", 10)
 
     if not existing_types:
         print(f"    [CGRR] Phase A: Skipping — graph is empty (first run); "
               f"proceeding to intra-batch Phase B for {len(candidate_types)} types")
     else:
         print(f"\n    [CGRR] Phase A: Resolving {len(candidate_types)} candidate relation types "
-              f"against {len(existing_types)} existing types")
+              f"against {len(existing_types)} existing types (top-K={cgrr_top_k})")
         print(f"    [CGRR] Thresholds: auto_merge >= {config.cgrr_merge_threshold}, "
               f"LLM_zone = [{config.cgrr_llm_threshold_low}, {config.cgrr_merge_threshold})")
         print(f"    [CGRR] Weights: bm25={config.cgrr_bm25_weight}, "
@@ -283,6 +333,9 @@ async def resolve_relationships(
             cand_target = str(cand_sample.get("target", ""))
             cand_edge_count = cand_type_counts.get(cand_type, 0)
 
+            # Get candidate embedding for top-K pre-filter
+            cand_emb = cand_sample.get("description_embedding") if "description_embedding" in cand_sample.index else None
+
             cand_rows = relationships_df[relationships_df["relation_type"] == cand_type]
             cand_entities = set(
                 cand_rows["source"].dropna().tolist()
@@ -293,10 +346,53 @@ async def resolve_relationships(
             print(f"         Sample: ({cand_source[:20]}) -> ({cand_target[:20]})")
             print(f"         Desc: '{cand_desc[:60]}'")
 
+            # Top-K pre-filter: try Neo4j vector index first, fall back to in-memory cosine
+            narrowed: list[dict[str, Any]] = []
+            if cand_emb is not None:
+                from graphrag.bt_graphrag.neo4j_store import vector_search_relationships
+                try:
+                    vec_results = await vector_search_relationships(
+                        session, cand_emb, top_k=cgrr_top_k,
+                    )
+                except Exception:
+                    vec_results = []
+                if vec_results:
+                    # Group by relation_type — vector search returns edges, we need types
+                    seen_types: set[str] = set()
+                    for vr in vec_results:
+                        rt = vr.get("relation_type", "")
+                        if rt and rt not in seen_types:
+                            seen_types.add(rt)
+                            # Find the matching existing_types record for metadata
+                            match_rec = next(
+                                (et for et in existing_types if et["relation_type"] == rt),
+                                None,
+                            )
+                            if match_rec:
+                                narrowed.append(match_rec)
+                            else:
+                                narrowed.append({
+                                    "relation_type": rt,
+                                    "description": vr.get("description", ""),
+                                    "source": vr.get("source", ""),
+                                    "target": vr.get("target", ""),
+                                    "all_sources": [vr.get("source", "")],
+                                    "all_targets": [vr.get("target", "")],
+                                    "edge_count": 1,
+                                    "description_embedding": vr.get("description_embedding"),
+                                })
+                    print(f"         Neo4j vector search: {len(narrowed)} types from top-{cgrr_top_k} edges")
+
+            if not narrowed:
+                # Fallback: in-memory cosine on existing_types
+                narrowed = _top_k_by_embedding(cand_emb, existing_types, cgrr_top_k)
+                if len(narrowed) < len(existing_types):
+                    print(f"         In-memory top-K: {len(existing_types)} -> {len(narrowed)} candidates (k={cgrr_top_k})")
+
             scored_matches: list[tuple[float, dict[str, float], dict[str, str]]] = []
             skipped_no_overlap = 0
 
-            for existing in existing_types:
+            for existing in narrowed:
                 if cand_type == existing["relation_type"]:
                     continue
                 existing_entities_set = set(

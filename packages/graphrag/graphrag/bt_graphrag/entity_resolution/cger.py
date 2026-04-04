@@ -114,14 +114,15 @@ async def resolve_entities(
     config: BTGraphRAGConfig,
     model: "LLMCompletion | None" = None,
     entity_scorer: EntityScorer = embedding_only_entity_scorer,
+    candidate_map: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve new entities against the existing graph.
 
     For each new entity, retrieves the top-K most similar existing
-    entities by description-embedding cosine similarity, then runs
-    the full composite scorer on those candidates.  Entities scoring
-    above the merge threshold are merged automatically; hard cases
-    (between low and high thresholds) are sent to LLM verification.
+    entities.  When *candidate_map* is provided (keyed by entity title),
+    those pre-fetched candidates (from Neo4j vector search) are used
+    directly.  Otherwise falls back to in-memory cosine ranking over
+    *existing_entities*.
 
     Returns:
         resolved_entities: The new entities DataFrame with merged IDs
@@ -151,8 +152,9 @@ async def resolve_entities(
               f"proceeding to intra-batch Phase B for {len(new_entities)} entities")
     else:
         top_k = config.cger_candidate_top_k
+        source = "Neo4j vector index" if candidate_map else "in-memory cosine"
         print(f"\n    [CGER] Phase A: Resolving {len(new_entities)} new entities "
-              f"against {len(existing_records)} existing (top-K={top_k})")
+              f"against {len(existing_records)} existing (top-K={top_k}, source={source})")
         print(f"    [CGER] Thresholds: auto_merge >= {config.cger_merge_threshold}, "
               f"LLM_zone = [{config.cger_llm_threshold_low}, {config.cger_merge_threshold})")
         print(f"    [CGER] Weights: emb={config.cger_embedding_weight}, bm25={config.cger_bm25_weight}, "
@@ -166,20 +168,26 @@ async def resolve_entities(
             best_breakdown: dict[str, float] = {}
             best_match: dict[str, Any] | None = None
 
-            # --- Top-K pre-filter by description embedding cosine similarity ---
-            new_emb = new_entity.get("description_embedding") or []
-            if new_emb:
-                scored_candidates: list[tuple[float, dict[str, Any]]] = []
-                for existing in existing_records:
-                    ex_emb = existing.get("description_embedding") or []
-                    cos = cosine_similarity(new_emb, ex_emb) if ex_emb else 0.0
-                    scored_candidates.append((cos, existing))
-                # Sort descending by cosine; take top-K
-                scored_candidates.sort(key=lambda x: x[0], reverse=True)
-                candidates = [rec for _, rec in scored_candidates[:top_k]]
+            entity_title = str(new_entity.get("title", "?"))
+
+            # --- Select candidates for this entity ---
+            if candidate_map and entity_title in candidate_map:
+                # Pre-fetched from Neo4j vector index — already top-K
+                candidates = candidate_map[entity_title]
             else:
-                # No embedding available — fall back to all existing records
-                candidates = existing_records
+                # Fallback: in-memory top-K by description embedding cosine
+                new_emb = new_entity.get("description_embedding") or []
+                if new_emb:
+                    scored_candidates: list[tuple[float, dict[str, Any]]] = []
+                    for existing in existing_records:
+                        ex_emb = existing.get("description_embedding") or []
+                        cos = cosine_similarity(new_emb, ex_emb) if ex_emb else 0.0
+                        scored_candidates.append((cos, existing))
+                    scored_candidates.sort(key=lambda x: x[0], reverse=True)
+                    candidates = [rec for _, rec in scored_candidates[:top_k]]
+                else:
+                    # No embedding available — fall back to all existing records
+                    candidates = existing_records
 
             # --- Full composite scoring on the narrowed candidate set ---
             for existing in candidates:
@@ -188,8 +196,6 @@ async def resolve_entities(
                     best_score = score
                     best_breakdown = breakdown
                     best_match = existing
-
-            entity_title = str(new_entity.get("title", "?"))
 
             if best_match is None:
                 no_match_count += 1

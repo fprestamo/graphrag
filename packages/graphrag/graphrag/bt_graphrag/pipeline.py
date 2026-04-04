@@ -220,7 +220,11 @@ async def run_bt_pipeline(
     neo4j_has_data = False
     if neo4j_driver is not None:
         from graphrag.bt_graphrag.neo4j_store import init_schema
-        await init_schema(neo4j_driver, database=config.neo4j_database)
+        await init_schema(
+            neo4j_driver,
+            database=config.neo4j_database,
+            vector_dimensions=config.neo4j_vector_dimensions,
+        )
         async with neo4j_driver.session(database=config.neo4j_database) as _s:
             _r = await _s.run("MATCH (n:Entity) RETURN count(n) AS cnt LIMIT 1")
             _rec = await _r.single()
@@ -545,60 +549,158 @@ async def _run_cger(
     model: "LLMCompletion | None",
     driver: "AsyncDriver",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run Cross-Graph Entity Resolution against existing Neo4j graph."""
+    """Run Cross-Graph Entity Resolution against existing Neo4j graph.
+
+    Uses the Neo4j vector index on Entity.description_embedding to
+    retrieve the top-K most similar existing entities per new entity,
+    then runs composite scoring on those candidates only.
+    Falls back to loading all entities if the vector index is unavailable.
+    """
     from graphrag.bt_graphrag.entity_resolution.cger import (
         apply_merge_map_to_relationships,
         resolve_entities,
     )
-    from graphrag.bt_graphrag.neo4j_store import get_active_edges
+    from graphrag.bt_graphrag.neo4j_store import (
+        get_all_entities,
+        vector_search_entities,
+    )
 
     logger.info("BT-GraphRAG Stage 2: Running CGER entity resolution")
     print("\n" + "-" * 70)
     print("  Stage 2: Cross-Graph Entity Resolution (CGER)")
     print("-" * 70)
 
-    # Load existing entities from Neo4j for comparison
+    top_k = config.cger_candidate_top_k
+
+    # --- Retrieve existing entity candidates from Neo4j ---
+    # Strategy: per new entity, query the Neo4j vector index for the
+    # top-K nearest neighbours by description_embedding cosine similarity.
+    # This gives us full entity properties (type, description, embeddings,
+    # temporal fields) which the old approach was missing.
+    #
+    # If the vector index call fails (e.g. index not populated yet on
+    # first run, or Neo4j < 5.11), fall back to loading all entities.
+    use_vector_index = True
+    all_existing_entities: list[dict[str, Any]] | None = None
+
     async with driver.session(database=config.neo4j_database) as session:
-        existing_edges = await get_active_edges(session)
+        # Quick probe: does the graph have entities at all?
+        probe = await session.run("MATCH (n:Entity) RETURN count(n) AS cnt LIMIT 1")
+        probe_rec = await probe.single()
+        existing_count = probe_rec["cnt"] if probe_rec else 0
 
-    # Build existing entities DataFrame from Neo4j edge data
-    existing_entity_titles = set()
-    for edge in existing_edges:
-        existing_entity_titles.add(edge.get("source", ""))
-        existing_entity_titles.add(edge.get("target", ""))
+        if existing_count == 0:
+            print(f"  Existing entities in Neo4j:  0 (first run)")
+            print(f"  New entities to resolve:     {len(entities_df)}")
+            # Build an empty DataFrame so resolve_entities skips Phase A
+            existing_entities_df = pd.DataFrame(columns=["title"])
+            candidate_map: dict[str, list[dict[str, Any]]] = {}
+        else:
+            print(f"  Existing entities in Neo4j:  {existing_count}")
+            print(f"  New entities to resolve:     {len(entities_df)}")
+            print(f"  Top-K per entity:            {top_k}")
 
-    if existing_entity_titles:
-        existing_entities_df = pd.DataFrame(
-            [{"title": t} for t in existing_entity_titles if t]
-        )
-    else:
-        existing_entities_df = pd.DataFrame(columns=["title"])
+            # Try vector-search per new entity
+            candidate_map = {}
+            for _, new_row in entities_df.iterrows():
+                new_emb = new_row.get("description_embedding")
+                title = str(new_row.get("title", ""))
+                if new_emb is not None and isinstance(new_emb, list) and len(new_emb) > 0:
+                    try:
+                        candidates = await vector_search_entities(
+                            session, new_emb, top_k=top_k,
+                        )
+                        candidate_map[title] = candidates
+                    except Exception as vec_err:
+                        if use_vector_index:
+                            logger.warning(
+                                "Neo4j vector index query failed (%s); "
+                                "falling back to full entity load", vec_err,
+                            )
+                            print(f"  [CGER] Vector index unavailable — "
+                                  f"falling back to full entity load")
+                            use_vector_index = False
+                            break
 
-    print(f"  Existing entities in Neo4j:  {len(existing_entity_titles)}")
-    print(f"  New entities to resolve:     {len(entities_df)}")
+            # Fallback: load all entities with full properties
+            if not use_vector_index or not candidate_map:
+                all_existing_entities = await get_all_entities(session)
+                print(f"  [CGER] Loaded {len(all_existing_entities)} entities "
+                      f"with full properties (fallback)")
+
+            # Build existing_entities_df from either the union of all
+            # retrieved candidates or the full entity list
+            if all_existing_entities is not None:
+                existing_entities_df = pd.DataFrame(all_existing_entities)
+                candidate_map = {}  # let cger.py do in-memory top-K
+            else:
+                # Union all unique candidates across new entities
+                seen_titles: set[str] = set()
+                all_candidates: list[dict[str, Any]] = []
+                for cands in candidate_map.values():
+                    for c in cands:
+                        t = c.get("title", "")
+                        if t and t not in seen_titles:
+                            seen_titles.add(t)
+                            all_candidates.append(c)
+                existing_entities_df = (
+                    pd.DataFrame(all_candidates) if all_candidates
+                    else pd.DataFrame(columns=["title"])
+                )
+                print(f"  [CGER] Retrieved {len(all_candidates)} unique "
+                      f"candidate entities via vector index")
 
     debug_dir = _ensure_debug_dir(config)
+
+    # --- CGER vector search log ---
+    _cger_search_log: list[dict[str, Any]] = []
+    for _entity_title, _cands in candidate_map.items():
+        _cger_search_log.append({
+            "entity": _entity_title,
+            "method": "neo4j_vector_index" if use_vector_index and candidate_map else "in_memory_fallback",
+            "top_k": top_k,
+            "candidates_returned": len(_cands),
+            "candidates": [
+                {
+                    "title": c.get("title", ""),
+                    "type": c.get("type", ""),
+                    "vector_score": round(c.get("_vector_score", 0.0), 4),
+                    "description": (c.get("description", "") or "")[:100],
+                }
+                for c in _cands[:10]
+            ],
+        })
+    _save_debug_json(debug_dir, "cger_vector_search_log.json", _cger_search_log)
+
     cger_resolution_log: list[dict[str, Any]] = []
 
-    # --- Phase A: Resolve new entities against existing graph ---
+    # --- Phase A pre-logging: score each new entity against its candidates ---
     print(f"\n  Phase A: New vs Existing (Neo4j)")
 
     from graphrag.bt_graphrag.entity_resolution.cger import compute_composite_score
 
-    # Run per-entity comparisons with logging before calling resolve_entities
     existing_records: list[dict[str, Any]] = (
         [{str(k): v for k, v in r.items()} for r in existing_entities_df.to_dict("records")]
         if not existing_entities_df.empty else []
     )
+
     for _, new_row in entities_df.iterrows():
         new_entity: dict[str, Any] = {str(k): v for k, v in dict(new_row).items()}
         entity_title = str(new_entity.get("title", "?"))
+
+        # Use per-entity candidates from vector search if available,
+        # otherwise fall back to the full existing_records
+        if candidate_map and entity_title in candidate_map:
+            records_for_entity = candidate_map[entity_title]
+        else:
+            records_for_entity = existing_records
+
         best_score = 0.0
         best_breakdown: dict[str, float] = {}
         best_match_title = ""
         all_comparisons: list[dict[str, Any]] = []
 
-        for existing in existing_records:
+        for existing in records_for_entity:
             score, breakdown = compute_composite_score(new_entity, existing, config)
             ex_title = str(existing.get("title", "?"))
             comp = {
@@ -666,6 +768,7 @@ async def _run_cger(
         config=config,
         model=model,
         entity_scorer=entity_scorer,
+        candidate_map=candidate_map if candidate_map else None,
     )
 
     # Apply full merge map to relationships
@@ -762,8 +865,9 @@ async def _run_cgrr(
 
     from graphrag.bt_graphrag.entity_resolution.cgrr import (
         compute_relationship_score,
-        get_existing_relations_for_entities,
+        _top_k_by_embedding,
     )
+    from graphrag.bt_graphrag.neo4j_store import get_existing_relation_types_with_embeddings
 
     # Pre-compute Phase A comparisons for the debug log
     # Only fetch existing types that share at least one entity with the batch
@@ -771,13 +875,38 @@ async def _run_cgrr(
         relationships_df["source"].dropna().unique().tolist()
         + relationships_df["target"].dropna().unique().tolist()
     ))
+    cgrr_top_k = getattr(config, "cgrr_candidate_top_k", 10)
     async with driver.session(database=config.neo4j_database) as session:
-        existing_types_for_log = await get_existing_relations_for_entities(
-            session, batch_entities,
+        existing_types_for_log = await get_existing_relation_types_with_embeddings(
+            session, entity_titles=batch_entities,
         )
 
     candidate_types_before = relationships_df["relation_type"].unique().tolist()
     cand_type_counts = relationships_df["relation_type"].value_counts().to_dict()
+
+    # --- CGRR vector search log ---
+    _cgrr_search_log: list[dict[str, Any]] = []
+    for cand_type in candidate_types_before:
+        cand_sample = relationships_df[relationships_df["relation_type"] == cand_type].iloc[0]
+        cand_emb_check = cand_sample.get("description_embedding") if "description_embedding" in cand_sample.index else None
+        narrowed_check = _top_k_by_embedding(cand_emb_check, existing_types_for_log, cgrr_top_k)
+        _cgrr_search_log.append({
+            "relation_type": cand_type,
+            "method": "in_memory_cosine_top_k",
+            "top_k": cgrr_top_k,
+            "existing_types_total": len(existing_types_for_log),
+            "candidates_after_topk": len(narrowed_check),
+            "has_embedding": cand_emb_check is not None,
+            "top_matches": [
+                {
+                    "relation_type": et.get("relation_type", ""),
+                    "edge_count": et.get("edge_count", 0),
+                    "description": (et.get("description", "") or "")[:100],
+                }
+                for et in narrowed_check[:5]
+            ],
+        })
+    _save_debug_json(debug_dir, "cgrr_vector_search_log.json", _cgrr_search_log)
 
     for cand_type in candidate_types_before:
         # Check exact match
@@ -799,6 +928,9 @@ async def _run_cgrr(
         cand_src = str(cand_sample.get("source", ""))
         cand_tgt = str(cand_sample.get("target", ""))
 
+        # Get candidate embedding for top-K pre-filter
+        cand_emb = cand_sample.get("description_embedding") if "description_embedding" in cand_sample.index else None
+
         # Collect all entities for this candidate type
         cand_rows = relationships_df[relationships_df["relation_type"] == cand_type]
         cand_entities = set(
@@ -806,8 +938,11 @@ async def _run_cgrr(
             + cand_rows["target"].dropna().tolist()
         )
 
+        # Top-K pre-filter by description embedding similarity
+        narrowed = _top_k_by_embedding(cand_emb, existing_types_for_log, cgrr_top_k)
+
         all_comparisons: list[dict[str, Any]] = []
-        for existing in existing_types_for_log:
+        for existing in narrowed:
             if cand_type == existing["relation_type"]:
                 continue
             # Skip if no entity overlap

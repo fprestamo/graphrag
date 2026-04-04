@@ -49,15 +49,61 @@ _INIT_CYPHER = [
     "CREATE INDEX IF NOT EXISTS FOR ()-[r:RELATIONSHIP]-() ON (r.id)",
 ]
 
+# Template — dimensions filled at runtime from config
+_VECTOR_INDEX_CYPHER = """
+CREATE VECTOR INDEX entity_description_embedding IF NOT EXISTS
+FOR (n:Entity) ON (n.description_embedding)
+OPTIONS {{
+  indexConfig: {{
+    `vector.dimensions`: {dimensions},
+    `vector.similarity_function`: 'cosine'
+  }}
+}}
+"""
 
-async def init_schema(driver: "AsyncDriver", database: str = "neo4j") -> None:
-    """Create required indexes and constraints in Neo4j."""
+_RELATIONSHIP_VECTOR_INDEX_CYPHER = """
+CREATE VECTOR INDEX relationship_description_embedding IF NOT EXISTS
+FOR ()-[r:RELATIONSHIP]-() ON (r.description_embedding)
+OPTIONS {{
+  indexConfig: {{
+    `vector.dimensions`: {dimensions},
+    `vector.similarity_function`: 'cosine'
+  }}
+}}
+"""
+
+
+async def init_schema(
+    driver: "AsyncDriver",
+    database: str = "neo4j",
+    vector_dimensions: int = 3072,
+) -> None:
+    """Create required indexes and constraints in Neo4j.
+
+    Includes vector indexes on Entity.description_embedding (for CGER)
+    and RELATIONSHIP.description_embedding (for CGRR) for efficient
+    ANN similarity search.
+    """
     async with driver.session(database=database) as session:
         for cypher in _INIT_CYPHER:
             try:
                 await session.run(cypher)
             except Exception:
                 logger.debug("Index may already exist: %s", cypher)
+        # Vector index for CGER top-K retrieval (Entity nodes)
+        try:
+            vec_cypher = _VECTOR_INDEX_CYPHER.format(dimensions=vector_dimensions)
+            await session.run(vec_cypher)
+            logger.info("BT-GraphRAG: Created entity vector index (dim=%d)", vector_dimensions)
+        except Exception:
+            logger.debug("Entity vector index may already exist or Neo4j version does not support it")
+        # Vector index for CGRR top-K retrieval (Relationship edges)
+        try:
+            rel_vec_cypher = _RELATIONSHIP_VECTOR_INDEX_CYPHER.format(dimensions=vector_dimensions)
+            await session.run(rel_vec_cypher)
+            logger.info("BT-GraphRAG: Created relationship vector index (dim=%d)", vector_dimensions)
+        except Exception:
+            logger.debug("Relationship vector index may already exist or Neo4j version does not support it")
     logger.info("BT-GraphRAG: Neo4j schema initialized")
 
 
@@ -461,6 +507,195 @@ async def retract_edge(
         edge_id=edge_id,
         t_tx_end=t_tx_end.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Driver management helper
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Relationship type queries for CGRR
+# ---------------------------------------------------------------------------
+
+
+async def get_existing_relation_types_with_embeddings(
+    session: "AsyncSession",
+    entity_titles: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch distinct relation types with a sample description_embedding.
+
+    If *entity_titles* is given, only returns relation types that share at
+    least one endpoint with those entities (same pre-filter CGRR already
+    uses).  Otherwise returns all active relation types.
+
+    Each returned dict has: relation_type, description, source, target,
+    all_sources, all_targets, edge_count, description_embedding.
+    """
+    from graphrag.bt_graphrag.models.temporal_types import INFINITY_ISO
+
+    if entity_titles:
+        query = """
+        MATCH (s:Entity)-[r:RELATIONSHIP]->(t:Entity)
+        WHERE r.t_tx_end = $infinity AND r.t_valid_end = $infinity
+          AND (s.title IN $entity_titles OR t.title IN $entity_titles)
+        WITH r.relation_type AS rel_type,
+             collect(DISTINCT s.title) AS all_sources,
+             collect(DISTINCT t.title) AS all_targets,
+             collect({
+               desc: r.description,
+               source: s.title,
+               target: t.title,
+               emb: r.description_embedding
+             })[0] AS sample,
+             count(*) AS edge_count
+        RETURN rel_type, sample.desc AS description,
+               sample.source AS source, sample.target AS target,
+               all_sources, all_targets, edge_count,
+               sample.emb AS description_embedding
+        ORDER BY edge_count DESC
+        """
+        result = await session.run(
+            query, entity_titles=entity_titles, infinity=INFINITY_ISO,
+        )
+    else:
+        query = """
+        MATCH (s:Entity)-[r:RELATIONSHIP]->(t:Entity)
+        WHERE r.t_tx_end = $infinity AND r.t_valid_end = $infinity
+        WITH r.relation_type AS rel_type,
+             collect(DISTINCT s.title) AS all_sources,
+             collect(DISTINCT t.title) AS all_targets,
+             collect({
+               desc: r.description,
+               source: s.title,
+               target: t.title,
+               emb: r.description_embedding
+             })[0] AS sample,
+             count(*) AS edge_count
+        RETURN rel_type, sample.desc AS description,
+               sample.source AS source, sample.target AS target,
+               all_sources, all_targets, edge_count,
+               sample.emb AS description_embedding
+        ORDER BY edge_count DESC
+        """
+        result = await session.run(query, infinity=INFINITY_ISO)
+
+    records: list[dict[str, Any]] = []
+    async for record in result:
+        records.append({
+            "relation_type": record["rel_type"] or "",
+            "description": record["description"] or "",
+            "source": record["source"] or "",
+            "target": record["target"] or "",
+            "all_sources": record["all_sources"] or [],
+            "all_targets": record["all_targets"] or [],
+            "edge_count": record["edge_count"],
+            "description_embedding": record["description_embedding"],
+        })
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Vector search for CGER
+# ---------------------------------------------------------------------------
+
+
+async def vector_search_entities(
+    session: "AsyncSession",
+    query_embedding: list[float],
+    top_k: int = 20,
+    index_name: str = "entity_description_embedding",
+) -> list[dict[str, Any]]:
+    """Return the top-K most similar entities using the Neo4j vector index.
+
+    Each returned dict contains all Entity node properties (title, type,
+    description, description_embedding, active_start, active_end, etc.)
+    plus a ``score`` field with the cosine similarity.
+    """
+    query = """
+    CALL db.index.vector.queryNodes($index_name, $top_k, $embedding)
+    YIELD node, score
+    RETURN properties(node) AS props, score
+    """
+    result = await session.run(
+        query,
+        index_name=index_name,
+        top_k=top_k,
+        embedding=query_embedding,
+    )
+    records: list[dict[str, Any]] = []
+    async for record in result:
+        entity = dict(record["props"])
+        entity["_vector_score"] = record["score"]
+        records.append(entity)
+    return records
+
+
+async def get_all_entities(
+    session: "AsyncSession",
+) -> list[dict[str, Any]]:
+    """Return all Entity nodes with their full properties.
+
+    Used as a fallback when the vector index is unavailable.
+    """
+    result = await session.run(
+        "MATCH (n:Entity) RETURN properties(n) AS props"
+    )
+    records: list[dict[str, Any]] = []
+    async for record in result:
+        records.append(dict(record["props"]))
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Vector search for CGRR (Relationship edges)
+# ---------------------------------------------------------------------------
+
+
+async def vector_search_relationships(
+    session: "AsyncSession",
+    query_embedding: list[float],
+    top_k: int = 10,
+    index_name: str = "relationship_description_embedding",
+) -> list[dict[str, Any]]:
+    """Return the top-K most similar relationships using the Neo4j vector index.
+
+    Uses db.index.vector.queryRelationships() (Neo4j 5.18+).
+    Each returned dict contains: relation_type, description, source, target,
+    description_embedding, and _vector_score.
+
+    Falls back to empty list if the index does not exist.
+    """
+    query = """
+    CALL db.index.vector.queryRelationships($index_name, $top_k, $embedding)
+    YIELD relationship, score
+    MATCH (s:Entity)-[relationship]->(t:Entity)
+    RETURN properties(relationship) AS props,
+           s.title AS source, t.title AS target,
+           score
+    """
+    try:
+        result = await session.run(
+            query,
+            index_name=index_name,
+            top_k=top_k,
+            embedding=query_embedding,
+        )
+        records: list[dict[str, Any]] = []
+        async for record in result:
+            edge = dict(record["props"])
+            edge["source"] = record["source"]
+            edge["target"] = record["target"]
+            edge["_vector_score"] = record["score"]
+            records.append(edge)
+        return records
+    except Exception:
+        logger.debug(
+            "vector_search_relationships failed (index '%s' may not exist); "
+            "falling back to in-memory cosine",
+            index_name,
+        )
+        return []
 
 
 # ---------------------------------------------------------------------------

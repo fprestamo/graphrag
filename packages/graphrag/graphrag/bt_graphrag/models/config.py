@@ -61,10 +61,10 @@ class BTGraphRAGConfig:
     cger_enabled: bool = True
     """Enable Cross-Graph Entity Resolution."""
 
-    cger_scorer: str = "embedding_only"
+    cger_scorer: str = "citation_and_description"
     """Scorer to use for entity comparison.
     Options: 'embedding_only', 'citation_and_description', 'composite'.
-    Default 'embedding_only': F1=1.0, LLM call rate=0.4% (objective=0.9991 at lambda=0.2)."""
+    Default 'citation_and_description': F1=1.0, LLM call rate=0.3% (objective=0.9994 at lambda=0.2)."""
 
     cger_cosine_discard_threshold: float = 0.3
     """Description cosine similarity below this value discards the pair
@@ -85,23 +85,29 @@ class BTGraphRAGConfig:
     cger_relation_context_weight: float = 0.15
     """Weight w5 for relation-context embedding similarity (composite scorer)."""
 
-    cger_desc_weight: float = 0.4
+    cger_desc_weight: float = 0.9244
     """Weight for description embedding similarity (citation_and_description scorer)."""
 
-    cger_cite_weight: float = 0.6
+    cger_cite_weight: float = 0.0756
     """Weight for citation/text-unit embedding similarity (citation_and_description scorer)."""
 
-    cger_merge_threshold: float = 0.6740
+    cger_merge_threshold: float = 0.95
     """Score above which entities are automatically merged."""
 
-    cger_llm_threshold_low: float = 0.5687
+    cger_llm_threshold_low: float = 0.6724
     """Score below which entities are kept separate."""
 
     cger_llm_threshold_high: float = 0.65
     """Score above which entities are automatically merged (before LLM check)."""
 
-    cger_candidate_top_k: int = 20
-    """Number of candidates to retrieve from each signal."""
+    cger_candidate_top_k: int = 10
+    """Number of top-K candidates to retrieve via Neo4j vector search
+    (or in-memory cosine fallback) per new entity."""
+
+    neo4j_vector_dimensions: int = 3072
+    """Dimensionality of description_embedding vectors stored in Neo4j.
+    Must match the embedding model output (e.g. 1536 for text-embedding-3-small,
+    3072 for text-embedding-3-large).  Used to CREATE VECTOR INDEX."""
 
     # --- Stage 2b: CGRR (Cross-Graph Relationship Resolution) ---
     cgrr_enabled: bool = True
@@ -122,11 +128,15 @@ class BTGraphRAGConfig:
     cgrr_endpoint_weight: float = 0.25
     """Weight w3 for endpoint (same subject+object pair) match signal."""
 
-    cgrr_merge_threshold: float = 0.80
+    cgrr_merge_threshold: float = 0.95
     """Score above which relation types are automatically normalized."""
 
-    cgrr_llm_threshold_low: float = 0.50
+    cgrr_llm_threshold_low: float = 0.2694
     """Score between this and merge_threshold triggers LLM verification."""
+
+    cgrr_candidate_top_k: int = 10
+    """Number of top-K existing relation types to compare per candidate,
+    pre-filtered by description embedding cosine similarity."""
 
     # --- Stage 3: ETCDR ---
     etcdr_enabled: bool = True
