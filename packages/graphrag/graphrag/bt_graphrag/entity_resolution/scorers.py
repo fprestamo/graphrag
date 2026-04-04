@@ -205,14 +205,26 @@ def endpoint_match_score(
 ) -> float:
     """Binary signal boosted when candidate shares same endpoints as existing.
 
-    Returns 1.0 if both source AND target match, 0.5 if one matches, 0.0 otherwise.
+    Returns:
+        1.0 if both source AND target match (same direction),
+        0.75 if both match but swapped (direction inversion: A->B vs B->A),
+        0.5 if one endpoint matches,
+        0.0 otherwise.
     Comparison is case-insensitive.
     """
-    source_match = candidate_source.strip().lower() == existing_source.strip().lower()
-    target_match = candidate_target.strip().lower() == existing_target.strip().lower()
+    cs = candidate_source.strip().lower()
+    ct = candidate_target.strip().lower()
+    es = existing_source.strip().lower()
+    et = existing_target.strip().lower()
+
+    source_match = cs == es
+    target_match = ct == et
     if source_match and target_match:
         return 1.0
-    if source_match or target_match:
+    # Check for direction inversion: candidate (A->B) vs existing (B->A)
+    if cs == et and ct == es:
+        return 0.75
+    if source_match or target_match or cs == et or ct == es:
         return 0.5
     return 0.0
 

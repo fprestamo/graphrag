@@ -213,7 +213,7 @@ async def resolve_relationships(
     # Ensure relation_type column exists
     if "relation_type" not in relationships_df.columns:
         print("    [CGRR] Skipping — no 'relation_type' column present")
-        return relationships_df, normalize_map
+        return relationships_df, normalize_map, phase_b_log
 
     auto_merges = 0
     llm_merges = 0
@@ -410,11 +410,21 @@ async def resolve_relationships(
         intra_normalize: dict[str, str] = {}
         canonical_types: list[dict[str, str]] = []
 
+        # Pre-compute entity sets per relation type for overlap checking
+        _type_entities: dict[str, set[str]] = {}
+        for rt in remaining_types:
+            rows_rt = relationships_df[relationships_df["relation_type"] == rt]
+            _type_entities[rt] = set(
+                rows_rt["source"].dropna().tolist()
+                + rows_rt["target"].dropna().tolist()
+            )
+
         for rt in remaining_types:
             sample = relationships_df[relationships_df["relation_type"] == rt].iloc[0]
             cand_desc = str(sample.get("description", ""))
             cand_src = str(sample.get("source", ""))
             cand_tgt = str(sample.get("target", ""))
+            cand_entities = _type_entities[rt]
 
             if not canonical_types:
                 canonical_types.append({
@@ -428,6 +438,10 @@ async def resolve_relationships(
             best_canon: dict[str, str] | None = None
 
             for canon in canonical_types:
+                # Entity overlap check: skip if no shared entities
+                canon_entities = _type_entities.get(canon["relation_type"], set())
+                if not cand_entities.intersection(canon_entities):
+                    continue
                 score, breakdown = relationship_scorer(
                     rt, cand_desc, cand_src, cand_tgt,
                     canon["relation_type"], canon["description"],

@@ -133,6 +133,67 @@ def _real_llm():
     return create_completion(config)
 
 
+async def classify_relation_cardinalities(
+    relation_types: list[str],
+    seed_rels: list[TemporalRelationship],
+    config: BTGraphRAGConfig,
+    model,
+) -> None:
+    """Stage 2c equivalent: classify cardinalities via LLM.
+
+    For each unknown relation type, builds context examples from *seed_rels*
+    and asks the LLM to classify its cardinality.  Results are stored in
+    ``config.relation_cardinality_overrides`` so that ETCDR can look them up.
+    """
+    from graphrag_llm.utils import CompletionMessagesBuilder
+
+    prompt_template = config.resolved_cardinality_prompt()
+
+    unknown = [
+        rt for rt in relation_types
+        if rt.upper().replace(" ", "_") not in config.default_cardinality_map
+        and rt.upper().replace(" ", "_") not in config.relation_cardinality_overrides
+    ]
+    if not unknown:
+        print("[CARD] All relation types already classified.")
+        return
+
+    print(f"[CARD] Classifying {len(unknown)} relation type(s) via LLM...")
+    for rt in unknown:
+        examples = []
+        for r in seed_rels:
+            if r.relation_type == rt:
+                examples.append(
+                    f"  ({r.source}) -[{rt}]-> ({r.target}): "
+                    f"{(r.description or '')[:80]}"
+                )
+        context = "\n".join(examples) if examples else "No examples available"
+
+        prompt = prompt_template.format(
+            relation_type=rt,
+            context_examples=context,
+        )
+        messages = CompletionMessagesBuilder().add_user_message(prompt).build()
+        response = await model.completion_async(messages=messages)
+        raw_answer = response.content.strip()
+        answer = raw_answer.upper()
+
+        classification = "NON_EXCLUSIVE"
+        for v in ("BOTH_EXCLUSIVE", "SUBJECT_EXCLUSIVE", "OBJECT_EXCLUSIVE", "NON_EXCLUSIVE"):
+            if v in answer:
+                classification = v
+                break
+
+        key = rt.upper().replace(" ", "_")
+        config.relation_cardinality_overrides[key] = classification
+        print(f"\n  ┌─ {rt}")
+        print(f"  │  LLM raw: {raw_answer}")
+        print(f"  │  Parsed : {classification}")
+        print(f"  └─")
+
+    print(f"[CARD] Done. Overrides: {config.relation_cardinality_overrides}\n")
+
+
 def _sep(title: str) -> None:
     width = 70
     print("\n" + "═" * width)
@@ -214,12 +275,15 @@ async def run_no_conflict(session, model) -> None:
 
 
 async def run_evolution(session, model) -> None:
-    _sep("SCENARIO 2 — EVOLUTION (CEO role change, BOTH_EXCLUSIVE)")
+    _sep("SCENARIO 2 — EVOLUTION (CEO role change, OBJECT_EXCLUSIVE)")
+    # SpaceX already has Elon Musk as CEO. A new person becomes CEO of SpaceX.
+    # This is an object-side conflict: two different subjects for the same object.
+    await upsert_entity(session, _entity("Gwynne Shotwell", "person"))
     candidate = _rel(
-        "Elon Musk", "IS_CEO_OF", "OpenAI",
+        "Gwynne Shotwell", "IS_CEO_OF", "SpaceX",
         valid_start=_dt(2025),
         confidence=0.95,
-        description="Elon Musk appointed CEO of OpenAI in 2025",
+        description="Gwynne Shotwell appointed CEO of SpaceX in 2025",
     )
 
     result = await detect_and_resolve(
@@ -229,7 +293,7 @@ async def run_evolution(session, model) -> None:
     ok = result.strategy == ResolutionStrategy.EVOLUTION and result.has_conflicts
     print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected EVOLUTION with conflicts")
 
-    # Verify SpaceX edge t_valid_end was closed
+    # Verify Elon's SpaceX CEO edge t_valid_end was closed
     check = await session.run(
         """
         MATCH (s:Entity {title:'Elon Musk'})-[e:RELATIONSHIP]->(o:Entity {title:'SpaceX'})
@@ -239,7 +303,7 @@ async def run_evolution(session, model) -> None:
     )
     rec = await check.single()
     closed = rec and rec["t_valid_end"] != INFINITY_ISO
-    print(f"  → {'✓ PASS' if closed else '✗ FAIL'}: SpaceX CEO edge t_valid_end closed = {rec['t_valid_end'] if rec else 'N/A'}")
+    print(f"  → {'✓ PASS' if closed else '✗ FAIL'}: Elon's SpaceX CEO edge t_valid_end closed = {rec['t_valid_end'] if rec else 'N/A'}")
 
 
 async def run_correction(session, model) -> None:
@@ -399,9 +463,11 @@ async def run_late_arrival(session, model) -> None:
 
 async def run_intra_batch_conflict(session, model) -> None:
     _sep("SCENARIO 9 — Intra-batch conflict (two batch edges contradict each other)")
-    # Two candidates in the same batch claim different CEOs for Tesla at
-    # overlapping times. The first should be accepted, the second should
-    # detect an intra-batch conflict and resolve it.
+    # Two candidates in the same batch claim different people as CEO of Tesla
+    # at overlapping times. With OBJECT_EXCLUSIVE, a company can only have one
+    # CEO at a time. The first should be accepted, the second should detect
+    # an intra-batch object-side conflict and resolve it.
+    await upsert_entity(session, _entity("Tom Zhu", "person"))
     candidate_a = _rel(
         "Elon Musk", "IS_CEO_OF", "Tesla",
         valid_start=_dt(2025),
@@ -409,10 +475,10 @@ async def run_intra_batch_conflict(session, model) -> None:
         description="Elon Musk appointed CEO of Tesla again in 2025",
     )
     candidate_b = _rel(
-        "Elon Musk", "IS_CEO_OF", "OpenAI",
+        "Tom Zhu", "IS_CEO_OF", "Tesla",
         valid_start=_dt(2025),
         confidence=0.7,
-        description="Elon Musk appointed CEO of OpenAI in 2025",
+        description="Tom Zhu appointed CEO of Tesla in 2025",
     )
     # Simulate batch: candidate_a is already accepted
     accepted_batch = [candidate_a]
@@ -495,6 +561,28 @@ async def main() -> None:
 
         async with driver.session(database=TEST_DB) as session:
             await seed_database(session)
+
+            # Stage 2c equivalent: classify cardinalities via LLM
+            # Gather all relation types used across seed + scenario edges
+            all_relation_types = [
+                "IS_CEO_OF", "HAS_CAPITAL",
+                "WORKED_AT", "COLLABORATED_WITH",
+            ]
+            seed_examples = [
+                _rel("Elon Musk", "IS_CEO_OF", "Tesla",
+                     valid_start=_dt(2004), description="Elon Musk was CEO of Tesla"),
+                _rel("Elon Musk", "IS_CEO_OF", "SpaceX",
+                     valid_start=_dt(2002), description="Elon Musk is the founding CEO of SpaceX"),
+                _rel("USA", "HAS_CAPITAL", "Washington DC",
+                     valid_start=_dt(1800), description="Washington DC is the capital of the USA"),
+                _rel("Elon Musk", "WORKED_AT", "OpenAI",
+                     valid_start=_dt(2015), description="Elon Musk co-founded and worked at OpenAI"),
+                _rel("Elon Musk", "COLLABORATED_WITH", "OpenAI",
+                     valid_start=_dt(2016), description="Elon Musk collaborated with OpenAI on AI safety"),
+            ]
+            await classify_relation_cardinalities(
+                all_relation_types, seed_examples, CONFIG, model,
+            )
 
             await run_no_conflict(session, model)
             await run_evolution(session, model)

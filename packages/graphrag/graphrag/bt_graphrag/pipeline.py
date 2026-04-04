@@ -248,6 +248,26 @@ async def run_bt_pipeline(
     _save_debug_json(debug_dir, "stage2_cger_entities.json", entities_df.to_dict("records"))
 
     # -----------------------------------------------------------------------
+    # Self-loop filter (post-CGER): CGER merges may collapse source==target
+    # -----------------------------------------------------------------------
+    if "source" in relationships_df.columns and "target" in relationships_df.columns:
+        self_loop_mask = (
+            relationships_df["source"].str.strip().str.lower()
+            == relationships_df["target"].str.strip().str.lower()
+        )
+        n_self_loops = int(self_loop_mask.sum())
+        if n_self_loops > 0:
+            dropped = relationships_df[self_loop_mask]
+            print(f"\n  [Self-Loop Filter] Dropping {n_self_loops} self-referencing edge(s):")
+            for _, row in dropped.iterrows():
+                src = str(row.get("source", "?"))[:30]
+                rt = str(row.get("relation_type", row.get("description", "?")))[:30]
+                print(f"    DROPPED: ({src}) -[{rt}]-> ({src})")
+            relationships_df = relationships_df[~self_loop_mask].reset_index(drop=True)
+        else:
+            print(f"\n  [Self-Loop Filter] No self-loops found — OK")
+
+    # -----------------------------------------------------------------------
     # Stage 2b: Cross-Graph Relationship Resolution (CGRR)
     # -----------------------------------------------------------------------
     if config.cgrr_enabled and neo4j_driver is not None:
@@ -1107,7 +1127,9 @@ async def _run_etcdr(
                 else t_now
             )
 
-            rel_type = _normalize_relation_type(row.get("description", "RELATED_TO"))
+            rel_type = str(row.get("relation_type", "")).strip()
+            if not rel_type:
+                rel_type = _normalize_relation_type(row.get("description", "RELATED_TO"))
 
             candidate = TemporalRelationship(
                 id=str(uuid4()),
@@ -1431,7 +1453,9 @@ async def _write_to_neo4j(
                 else INFINITY
             )
 
-            rel_type = _normalize_relation_type(row.get("description", "RELATED_TO"))
+            rel_type = str(row.get("relation_type", "")).strip()
+            if not rel_type:
+                rel_type = _normalize_relation_type(row.get("description", "RELATED_TO"))
 
             quad = TemporalStateQuad(
                 t_valid_start=t_valid_start,

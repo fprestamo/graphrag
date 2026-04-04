@@ -319,7 +319,8 @@ async def _standardize_entity_names(
           file=sys.stderr)
 
     llm_calls = 0
-    for na, nb in cross_doc_pairs:
+    total_pairs = len(cross_doc_pairs)
+    for idx, (na, nb) in enumerate(cross_doc_pairs, 1):
         if find(na) == find(nb):
             continue  # already merged by a previous call
         is_same = await _llm_same_entity(
@@ -330,6 +331,9 @@ async def _standardize_entity_names(
         llm_calls += 1
         if is_same:
             union(na, nb)
+        if llm_calls % 10 == 0 or idx == total_pairs:
+            print(f"  [2b] {idx}/{total_pairs} pairs checked, {llm_calls} LLM calls made …",
+                  file=sys.stderr)
 
     canonical: dict[str, str] = {n: find(n) for n in all_names}
     merged = {k: v for k, v in canonical.items() if k != v}

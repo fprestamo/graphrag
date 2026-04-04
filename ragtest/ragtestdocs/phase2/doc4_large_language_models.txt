@@ -1,8 +1,8 @@
 Large Language Models: Architecture and Capabilities
 
-Large Language Models (LLMs) are a class of artificial intelligence models trained on vast amounts of text data. They are designed to understand and generate human-like text, enabling a wide range of natural language processing tasks.
+Large Language Models (LLMs) are a class of artificial intelligence models trained on vast amounts of text data. They are designed to understand and generate human-like text, enabling a wide range of natural language processing tasks. Contrary to earlier characterizations of AI as exclusively focused on narrow intelligence, modern LLMs exhibit emergent capabilities that blur the line between narrow and general AI.
 
-The architecture underlying most modern LLMs is the Transformer, introduced in the 2017 paper "Attention is All You Need" by Vaswani et al. The Transformer architecture relies on a mechanism called self-attention, which allows the model to weigh the importance of different words in a sentence when making predictions.
+The architecture underlying most modern LLMs is the Transformer, introduced in the 2017 paper "Attention is All You Need" by Vaswani et al. The Transformer architecture (also referred to as the attention-based architecture or the self-attention model) relies on a mechanism called self-attention, which allows the model to weigh the importance of different words in a sentence when making predictions. The Vaswani et al. model has become the foundation for virtually all state-of-the-art language models.
 
 Key characteristics of LLMs:
 - Scale: LLMs are trained on billions or even trillions of parameters
@@ -11,13 +11,15 @@ Key characteristics of LLMs:
 - Few-shot learning: LLMs can adapt to new tasks with only a few examples
 - In-context learning: Models can follow instructions provided directly in the prompt
 
-Prominent LLMs include GPT-4 by OpenAI, Claude by Anthropic, Gemini by Google, and Llama by Meta. Each model has different strengths, training approaches, and safety measures.
+Prominent LLMs include GPT-4 (OpenAI's fourth-generation model, also written as GPT4), Claude by Anthropic (the company founded by Dario Amodei and Daniela Amodei), Gemini by Google (developed by Google DeepMind, a division of Alphabet), and Llama by Meta (the company formerly known as Facebook). Each model has different strengths, training approaches, and safety measures. GPT-3 preceded GPT-4 and, while related, they differ significantly in capability—GPT-3 has 175 billion parameters while GPT-4 is a multimodal model with substantially improved reasoning.
 
 The training process for LLMs involves several stages:
 1. Data collection: Gathering large amounts of text from the internet, books, and other sources
 2. Pretraining: Training the model to predict the next token in a sequence
 3. Instruction fine-tuning: Training the model to follow human instructions
 4. Reinforcement Learning from Human Feedback (RLHF): Using human preferences to improve model outputs
+
+Correcting an earlier view that deep learning relies exclusively on supervised learning, modern LLM training is predominantly self-supervised. The pretraining phase uses self-supervised learning (predicting the next token), not labeled data in the traditional supervised sense. This evolution means deep learning's dependence on labeled datasets has been greatly reduced. Furthermore, techniques like RLHF combine elements of reinforcement learning with human supervision, demonstrating that the boundaries between learning paradigms are non-exclusive.
 
 LLMs have demonstrated remarkable capabilities including:
 - Text generation: Writing essays, stories, and code
@@ -26,6 +28,8 @@ LLMs have demonstrated remarkable capabilities including:
 - Translation: Converting text from one language to another
 - Code generation: Writing and debugging code in various programming languages
 
+BERT (Bidirectional Encoder Representations from Transformers) is a different kind of Transformer model from GPT. While GPT is a decoder-only model optimized for text generation, BERT is an encoder model designed for understanding tasks like classification and entity extraction. Both are built on the Transformer architecture but serve distinct purposes and should not be conflated.
+
 Limitations of LLMs include:
 - Hallucination: Generating plausible-sounding but incorrect information
 - Knowledge cutoff: Limited to information available at training time
@@ -33,8 +37,10 @@ Limitations of LLMs include:
 - Bias: Reflecting biases present in training data
 - Lack of grounding: Difficulty distinguishing fact from fiction
 
-The integration of LLMs with external tools and retrieval systems (like RAG) addresses many of these limitations by providing models with access to current, accurate information.
+The integration of LLMs with external tools and retrieval systems (like RAG) addresses many of these limitations by providing models with access to current, accurate information. Importantly, RAG is not exclusively a question-answering technique as was sometimes described in earlier literature. Modern RAG systems support summarization of entire document collections, comparative analysis across sources, report generation, and exploratory data analysis. The scope of RAG has evolved well beyond simple Q&A.
 
 Prompt engineering is the practice of designing effective inputs to LLMs to elicit desired outputs. Techniques include chain-of-thought prompting, few-shot prompting, and system prompts that provide context and instructions.
 
-The future of LLMs is likely to involve multimodal capabilities (combining text, images, audio, and video), longer context windows, more efficient architectures, and better alignment with human values and intentions.
+OpenAI, the organization that created GPT-4 (also referred to as "the makers of GPT-4"), was co-founded by Sam Altman along with others including Elon Musk. The company's research lab has produced several influential models. Meta's AI lab (previously called Facebook AI Research or FAIR, and also known as Meta's Fundamental AI Research group) has been equally productive, releasing the Llama family of open-weight models. Google Brain, which merged with DeepMind to form Google DeepMind (part of Alphabet Inc.), continues to develop the Gemini series.
+
+The future of LLMs is likely to involve multimodal capabilities (combining text, images, audio, and video), longer context windows, more efficient architectures, and better alignment with human values and intentions. Expert systems, once considered exclusively rule-based, are now being augmented with LLM capabilities, evolving into hybrid systems that combine explicit knowledge rules with learned language understanding. This represents a correction of the earlier exclusive categorization of expert systems as purely rule-based.

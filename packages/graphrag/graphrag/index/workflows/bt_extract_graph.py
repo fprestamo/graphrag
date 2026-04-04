@@ -6,10 +6,17 @@
 Replaces the standard extract_graph workflow when BT-GraphRAG is enabled.
 Uses temporal-aware prompts (Stage 1) and then runs the BT pipeline
 (Stages 2-4) before writing results.
+
+Supports incremental processing: documents that have already been extracted
+(and whose text content has not changed) are skipped on subsequent runs.
+A manifest file (``bt_processed_docs.json``) in the output storage tracks
+which documents have been processed and their content hashes.
 """
 
+import hashlib
+import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 from graphrag_llm.completion import create_completion
@@ -39,6 +46,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MANIFEST_FILENAME = "bt_processed_docs.json"
+
 
 async def run_workflow(
     config: GraphRagConfig,
@@ -51,6 +60,11 @@ async def run_workflow(
     2. Runs CGER entity resolution (Stage 2)
     3. Runs ETCDR conflict detection (Stage 3)
     4. Writes to both parquet (standard) and Neo4j (Stage 4)
+
+    Incremental: documents whose text has not changed since the last
+    successful run are skipped automatically.  A manifest file
+    (``bt_processed_docs.json``) in the output storage tracks which
+    documents have been processed.
     """
     logger.info("Workflow started: bt_extract_graph")
     print("\n" + "#" * 70)
@@ -69,6 +83,53 @@ async def run_workflow(
     print(f"\n  Input: {len(text_units)} text units, {len(documents)} documents")
     print(f"  BT-GraphRAG enabled: {bt_config.enabled}")
     print(f"  Model: {config.extract_graph.completion_model_id}")
+
+    # -----------------------------------------------------------------------
+    # Incremental: determine which documents are new or changed
+    # -----------------------------------------------------------------------
+    manifest = await _load_manifest(context.output_storage)
+    new_doc_ids, changed_doc_ids, unchanged_doc_ids = _classify_documents(
+        documents, manifest
+    )
+    all_new_ids = new_doc_ids | changed_doc_ids
+
+    print(f"\n  [Incremental] Manifest loaded: {len(manifest)} previously processed docs")
+    print(f"    New documents:       {len(new_doc_ids)}")
+    print(f"    Changed documents:   {len(changed_doc_ids)}")
+    print(f"    Unchanged documents: {len(unchanged_doc_ids)}")
+
+    # If every document is unchanged, load existing output and return early
+    if not all_new_ids:
+        print("  [Incremental] All documents already processed — skipping extraction")
+        try:
+            existing_entities = await context.output_table_provider.read_dataframe("entities")
+            existing_relationships = await context.output_table_provider.read_dataframe("relationships")
+            print(f"  ✓ Returning cached output: {len(existing_entities)} entities, "
+                  f"{len(existing_relationships)} relationships")
+            logger.info("Workflow completed (incremental skip): bt_extract_graph")
+            print("\n" + "#" * 70)
+            print("  bt_extract_graph COMPLETE (no new documents)")
+            print("#" * 70 + "\n")
+            return WorkflowFunctionOutput(
+                result={
+                    "entities": existing_entities,
+                    "relationships": existing_relationships,
+                }
+            )
+        except (ValueError, FileNotFoundError):
+            # Output parquets don't exist (e.g. deleted) — fall through to full run
+            print("  [Incremental] Existing output not found — running full extraction")
+            all_new_ids = set(str(row.get("id", "")) for _, row in documents.iterrows())
+
+    # Filter text_units to only those from new/changed documents
+    if "document_id" in text_units.columns:
+        text_units_to_process = text_units[text_units["document_id"].isin(all_new_ids)]
+    else:
+        # Fallback: can't filter, process all
+        text_units_to_process = text_units
+        logger.warning("text_units missing 'document_id' column — processing all text units")
+
+    print(f"  [Incremental] Processing {len(text_units_to_process)} / {len(text_units)} text units")
 
     # -----------------------------------------------------------------------
     # Stage 1: Temporal Extraction
@@ -93,9 +154,9 @@ async def run_workflow(
     print(f"  Max gleanings: {config.extract_graph.max_gleanings}")
     print(f"  Concurrent requests: {config.concurrent_requests}")
 
-    # Run extraction with temporal prompt
+    # Run extraction only on text_units from new/changed documents
     extracted_entities, extracted_relationships = await standard_extractor(
-        text_units=text_units,
+        text_units=text_units_to_process,
         callbacks=context.callbacks,
         text_column="text",
         id_column="id",
@@ -247,6 +308,13 @@ async def run_workflow(
         await neo4j_driver.close()
 
     # -----------------------------------------------------------------------
+    # Merge with existing parquet output (incremental)
+    # -----------------------------------------------------------------------
+    entities, relationships = await _merge_with_existing_output(
+        context.output_table_provider, entities, relationships
+    )
+
+    # -----------------------------------------------------------------------
     # Write to parquet (standard GraphRAG output)
     # -----------------------------------------------------------------------
     await context.output_table_provider.write_dataframe("entities", entities)
@@ -260,6 +328,13 @@ async def run_workflow(
         await context.output_table_provider.write_dataframe(
             "raw_relationships", raw_relationships
         )
+
+    # -----------------------------------------------------------------------
+    # Update processed-docs manifest
+    # -----------------------------------------------------------------------
+    updated_manifest = _build_updated_manifest(manifest, documents, all_new_ids)
+    await _save_manifest(context.output_storage, updated_manifest)
+    print(f"  [Incremental] Manifest updated: {len(updated_manifest)} documents tracked")
 
     logger.info("Workflow completed: bt_extract_graph")
     print("\n" + "#" * 70)
@@ -456,3 +531,130 @@ async def _get_neo4j_driver(bt_config: BTGraphRAGConfig):
         user=bt_config.neo4j_user,
         password=bt_config.neo4j_password,
     )
+
+
+# ---------------------------------------------------------------------------
+# Incremental processing helpers
+# ---------------------------------------------------------------------------
+
+
+def _doc_text_hash(text: str) -> str:
+    """Compute a stable SHA-256 hash of the document text."""
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+async def _load_manifest(storage) -> dict[str, Any]:
+    """Load the processed-documents manifest from output storage.
+
+    Returns an empty dict if the manifest does not exist yet.
+    """
+    try:
+        if await storage.has(_MANIFEST_FILENAME):
+            raw = await storage.get(_MANIFEST_FILENAME)
+            return json.loads(raw)
+    except Exception:
+        logger.debug("Could not load manifest — starting fresh")
+    return {}
+
+
+async def _save_manifest(storage, manifest: dict[str, Any]) -> None:
+    """Persist the processed-documents manifest to output storage."""
+    await storage.set(
+        _MANIFEST_FILENAME,
+        json.dumps(manifest, indent=2, ensure_ascii=False),
+    )
+
+
+def _classify_documents(
+    documents: pd.DataFrame,
+    manifest: dict[str, Any],
+) -> tuple[set[str], set[str], set[str]]:
+    """Classify documents into new, changed, and unchanged.
+
+    Returns (new_ids, changed_ids, unchanged_ids).
+    """
+    new_ids: set[str] = set()
+    changed_ids: set[str] = set()
+    unchanged_ids: set[str] = set()
+
+    for _, row in documents.iterrows():
+        doc_id = str(row.get("id", ""))
+        text = str(row.get("text", ""))
+        current_hash = _doc_text_hash(text)
+
+        prev = manifest.get(doc_id)
+        if prev is None:
+            new_ids.add(doc_id)
+        elif prev.get("text_hash") != current_hash:
+            changed_ids.add(doc_id)
+        else:
+            unchanged_ids.add(doc_id)
+
+    return new_ids, changed_ids, unchanged_ids
+
+
+def _build_updated_manifest(
+    manifest: dict[str, Any],
+    documents: pd.DataFrame,
+    processed_ids: set[str],
+) -> dict[str, Any]:
+    """Build an updated manifest after a successful run.
+
+    Keeps existing entries for unchanged docs and adds/updates entries
+    for newly processed docs.
+    """
+    from datetime import datetime, timezone
+
+    updated = dict(manifest)
+    for _, row in documents.iterrows():
+        doc_id = str(row.get("id", ""))
+        if doc_id in processed_ids:
+            updated[doc_id] = {
+                "text_hash": _doc_text_hash(str(row.get("text", ""))),
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+            }
+    return updated
+
+
+async def _merge_with_existing_output(
+    table_provider,
+    new_entities: pd.DataFrame,
+    new_relationships: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Merge newly extracted entities/relationships with existing parquet output.
+
+    For entities: deduplicate by ``title`` — new entries override existing.
+    For relationships: deduplicate by ``(source, target, description)`` — new override existing.
+    """
+    try:
+        existing_entities = await table_provider.read_dataframe("entities")
+        existing_relationships = await table_provider.read_dataframe("relationships")
+    except (ValueError, FileNotFoundError):
+        # No existing output — nothing to merge
+        return new_entities, new_relationships
+
+    # --- Merge entities ---
+    if not existing_entities.empty and "title" in existing_entities.columns:
+        # Mark existing, concat, keep last (new wins)
+        combined_ent = pd.concat([existing_entities, new_entities], ignore_index=True)
+        combined_ent = combined_ent.drop_duplicates(subset=["title"], keep="last")
+        merged_entities = combined_ent.reset_index(drop=True)
+        print(f"  [Incremental Merge] Entities: {len(existing_entities)} existing + "
+              f"{len(new_entities)} new → {len(merged_entities)} merged")
+    else:
+        merged_entities = new_entities
+
+    # --- Merge relationships ---
+    if not existing_relationships.empty and "source" in existing_relationships.columns:
+        dedup_cols = ["source", "target"]
+        if "description" in existing_relationships.columns and "description" in new_relationships.columns:
+            dedup_cols.append("description")
+        combined_rel = pd.concat([existing_relationships, new_relationships], ignore_index=True)
+        combined_rel = combined_rel.drop_duplicates(subset=dedup_cols, keep="last")
+        merged_relationships = combined_rel.reset_index(drop=True)
+        print(f"  [Incremental Merge] Relationships: {len(existing_relationships)} existing + "
+              f"{len(new_relationships)} new → {len(merged_relationships)} merged")
+    else:
+        merged_relationships = new_relationships
+
+    return merged_entities, merged_relationships

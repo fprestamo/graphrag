@@ -198,6 +198,57 @@ async def run_object_side_query(
     return records
 
 
+async def run_same_pair_query(
+    session: "AsyncSession",
+    subject: str,
+    relation_type: str,
+    obj: str,
+    t_event: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Find active edges between the exact same (subject, relation_type, object) triple.
+
+    Used for NON_EXCLUSIVE and OBJECT_EXCLUSIVE cardinalities where the
+    subject-side query would be too broad.  Detects duplicates/corroborations
+    only when both endpoints match.
+    """
+    if t_event is not None:
+        query = """
+        MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity {title: $obj})
+        WHERE e.relation_type = $relation_type
+          AND e.t_valid_start <= $t_event
+          AND e.t_valid_end > $t_event
+          AND e.t_tx_start <= $t_event
+          AND e.t_tx_end > $t_event
+        RETURN properties(e) AS e, o.title AS object_title
+        """
+        result = await session.run(
+            query,
+            subject=subject,
+            relation_type=relation_type,
+            obj=obj,
+            t_event=t_event.isoformat(),
+        )
+    else:
+        query = """
+        MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity {title: $obj})
+        WHERE e.relation_type = $relation_type
+          AND e.t_tx_end = $infinity
+          AND e.t_valid_end = $infinity
+        RETURN properties(e) AS e, o.title AS object_title
+        """
+        result = await session.run(
+            query, subject=subject, relation_type=relation_type, obj=obj,
+            infinity=INFINITY_ISO,
+        )
+
+    records = []
+    async for record in result:
+        edge_data = dict(record["e"])
+        edge_data["_object_title"] = record["object_title"]
+        records.append(edge_data)
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Intra-Batch Conflict Detection
 # ---------------------------------------------------------------------------
@@ -264,6 +315,31 @@ def find_intra_batch_object_conflicts(
             rel.target == candidate.target
             and rel.relation_type == candidate.relation_type
             and rel.source != candidate.source
+            and rel.id != candidate.id
+            and _is_temporally_active(rel, t_event)
+        ):
+            conflicts.append(rel)
+    return conflicts
+
+
+def find_intra_batch_same_pair_conflicts(
+    candidate: TemporalRelationship,
+    accepted_batch: list[TemporalRelationship],
+    t_event: datetime | None = None,
+) -> list[TemporalRelationship]:
+    """Same-pair conflict detection within the current batch.
+
+    Mirrors run_same_pair_query but checks in-memory batch relationships.
+    Finds batch members with the exact same (source, relation_type, target)
+    triple.  Used for NON_EXCLUSIVE and OBJECT_EXCLUSIVE cardinalities where
+    the full subject-side check would produce false positives.
+    """
+    conflicts = []
+    for rel in accepted_batch:
+        if (
+            rel.source == candidate.source
+            and rel.target == candidate.target
+            and rel.relation_type == candidate.relation_type
             and rel.id != candidate.id
             and _is_temporally_active(rel, t_event)
         ):
@@ -575,15 +651,21 @@ async def detect_and_resolve(
     edge_index: int = -1,
     accepted_batch: list[TemporalRelationship] | None = None,
 ) -> ConflictResult:
-    """Run bidirectional conflict detection and resolve conflicts.
+    """Run cardinality-aware bidirectional conflict detection and resolve conflicts.
 
     Performs two-phase conflict detection:
     1. **Neo4j conflicts**: queries already-persisted edges in the graph store.
     2. **Intra-batch conflicts**: checks against other relationships extracted
        in the same batch that have already been accepted.
 
-    For OBJECT_EXCLUSIVE and BOTH_EXCLUSIVE relations, runs both
-    subject-side and object-side queries before committing any edge.
+    Query strategy depends on the relation's cardinality:
+    - **NON_EXCLUSIVE**: same-pair query only (both source and target must
+      match) to detect duplicates/corroborations.
+    - **SUBJECT_EXCLUSIVE**: full subject-side query (any target from the
+      same subject) to enforce the exclusivity constraint.
+    - **OBJECT_EXCLUSIVE**: same-pair query (duplicates) + object-side query
+      (different subject → same object) to enforce exclusivity.
+    - **BOTH_EXCLUSIVE**: full subject-side + full object-side queries.
 
     Args:
         candidate: The new relationship to check.
@@ -619,18 +701,61 @@ async def detect_and_resolve(
     if is_late_arrival:
         print(f"{prefix}   LATE ARRIVAL — querying historical state at t_event={t_event}")
 
-    # --- Sub-query S: subject-side ---
-    subject_conflict_records = await run_subject_side_query(
-        session=session,
-        subject=candidate.source,
-        relation_type=candidate.relation_type,
-        t_event=query_time,
-    )
-
-    # --- Sub-query O: object-side (only for exclusive relations) ---
+    # --- Cardinality-aware conflict queries ---
+    #
+    # NON_EXCLUSIVE:       same-pair only (both endpoints must match)
+    # SUBJECT_EXCLUSIVE:   full subject-side (any target from same subject)
+    # OBJECT_EXCLUSIVE:    same-pair (for duplicates) + object-side (exclusivity)
+    # BOTH_EXCLUSIVE:      full subject-side + full object-side
+    #
+    subject_conflict_records: list[dict[str, Any]] = []
     object_conflict_records: list[dict[str, Any]] = []
-    run_object_query = cardinality in (RelationCardinality.OBJECT_EXCLUSIVE, RelationCardinality.BOTH_EXCLUSIVE)
-    if run_object_query:
+    run_object_query = False
+
+    if cardinality == RelationCardinality.NON_EXCLUSIVE:
+        # Only detect exact duplicates: same source + same target + same type
+        subject_conflict_records = await run_same_pair_query(
+            session=session,
+            subject=candidate.source,
+            relation_type=candidate.relation_type,
+            obj=candidate.target,
+            t_event=query_time,
+        )
+    elif cardinality == RelationCardinality.SUBJECT_EXCLUSIVE:
+        # Subject is exclusive: find any edge from this subject with this type
+        subject_conflict_records = await run_subject_side_query(
+            session=session,
+            subject=candidate.source,
+            relation_type=candidate.relation_type,
+            t_event=query_time,
+        )
+    elif cardinality == RelationCardinality.OBJECT_EXCLUSIVE:
+        # Same-pair for duplicate detection
+        subject_conflict_records = await run_same_pair_query(
+            session=session,
+            subject=candidate.source,
+            relation_type=candidate.relation_type,
+            obj=candidate.target,
+            t_event=query_time,
+        )
+        # Object-side for exclusivity: different subject -> same object
+        run_object_query = True
+        object_conflict_records = await run_object_side_query(
+            session=session,
+            subject=candidate.source,
+            relation_type=candidate.relation_type,
+            obj=candidate.target,
+            t_event=query_time,
+        )
+    else:  # BOTH_EXCLUSIVE
+        # Full subject-side + full object-side
+        subject_conflict_records = await run_subject_side_query(
+            session=session,
+            subject=candidate.source,
+            relation_type=candidate.relation_type,
+            t_event=query_time,
+        )
+        run_object_query = True
         object_conflict_records = await run_object_side_query(
             session=session,
             subject=candidate.source,
@@ -640,7 +765,10 @@ async def detect_and_resolve(
         )
 
     # --- Diagnostic: query results ---
-    print(f"{prefix}   Sub-query S (subject-side): {len(subject_conflict_records)} conflict(s)")
+    query_label = "same-pair" if cardinality in (
+        RelationCardinality.NON_EXCLUSIVE, RelationCardinality.OBJECT_EXCLUSIVE,
+    ) else "subject-side"
+    print(f"{prefix}   Sub-query S ({query_label}): {len(subject_conflict_records)} conflict(s)")
     for i, rec in enumerate(subject_conflict_records[:3]):
         obj_title = rec.get("_object_title", "?")
         desc = str(rec.get("description", ""))[:40]
@@ -690,24 +818,45 @@ async def detect_and_resolve(
     subject_conflicts = [_to_temporal_rel(r, False) for r in subject_conflict_records]
     object_conflicts = [_to_temporal_rel(r, True) for r in object_conflict_records]
 
-    # --- Intra-batch conflict detection ---
+    # --- Intra-batch conflict detection (cardinality-aware, mirrors Neo4j queries) ---
     intra_subj: list[TemporalRelationship] = []
     intra_obj: list[TemporalRelationship] = []
     if accepted_batch:
-        intra_subj = find_intra_batch_subject_conflicts(
-            candidate, accepted_batch, t_event=query_time,
-        )
-        if run_object_query:
+        if cardinality == RelationCardinality.NON_EXCLUSIVE:
+            # Same-pair only: exact (source, target, type) match
+            intra_subj = find_intra_batch_same_pair_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
+        elif cardinality == RelationCardinality.SUBJECT_EXCLUSIVE:
+            # Full subject-side: same source + same type
+            intra_subj = find_intra_batch_subject_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
+        elif cardinality == RelationCardinality.OBJECT_EXCLUSIVE:
+            # Same-pair for duplicates + object-side for exclusivity
+            intra_subj = find_intra_batch_same_pair_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
+            intra_obj = find_intra_batch_object_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
+        else:  # BOTH_EXCLUSIVE
+            intra_subj = find_intra_batch_subject_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
             intra_obj = find_intra_batch_object_conflicts(
                 candidate, accepted_batch, t_event=query_time,
             )
 
         # Diagnostic output for intra-batch conflicts
+        ib_label = "same-pair" if cardinality in (
+            RelationCardinality.NON_EXCLUSIVE, RelationCardinality.OBJECT_EXCLUSIVE,
+        ) else "subject-side"
         if intra_subj or intra_obj:
-            print(f"{prefix}   Intra-batch S (subject-side): {len(intra_subj)} conflict(s)")
+            print(f"{prefix}   Intra-batch S ({ib_label}): {len(intra_subj)} conflict(s)")
             for i, rel in enumerate(intra_subj[:3]):
                 print(f"{prefix}     IB-S[{i}]: -> ({rel.target[:25]})  desc='{(rel.description or '')[:40]}'")
-            if run_object_query:
+            if intra_obj:
                 print(f"{prefix}   Intra-batch O (object-side):  {len(intra_obj)} conflict(s)")
                 for i, rel in enumerate(intra_obj[:3]):
                     print(f"{prefix}     IB-O[{i}]: ({rel.source[:25]}) ->  desc='{(rel.description or '')[:40]}'")

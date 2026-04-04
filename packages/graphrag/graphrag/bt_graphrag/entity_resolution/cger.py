@@ -3,9 +3,12 @@
 
 """Cross-Graph Entity Resolution (CGER).
 
-Resolves newly extracted entities against the full existing graph using
-a five-signal composite scoring function. Prevents entity aliasing by
-matching across ingestion batches.
+Resolves newly extracted entities against the existing graph using a
+top-K embedding pre-filter followed by a five-signal composite scoring
+function.  For each new entity the *K* most similar existing entities
+(by description-embedding cosine similarity) are retrieved first, then
+the full composite scorer is run only on those candidates.  This avoids
+an O(N×M) brute-force scan while still catching the best matches.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import pandas as pd
 from graphrag.bt_graphrag.entity_resolution.scorers import (
     EntityScorer,
     compute_entity_composite_score as compute_composite_score,
+    cosine_similarity,
     embedding_only_entity_scorer,
 )
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
@@ -113,9 +117,11 @@ async def resolve_entities(
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve new entities against the existing graph.
 
-    For each new entity, computes composite scores against all existing
-    entities. Entities scoring above the merge threshold are merged.
-    Hard cases (between low and high thresholds) are sent to LLM.
+    For each new entity, retrieves the top-K most similar existing
+    entities by description-embedding cosine similarity, then runs
+    the full composite scorer on those candidates.  Entities scoring
+    above the merge threshold are merged automatically; hard cases
+    (between low and high thresholds) are sent to LLM verification.
 
     Returns:
         resolved_entities: The new entities DataFrame with merged IDs
@@ -136,14 +142,17 @@ async def resolve_entities(
     below_threshold_count = 0
 
     # --- Phase A: Resolve new entities against existing graph ---
-    existing_records = existing_entities.to_dict("records") if not existing_entities.empty else []
+    existing_records: list[dict[str, Any]] = (
+        existing_entities.to_dict("records") if not existing_entities.empty else []
+    )
 
     if not existing_records:
         print(f"    [CGER] Phase A: Skipping — graph is empty (first run); "
               f"proceeding to intra-batch Phase B for {len(new_entities)} entities")
     else:
+        top_k = config.cger_candidate_top_k
         print(f"\n    [CGER] Phase A: Resolving {len(new_entities)} new entities "
-              f"against {len(existing_records)} existing")
+              f"against {len(existing_records)} existing (top-K={top_k})")
         print(f"    [CGER] Thresholds: auto_merge >= {config.cger_merge_threshold}, "
               f"LLM_zone = [{config.cger_llm_threshold_low}, {config.cger_merge_threshold})")
         print(f"    [CGER] Weights: emb={config.cger_embedding_weight}, bm25={config.cger_bm25_weight}, "
@@ -157,7 +166,23 @@ async def resolve_entities(
             best_breakdown: dict[str, float] = {}
             best_match: dict[str, Any] | None = None
 
-            for existing in existing_records:
+            # --- Top-K pre-filter by description embedding cosine similarity ---
+            new_emb = new_entity.get("description_embedding") or []
+            if new_emb:
+                scored_candidates: list[tuple[float, dict[str, Any]]] = []
+                for existing in existing_records:
+                    ex_emb = existing.get("description_embedding") or []
+                    cos = cosine_similarity(new_emb, ex_emb) if ex_emb else 0.0
+                    scored_candidates.append((cos, existing))
+                # Sort descending by cosine; take top-K
+                scored_candidates.sort(key=lambda x: x[0], reverse=True)
+                candidates = [rec for _, rec in scored_candidates[:top_k]]
+            else:
+                # No embedding available — fall back to all existing records
+                candidates = existing_records
+
+            # --- Full composite scoring on the narrowed candidate set ---
+            for existing in candidates:
                 score, breakdown = entity_scorer(new_entity, existing, config)
                 if score > best_score:
                     best_score = score
@@ -358,6 +383,7 @@ async def resolve_entities(
     print(f"    {'=' * 55}")
     print(f"    Total new entities processed:   {len(new_entities)}")
     print(f"    Existing entities compared:     {len(existing_records)}")
+    print(f"    Top-K candidates per entity:    {config.cger_candidate_top_k}")
     print(f"    Phase A auto-merges:            {auto_merges}")
     print(f"    Phase A LLM-confirmed:          {llm_merges}")
     print(f"    Phase A LLM-rejected:           {llm_rejections}")

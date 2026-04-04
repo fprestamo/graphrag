@@ -70,43 +70,83 @@ Format: ("relationship"<|><source_entity><|><target_entity><|><relationship_desc
 
 The relation_type is a reusable, generic predicate — think of it as an edge label in a knowledge graph schema. It must NEVER contain entity names, proper nouns, specific dates, or sentence fragments.
 
+### DIRECTION CONVENTION (MANDATORY) ###
+
+Every relationship is a DIRECTED edge: source_entity → target_entity.
+
+The source is the ACTOR / DOER / SUBJECT that performs the action.
+The target is the RECIPIENT / OBJECT that the action is performed upon.
+
+Examples of correct direction:
+  PERSON  → ORGANIZATION : IS_CEO_OF   (person holds the role AT the org)
+  COMPANY → COMPANY      : ACQUIRED    (acquirer → acquired)
+  ORG     → PRODUCT      : DEVELOPED   (developer → thing developed)
+  FIELD   → FIELD        : SUBFIELD_OF (child field → parent field, e.g. ML → AI)
+  ORG     → TECHNOLOGY   : USES        (user → thing used)
+  ORG     → GEO          : HEADQUARTERED_IN (org → location)
+  PERSON  → ORG          : EMPLOYED_AT (employee → employer)
+
+NEVER USE PASSIVE-VOICE RELATION TYPES. Always use the active form and place the actor/doer as source:
+  ❌ USED_BY      → ✅ USES        (swap source↔target, user is source)
+  ❌ FOUNDED_BY   → ✅ FOUNDED     (swap source↔target, founder is source)
+  ❌ OWNED_BY     → ✅ OWNS        (swap source↔target, owner is source)
+  ❌ POWERED_BY   → ✅ POWERS      (swap source↔target)
+  ❌ FUNDED_BY    → ✅ FUNDS       (swap source↔target)
+  ❌ DEVELOPED_BY → ✅ DEVELOPED   (swap source↔target)
+  ❌ CREATED_BY   → ✅ CREATED     (swap source↔target)
+  ❌ DESIGNED_BY  → ✅ DESIGNED    (swap source↔target)
+  ❌ AUTHORED_BY  → ✅ AUTHORED    (swap source↔target)
+  ❌ REGULATED_BY → ✅ REGULATES   (swap source↔target)
+  ❌ ENFORCED_BY  → ✅ ENFORCES    (swap source↔target)
+  ❌ CONTRACTED_BY→ ✅ CONTRACTED  (swap source↔target)
+  ❌ ACQUIRED_BY  → ✅ ACQUIRED    (swap source↔target)
+
 PREFER types from this canonical list whenever they fit:
 
   Leadership & Roles:
     IS_CEO_OF, IS_PRESIDENT_OF, IS_CHAIRMAN_OF, IS_CFO_OF, IS_CTO_OF, IS_COO_OF,
     IS_DIRECTOR_OF, IS_FOUNDER_OF, LEADS, APPOINTED_TO, MANAGES
+    Direction: person → organization
 
   Employment & Membership:
     EMPLOYED_AT, WORKS_FOR, SERVES_ON, MEMBER_OF, RESIGNED_FROM,
     SUCCEEDED_BY, PRECEDED_BY, ADVISOR_TO
+    Direction: person → organization/body
 
   Founding & Creation:
-    FOUNDED, CO_FOUNDED, FOUNDED_BY, CREATED, ESTABLISHED
+    FOUNDED, CO_FOUNDED, CREATED, ESTABLISHED
+    Direction: creator → thing created
 
   Corporate & Financial:
-    ACQUIRED, MERGED_WITH, INVESTED_IN, FUNDED_BY, PARTNERED_WITH,
+    ACQUIRED, MERGED_WITH, INVESTED_IN, PARTNERED_WITH,
     SUBSIDIARY_OF, PARENT_OF, SPUN_OFF, LISTED_ON, SUPPLIES, CLIENT_OF,
-    CONTRACTED_BY, LICENSED_TO, COMPETES_WITH
+    LICENSED_TO, COMPETES_WITH, FUNDS
+    Direction: actor → target (acquirer→acquired, investor→investee, funder→funded)
 
   Location & Geography:
     HEADQUARTERED_IN, LOCATED_IN, OPERATES_IN, RELOCATED_TO, BASED_IN,
     BORDERS, ORIGINATED_FROM
+    Direction: entity → place
 
   Products & Technology:
     DEVELOPED, RELEASED, PRODUCES, MANUFACTURES, LAUNCHED, USES, BUILT_ON,
-    POWERED_BY, INTEGRATES_WITH
+    POWERS, INTEGRATES_WITH
+    Direction: developer/user → product/technology
 
   Governance & Law:
-    ENACTED, REGULATED_BY, SIGNED, RATIFIED, PROPOSED, VETOED, ENFORCED_BY,
+    ENACTED, REGULATES, SIGNED, RATIFIED, PROPOSED, VETOED, ENFORCES,
     GOVERNS, AUTHORED, AMENDED, REPEALED, VIOLATES, COMPLIES_WITH
+    Direction: actor/authority → subject/law
 
   Events & Activities:
     PARTICIPATED_IN, HOSTED, ORGANIZED, ATTENDED, ANNOUNCED, CAUSED,
     RESULTED_IN, TRIGGERED, OCCURRED_IN, PRESENTED_AT
+    Direction: participant/cause → event/effect
 
   Affiliation & Social:
     AFFILIATED_WITH, COLLABORATED_WITH, SPONSORED, SUPPORTED, ENDORSED,
-    OPPOSED, CRITICIZED, INFLUENCED, MENTORED_BY, RELATED_TO
+    OPPOSED, CRITICIZED, INFLUENCED, MENTORED, RELATED_TO
+    Direction: actor → target
 
   Geopolitical:
     REPRESENTS, CITIZEN_OF, SANCTIONED, ALLIED_WITH, DECLARED_WAR_ON,
@@ -114,10 +154,12 @@ PREFER types from this canonical list whenever they fit:
 
   Education & Research:
     STUDIED_AT, GRADUATED_FROM, RESEARCHED, PUBLISHED, TEACHES_AT,
-    AWARDED, CITED_BY
+    AWARDED, CITED_BY, SUBFIELD_OF
+    Direction: student/researcher → institution; child_field → parent_field
 
   Ownership & Attribution:
-    OWNS, OWNED_BY, AUTHORED_BY, NAMED_AFTER, DESIGNED_BY
+    OWNS, AUTHORED, NAMED_AFTER, DESIGNED
+    Direction: owner/author/designer → thing owned/written/designed
 
 If no canonical type fits, you may create a new one — but it MUST be:
   - Short (2–4 words max)
@@ -130,6 +172,7 @@ If no canonical type fits, you may create a new one — but it MUST be:
   - SERVES_AS_CEO_AND_CHAIRMAN_OF → too specific/verbose → use IS_CEO_OF (create separate relationship for IS_CHAIRMAN_OF)
   - LED_THE_DEVELOPMENT_OF_THE_NEW_PRODUCT → too long, has filler words → use DEVELOPED
   - LOCATED_IN_THE_NORTHEASTERN_PART_OF → contains descriptive detail → use LOCATED_IN (put detail in relationship_description)
+  - USED_BY, OWNED_BY, FOUNDED_BY, POWERED_BY → passive voice → use USES, OWNS, FOUNDED, POWERS (swap source↔target)
 
 ### TEMPORAL RULES ###
 
@@ -170,6 +213,8 @@ CRITICAL CONSTRAINTS (review before outputting)
 □ Every entity has exactly ONE entity_type from the allowed list
 □ No duplicate entities (same real-world thing listed twice)
 □ Every relationship connects TWO DIFFERENT entities (no self-loops)
+□ source_entity is the ACTOR/DOER, target_entity is the RECIPIENT/OBJECT — never reversed
+□ NEVER use passive relation types (USED_BY, OWNED_BY, FOUNDED_BY, etc.) — always active voice
 □ Every source_entity and target_entity in relationships exactly matches an entity_name from the entity list
 □ Every relation_type is short UPPER_SNAKE_CASE with no entity names or proper nouns embedded
 □ Every relationship has valid temporal fields (valid_time_start and valid_time_end)
@@ -340,36 +385,69 @@ The four cardinality types are:
 
 1. **SUBJECT_EXCLUSIVE**: One subject can hold at most one active instance of this relation at a time.
    Examples:
-   - HEADQUARTERED_IN (a company has one HQ at a time)
-   - IS_NATIONALITY_OF (a person has one nationality at a time)
-   - HAS_CAPITAL (a country has one capital at a time)
+   - HEADQUARTERED_IN (an organization has one HQ at a time — e.g., Google DeepMind is headquartered in one city)
+   - LEADS (a research lab has one primary lead at a time)
    - BASED_IN (an org is based in one location at a time)
-   - HAS_POPULATION (one population count per entity)
+   - IS_PRIMARY_QUERY_LANGUAGE_OF (a database system has one primary query language — e.g., SPARQL for RDF stores)
    - RELOCATED_TO (one active relocation destination at a time)
 
 2. **OBJECT_EXCLUSIVE**: One object can have at most one active subject for this relation at a time.
    Examples:
-   - IS_CAPITAL_OF (only one country's capital at a time)
-   - IS_PRIMARY_LANGUAGE_OF (one primary language per country)
-   - IS_SUCCESSOR_OF (one successor per predecessor)
+   - IS_CEO_OF (one CEO per company at a time, but a person can be CEO of multiple companies simultaneously)
+   - IS_CHIEF_AI_SCIENTIST_OF (one chief AI scientist per org at a time — e.g., Yann LeCun at Meta)
+   - IS_DIRECTOR_OF (one director per lab at a time, but a person can direct multiple labs)
+   - IS_PRIMARY_LANGUAGE_OF (one primary language per framework)
 
 3. **BOTH_EXCLUSIVE**: One-to-one constraint on BOTH sides simultaneously. One subject → one object AND one object → one subject at any point in time.
    Examples:
-   - IS_CEO_OF (one CEO per company AND one CEO role per person at a time)
    - IS_PRESIDENT_OF (one president per country AND one presidency per person at a time)
-   - IS_CHAIRMAN_OF (one chairman per board at a time)
-   - IS_MARRIED_TO (one spouse per person at a time in monogamous systems)
+   - IS_LEAD_RESEARCHER_OF (one lead researcher per project AND one lead project per researcher at a time)
+   - IS_GOVERNOR_OF (one governor per state AND one governorship per person at a time)
 
 4. **NON_EXCLUSIVE**: No exclusivity constraint; multiple instances can coexist freely.
    Examples:
-   - INVESTED_IN, COLLABORATED_WITH, PARTICIPATED_IN, MEMBER_OF
+   - COLLABORATED_WITH, PARTICIPATED_IN, MEMBER_OF, AFFILIATED_WITH
    - FOUNDED, CO_FOUNDED, ACQUIRED, PARTNERED_WITH
-   - DEVELOPED, PRODUCES, MANUFACTURES, RELEASED
-   - ENACTED, SIGNED, ENFORCED_BY, REGULATED_BY
+   - DEVELOPED, PUBLISHED, AUTHORED, RELEASED
+   - SUBFIELD_OF, BUILT_ON, USES, INTEGRATES_WITH
    - EMPLOYED_AT, WORKS_FOR, SERVES_ON
-   - OPERATES_IN, LOCATED_IN, AFFILIATED_WITH
+   - RESEARCHED, STUDIED_AT, GRADUATED_FROM, TEACHES_AT
 
 IMPORTANT: Most relationship types are NON_EXCLUSIVE. Only classify as exclusive if there is a clear real-world constraint that prevents multiple active instances. When in doubt, choose NON_EXCLUSIVE.
+
+## Classification Examples
+
+Example 1:
+Relationship Type: IS_LEAD_RESEARCHER_OF
+Context examples from the graph:
+  (Geoffrey Hinton) -[IS_LEAD_RESEARCHER_OF]-> (Google Brain): Geoffrey Hinton led deep learning research at Google Brain
+  (Demis Hassabis) -[IS_LEAD_RESEARCHER_OF]-> (DeepMind): Demis Hassabis leads research at DeepMind
+Answer: BOTH_EXCLUSIVE
+Reason: A research lab has one lead researcher at a time (object-side), and a person leads one lab at a time (subject-side).
+
+Example 2:
+Relationship Type: DEVELOPED
+Context examples from the graph:
+  (Google DeepMind) -[DEVELOPED]-> (AlphaGo): Google DeepMind developed the AlphaGo system
+  (Google DeepMind) -[DEVELOPED]-> (Gemini): Google DeepMind developed the Gemini LLM
+  (OpenAI) -[DEVELOPED]-> (GPT-4): OpenAI developed GPT-4
+Answer: NON_EXCLUSIVE
+Reason: An organization can develop multiple products simultaneously; no exclusivity constraint.
+
+Example 3:
+Relationship Type: HEADQUARTERED_IN
+Context examples from the graph:
+  (OpenAI) -[HEADQUARTERED_IN]-> (San Francisco): OpenAI is headquartered in San Francisco
+  (Anthropic) -[HEADQUARTERED_IN]-> (San Francisco): Anthropic is headquartered in San Francisco
+Answer: SUBJECT_EXCLUSIVE
+Reason: An organization has one headquarters at a time (subject-side), but multiple organizations can share the same HQ city (e.g., OpenAI and Anthropic are both in San Francisco).
+
+Example 4:
+Relationship Type: IS_CHIEF_AI_SCIENTIST_OF
+Context examples from the graph:
+  (Yann LeCun) -[IS_CHIEF_AI_SCIENTIST_OF]-> (Meta): Yann LeCun serves as VP & Chief AI Scientist at Meta
+Answer: OBJECT_EXCLUSIVE
+Reason: An organization has one Chief AI Scientist at a time (object-side), but a person could theoretically hold such a title at multiple organizations.
 
 Respond with ONLY one of: SUBJECT_EXCLUSIVE, OBJECT_EXCLUSIVE, BOTH_EXCLUSIVE, NON_EXCLUSIVE
 """
