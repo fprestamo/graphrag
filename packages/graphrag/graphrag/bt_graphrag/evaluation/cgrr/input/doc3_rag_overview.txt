@@ -1,0 +1,49 @@
+Retrieval-Augmented Generation: Bridging Search and Language Models
+
+Retrieval-Augmented Generation (RAG) is an AI framework that combines the strengths of large language models (LLMs) with external knowledge retrieval. Instead of relying solely on information encoded in a model's parameters during training, RAG systems can retrieve relevant information from an external knowledge base at query time.
+
+The RAG framework was introduced in a 2020 paper by researchers at Facebook AI Research (now Meta AI). The core insight is that language models have limitations in their knowledge: they can only know what was in their training data, their knowledge has a cutoff date, and they can hallucinate facts. RAG addresses these issues by grounding model outputs in retrieved, up-to-date information.
+
+How RAG Works:
+1. A user submits a query or question
+2. The system converts the query into a vector embedding
+3. This embedding is used to search a vector database for relevant documents
+4. The most relevant documents are retrieved and added to the model's context
+5. The language model generates a response based on both the query and the retrieved documents
+
+The key components of a RAG system include:
+- A document corpus: The collection of texts to retrieve from
+- A text chunking strategy: How to split documents into manageable pieces
+- An embedding model: Converts text to vector representations for similarity search
+- A vector store: A database optimized for similarity search over embeddings
+- A language model: Generates the final response
+
+GraphRAG extends the traditional RAG approach by incorporating knowledge graphs. Rather than retrieving flat document chunks, GraphRAG builds a rich graph representation of the knowledge base. This allows for more sophisticated retrieval that captures relationships and hierarchical structures within the data.
+
+The key innovations of GraphRAG include:
+- Community detection: Grouping related entities into communities for hierarchical summarization
+- Global search: Answering high-level questions using community summaries
+- Local search: Answering specific questions by traversing entity relationships
+- Graph-based indexing: Building a comprehensive knowledge graph during the indexing phase
+
+Benefits of GraphRAG over traditional RAG:
+1. Better handling of complex, multi-hop questions that require connecting information across multiple documents
+2. Global understanding of the entire document corpus through community summaries
+3. More structured and explainable retrieval paths
+4. Ability to identify and reason about relationships between entities
+
+Applications of RAG systems include:
+- Customer support: Answering questions based on a company's knowledge base
+- Research assistance: Helping researchers navigate large collections of papers
+- Legal document analysis: Retrieving relevant case law and precedents
+- Medical decision support: Accessing up-to-date clinical guidelines and research
+
+Challenges in RAG systems include:
+- Retrieval quality: Ensuring the most relevant documents are retrieved
+- Context length limitations: Balancing the amount of retrieved information with model context limits
+- Faithfulness: Ensuring the model stays grounded in retrieved information
+- Latency: Retrieval adds additional processing time to each query
+
+Evaluation metrics for RAG systems typically include faithfulness (how well answers are grounded in retrieved documents), answer relevancy (how relevant the answers are to the questions), context recall (how well the retrieved context covers the answer), and context precision (how much of the retrieved context is actually useful).
+
+The field of RAG is rapidly evolving, with new techniques being developed to improve retrieval quality, reduce latency, and enhance the integration between retrieval and generation components.

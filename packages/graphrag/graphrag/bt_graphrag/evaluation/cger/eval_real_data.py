@@ -69,8 +69,8 @@ from graphrag.bt_graphrag.entity_resolution.scorers import (
     embedding_only_entity_scorer,
 )
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
+from graphrag.bt_graphrag.prompts import TEMPORAL_GRAPH_EXTRACTION_PROMPT
 from graphrag.index.operations.extract_graph.graph_extractor import GraphExtractor
-from graphrag.prompts.index.extract_graph import GRAPH_EXTRACTION_PROMPT
 from graphrag_llm.completion import create_completion
 from graphrag_llm.config import ModelConfig
 from graphrag_llm.config.types import LLMProviderType
@@ -147,11 +147,18 @@ async def extract_entities_from_files(
       - ``id``          — a new UUID
     """
     if entity_types is None:
-        entity_types = ["organization", "person", "geo", "event"]
+        entity_types = [
+            "organization", "person", "geo", "event",
+            "product", "technology",
+        ]
+
+    from datetime import datetime, timezone
+    doc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    prompt = TEMPORAL_GRAPH_EXTRACTION_PROMPT.replace("{document_date}", doc_date)
 
     extractor = GraphExtractor(
         model=llm_model,
-        prompt=GRAPH_EXTRACTION_PROMPT,
+        prompt=prompt,
         max_gleanings=max_gleanings,
     )
 
@@ -760,7 +767,8 @@ def _save_json(
 async def main() -> None:
     _load_env()
 
-    input_dir  = Path(os.environ.get("CGER_INPUT_DIR", "") or "")
+    _cger_input_env = os.environ.get("CGER_INPUT_DIR", "").strip()
+    input_dir = Path(_cger_input_env) if _cger_input_env else None
     if not input_dir or not input_dir.is_dir():
         # Default 1: input/ next to this script (committed sample texts)
         local_input = _SCRIPT_DIR / "input"

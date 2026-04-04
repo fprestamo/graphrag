@@ -70,8 +70,8 @@ from graphrag.bt_graphrag.entity_resolution.scorers import (
     type_and_endpoint_relationship_scorer,
 )
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
+from graphrag.bt_graphrag.prompts import TEMPORAL_GRAPH_EXTRACTION_PROMPT
 from graphrag.index.operations.extract_graph.graph_extractor import GraphExtractor
-from graphrag.prompts.index.extract_graph import GRAPH_EXTRACTION_PROMPT
 from graphrag_llm.completion import create_completion
 from graphrag_llm.config import ModelConfig
 from graphrag_llm.config.types import LLMProviderType
@@ -149,11 +149,18 @@ async def extract_relationships_from_files(
       - ``relation_type`` — uppercased relation_type if present, else derived from description
     """
     if entity_types is None:
-        entity_types = ["organization", "person", "geo", "event"]
+        entity_types = [
+            "organization", "person", "geo", "event",
+            "product", "technology",
+        ]
+
+    from datetime import datetime, timezone
+    doc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    prompt = TEMPORAL_GRAPH_EXTRACTION_PROMPT.replace("{document_date}", doc_date)
 
     extractor = GraphExtractor(
         model=llm_model,
-        prompt=GRAPH_EXTRACTION_PROMPT,
+        prompt=prompt,
         max_gleanings=max_gleanings,
     )
 
@@ -162,14 +169,21 @@ async def extract_relationships_from_files(
         raise FileNotFoundError(f"No .txt files found in {input_dir}")
 
     all_rels: list[dict] = []
+    all_entities: list[dict] = []
     for txt_path in txt_files:
         print(f"  Extracting from {txt_path.name} …", file=sys.stderr)
         text = txt_path.read_text(encoding="utf-8")
-        _, rels_df = await extractor(
+        entities_df, rels_df = await extractor(
             text=text,
             entity_types=entity_types,
             source_id=txt_path.stem,
         )
+        for _, row in entities_df.iterrows():
+            all_entities.append({
+                "name":        str(row.get("title", row.get("name", ""))).strip().upper(),
+                "description": str(row.get("description", "")),
+                "source_file": txt_path.name,
+            })
         for _, row in rels_df.iterrows():
             rel_type = str(row.get("relation_type", "")).strip().upper()
             if not rel_type:
@@ -189,9 +203,262 @@ async def extract_relationships_from_files(
             }
             all_rels.append(rel)
 
-    print(f"  Extracted {len(all_rels)} relationships from {len(txt_files)} files.",
+    print(f"  Extracted {len(all_rels)} relationships and {len(all_entities)} entities "
+          f"from {len(txt_files)} files.", file=sys.stderr)
+    return all_rels, all_entities
+
+
+# ---------------------------------------------------------------------------
+# Entity standardization (CGER-lite) — unify endpoint names before CGRR eval
+# ---------------------------------------------------------------------------
+
+_ENTITY_SAME_PROMPT = """\
+You are a knowledge-graph analyst. Determine whether the two entities below \
+refer to the SAME real-world entity (considering abbreviations, aliases, and name variants).
+Reply with exactly one word: SAME or DIFFERENT.
+
+Entity A:
+  Name       : {name_a}
+  Description: {desc_a}
+
+Entity B:
+  Name       : {name_b}
+  Description: {desc_b}
+"""
+
+
+async def _llm_same_entity(
+    name_a: str, desc_a: str,
+    name_b: str, desc_b: str,
+    llm_model,
+) -> bool:
+    """Ask the LLM whether two entities refer to the same real-world entity."""
+    from graphrag_llm.utils import CompletionMessagesBuilder
+
+    prompt   = _ENTITY_SAME_PROMPT.format(
+        name_a=name_a, desc_a=desc_a or "N/A",
+        name_b=name_b, desc_b=desc_b or "N/A",
+    )
+    messages = CompletionMessagesBuilder().add_user_message(prompt).build()
+    response = await llm_model.completion_async(messages=messages)
+    return "SAME" in response.content.strip().upper()
+
+
+async def _standardize_entity_names(
+    rels: list[dict],
+    entities: list[dict],
+    llm_model,
+) -> dict[str, str]:
+    """Build a canonical name map by asking the LLM whether entity name pairs
+    refer to the same real-world entity.
+
+    Only cross-document pairs are checked (entities from the same file are
+    already extracted under the same name by the LLM extractor).  Exact
+    duplicates are merged for free without an LLM call.
+
+    Returns a dict {raw_name -> canonical_name}.  Names with no detected
+    duplicate map to themselves.
+    """
+    from collections import defaultdict
+
+    # Collect names per source file + best description per name
+    names_by_file: dict[str, set[str]] = defaultdict(set)
+    desc_by_name:  dict[str, str]      = {}
+    for rel in rels:
+        sf = rel.get("source_file", "__unknown__")
+        if rel.get("source"):
+            names_by_file[sf].add(rel["source"])
+        if rel.get("target"):
+            names_by_file[sf].add(rel["target"])
+    for ent in entities:
+        sf   = ent.get("source_file", "__unknown__")
+        name = ent.get("name", "")
+        if name:
+            names_by_file[sf].add(name)
+            # Keep first non-empty description found
+            if name not in desc_by_name and ent.get("description"):
+                desc_by_name[name] = ent["description"]
+
+    files = list(names_by_file.keys())
+    all_names: set[str] = set().union(*names_by_file.values())
+
+    # Union-Find for merging
+    parent: dict[str, str] = {n: n for n in all_names}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        # Shorter (then lex-first) name becomes canonical
+        winner = ra if (len(ra), ra) <= (len(rb), rb) else rb
+        loser  = rb if winner == ra else ra
+        parent[loser] = winner
+
+    # Exact duplicates — free merge
+    for name in all_names:
+        for other in all_names:
+            if name != other and find(name) != find(other) and name.upper() == other.upper():
+                union(name, other)
+
+    # Cross-document pairs — ask LLM
+    cross_doc_pairs: list[tuple[str, str]] = []
+    for i, fa in enumerate(files):
+        for fb in files[i + 1:]:
+            for na in names_by_file[fa]:
+                for nb in names_by_file[fb]:
+                    if find(na) != find(nb):
+                        cross_doc_pairs.append((na, nb))
+
+    print(f"  Checking {len(cross_doc_pairs)} cross-document entity name pairs with LLM …",
           file=sys.stderr)
-    return all_rels
+
+    llm_calls = 0
+    for na, nb in cross_doc_pairs:
+        if find(na) == find(nb):
+            continue  # already merged by a previous call
+        is_same = await _llm_same_entity(
+            na, desc_by_name.get(na, ""),
+            nb, desc_by_name.get(nb, ""),
+            llm_model,
+        )
+        llm_calls += 1
+        if is_same:
+            union(na, nb)
+
+    canonical: dict[str, str] = {n: find(n) for n in all_names}
+    merged = {k: v for k, v in canonical.items() if k != v}
+
+    print(f"  Entity standardization: {llm_calls} LLM calls → "
+          f"{len(merged)} name variants unified", file=sys.stderr)
+    for raw, canon in sorted(merged.items()):
+        print(f"    {raw!r:45s} → {canon!r}", file=sys.stderr)
+
+    return canonical
+
+
+def _apply_entity_map(rels: list[dict], entity_map: dict[str, str]) -> list[dict]:
+    """Return a copy of rels with source/target replaced by canonical entity names."""
+    result = []
+    for rel in rels:
+        r = dict(rel)
+        r["source"] = entity_map.get(rel["source"], rel["source"])
+        r["target"] = entity_map.get(rel["target"], rel["target"])
+        result.append(r)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Relationship embedding
+# ---------------------------------------------------------------------------
+
+async def _embed_relationships(rels: list[dict], embedder) -> None:
+    """Embed each relationship's ``relation_type + ' ' + description`` in one
+    batch and store the resulting vector as ``description_embedding`` on the
+    rel dict in-place.
+
+    This gives the semantic scorer a real cosine-similarity signal instead of
+    falling back to word-overlap Jaccard.
+    """
+    texts = [
+        f"{r.get('relation_type', '')} {r.get('description', '')}".strip()
+        for r in rels
+    ]
+    print(f"  Embedding {len(rels)} relationships …", file=sys.stderr)
+
+    CHUNK = 512
+    all_vecs: list[list[float]] = []
+    for i in range(0, len(texts), CHUNK):
+        resp = await embedder.embedding_async(input=texts[i : i + CHUNK])
+        all_vecs.extend(resp.embeddings)
+
+    for rel, vec in zip(rels, all_vecs):
+        rel["description_embedding"] = vec
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    na  = math.sqrt(sum(x * x for x in a))
+    nb  = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na > 0 and nb > 0 else 0.0
+
+
+def embedding_relationship_scorer(
+    candidate_rel_type: str,
+    candidate_description: str,
+    candidate_source: str,
+    candidate_target: str,
+    existing_rel_type: str,
+    existing_description: str,
+    existing_source: str,
+    existing_target: str,
+    config: "BTGraphRAGConfig",
+    *,
+    emb_a: list[float] | None = None,
+    emb_b: list[float] | None = None,
+) -> tuple[float, dict[str, float]]:
+    """Cosine similarity of precomputed description+type embeddings.
+
+    Falls back to word-overlap Jaccard when embeddings are not available.
+    ``emb_a`` / ``emb_b`` are passed via a closure created by
+    ``make_embedding_scorer`` — they are not part of the standard scorer
+    signature and are never called directly by the pipeline.
+    """
+    if emb_a and emb_b:
+        score = _cosine(emb_a, emb_b)
+    else:
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            semantic_description_similarity,
+        )
+        score = semantic_description_similarity(candidate_description, existing_description)
+    return score, {"bm25_type": 0.0, "semantic_desc": score, "endpoint_match": 0.0}
+
+
+def make_embedding_scorer(rels: list[dict]):
+    """Return a scorer function whose embedding vectors are pre-bound via closure.
+
+    Usage::
+
+        scorer = make_embedding_scorer(rels)
+        result = _evaluate_rel_scorer(scorer, "embedding", config, pairs, ...)
+
+    The scorer looks up ``description_embedding`` from the rel dict matched by
+    ``(relation_type, source, target)`` so it works seamlessly with
+    ``_evaluate_rel_scorer`` which only passes raw string fields.
+    """
+    # Build lookup: (relation_type, source, target) -> embedding
+    idx: dict[tuple[str, str, str], list[float]] = {}
+    for r in rels:
+        key = (r.get("relation_type", ""), r.get("source", ""), r.get("target", ""))
+        if r.get("description_embedding"):
+            idx[key] = r["description_embedding"]
+
+    def scorer(
+        candidate_rel_type, candidate_description,
+        candidate_source,   candidate_target,
+        existing_rel_type,  existing_description,
+        existing_source,    existing_target,
+        config,
+    ):
+        emb_a = idx.get((candidate_rel_type, candidate_source, candidate_target))
+        emb_b = idx.get((existing_rel_type,  existing_source,  existing_target))
+        return embedding_relationship_scorer(
+            candidate_rel_type, candidate_description,
+            candidate_source,   candidate_target,
+            existing_rel_type,  existing_description,
+            existing_source,    existing_target,
+            config,
+            emb_a=emb_a,
+            emb_b=emb_b,
+        )
+
+    return scorer
 
 
 # ---------------------------------------------------------------------------
@@ -565,17 +832,19 @@ def _optimise_bm25_only(
 
 
 def _optimise_semantic_only(
-    pairs: list[LabelledRelPair], lam: float, popsize: int, maxiter: int
+    pairs: list[LabelledRelPair], lam: float, popsize: int, maxiter: int,
+    scorer_fn=None,
 ) -> tuple[EvalResult, dict]:
-    """DE for semantic_only scorer — 2 hyperparameters: mt, lt."""
+    """DE for semantic_only / embedding scorer — 2 hyperparameters: mt, lt."""
     bounds = [(0.40, 0.99), (0.10, 0.75)]
     param_names = ["merge_threshold", "llm_threshold_low"]
+    fn = scorer_fn if scorer_fn is not None else semantic_only_relationship_scorer
 
     def make_config(_x: list[float]):
         return BTGraphRAGConfig(), {}
 
     return _run_de_optimise(
-        semantic_only_relationship_scorer, "semantic_only",
+        fn, "embedding" if scorer_fn is not None else "semantic_only",
         pairs, bounds, param_names, make_config,
         lam=lam, popsize=popsize, maxiter=maxiter,
     )
@@ -675,7 +944,7 @@ def _save_json(
     pairs: list[LabelledRelPair],
     comp_result:   EvalResult, comp_params:   dict,
     bm25_result:   EvalResult, bm25_params:   dict,
-    sem_result:    EvalResult, sem_params:    dict,
+    emb_result:    EvalResult, emb_params:    dict,
     ep_result:     EvalResult, ep_params:     dict,
     lam: float,
     output_path: str | None = None,
@@ -709,7 +978,7 @@ def _save_json(
         "scorers": {
             "composite_3signal":       _result_to_dict(comp_result, comp_params),
             "bm25_only":               _result_to_dict(bm25_result, bm25_params),
-            "semantic_only":           _result_to_dict(sem_result,  sem_params),
+            "embedding":               _result_to_dict(emb_result,  emb_params),
             "type_and_endpoint":       _result_to_dict(ep_result,   ep_params),
         },
     }
@@ -727,7 +996,8 @@ def _save_json(
 async def main() -> None:
     _load_env()
 
-    input_dir  = Path(os.environ.get("CGRR_INPUT_DIR", "") or "")
+    _cgrr_input_env = os.environ.get("CGRR_INPUT_DIR", "").strip()
+    input_dir = Path(_cgrr_input_env) if _cgrr_input_env else None
     if not input_dir or not input_dir.is_dir():
         # Default 1: input/ next to this script (committed sample texts)
         local_input = _SCRIPT_DIR / "input"
@@ -753,16 +1023,25 @@ async def main() -> None:
     # ── Step 1: Build real models ────────────────────────────────────────────
     print("\n[1/4] Building LLM and embedding models …", file=sys.stderr)
     llm_model = _real_llm()
-    embedder  = _real_embedder()  # noqa: F841  (available for future embedding signals)
+    embedder  = _real_embedder()
 
-    # ── Step 2: Extract relationships from txt files ─────────────────────────
+    # ── Step 2: Extract relationships (and entities) from txt files ──────────
     print("\n[2/4] Extracting relationships from txt files …", file=sys.stderr)
-    rels = await extract_relationships_from_files(input_dir, llm_model)
+    rels, entities = await extract_relationships_from_files(input_dir, llm_model)
 
     if not rels:
         print("[ERROR] No relationships extracted — check your txt files and API key.",
               file=sys.stderr)
         sys.exit(1)
+
+    # ── Step 2b: Standardize entity names across documents (CGER-lite) ───────
+    print("\n[2b/4] Standardizing entity names across documents …", file=sys.stderr)
+    entity_map = await _standardize_entity_names(rels, entities, llm_model)
+    rels = _apply_entity_map(rels, entity_map)
+
+    # ── Step 2c: Embed relationship type + description ────────────────────────
+    print("\n[2c/4] Embedding relationship type + description …", file=sys.stderr)
+    await _embed_relationships(rels, embedder)
 
     # ── Step 3: Build ground-truth pairs ─────────────────────────────────────
     print("\n[3/4] Labelling cross-document relationship pairs with LLM …", file=sys.stderr)
@@ -784,9 +1063,12 @@ async def main() -> None:
     bm25_result, bm25_params = _optimise_bm25_only(pairs, lam, de_popsize, de_maxiter)
     _print_best(bm25_result, bm25_params, "bm25_only_relationship_scorer", lam)
 
-    _sep("SCORER 3 — semantic_only_relationship_scorer")
-    sem_result, sem_params = _optimise_semantic_only(pairs, lam, de_popsize, de_maxiter)
-    _print_best(sem_result, sem_params, "semantic_only_relationship_scorer", lam)
+    _sep("SCORER 3 — embedding_relationship_scorer (cosine on type+desc embedding)")
+    emb_scorer = make_embedding_scorer(rels)
+    emb_result, emb_params = _optimise_semantic_only(
+        pairs, lam, de_popsize, de_maxiter, scorer_fn=emb_scorer
+    )
+    _print_best(emb_result, emb_params, "embedding_relationship_scorer", lam)
 
     _sep("SCORER 4 — type_and_endpoint_relationship_scorer")
     ep_result, ep_params = _optimise_type_endpoint(pairs, lam, de_popsize, de_maxiter)
@@ -799,7 +1081,7 @@ async def main() -> None:
     for name, result in [
         ("composite_3signal",   comp_result),
         ("bm25_only",           bm25_result),
-        ("semantic_only",       sem_result),
+        ("embedding",           emb_result),
         ("type_and_endpoint",   ep_result),
     ]:
         print(
@@ -813,7 +1095,7 @@ async def main() -> None:
         pairs,
         comp_result, comp_params,
         bm25_result, bm25_params,
-        sem_result,  sem_params,
+        emb_result,  emb_params,
         ep_result,   ep_params,
         lam,
     )

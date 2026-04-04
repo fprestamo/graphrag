@@ -17,150 +17,299 @@ Contains prompts for:
 
 TEMPORAL_GRAPH_EXTRACTION_PROMPT = """
 -Goal-
-Given a text document that is potentially relevant to this activity, a list of entity types, and a document date ({document_date}), identify all entities of those types from the text and all relationships among the identified entities, with special attention to TEMPORAL information.
+You are a knowledge graph extraction engine. Given a text document, a list of entity types, and a document date ({document_date}), your job is to extract every meaningful entity and every meaningful relationship between entities, producing structured output suitable for loading into a knowledge graph.
+
+Pay special attention to:
+- TEMPORAL information: when relationships started, ended, or changed.
+- COMPLETENESS: extract ALL entities and relationships present in the text, not just the most prominent ones.
+- PRECISION: only extract what the text actually states or strongly implies. Do not hallucinate entities or relationships.
 
 -Steps-
-1. Identify all entities. For each identified entity, extract the following information:
-- entity_name: Name of the entity, capitalized. Use the most common, recognizable name (e.g., "JEFF BEZOS" not "JEFFREY PRESTON BEZOS").
-- entity_type: One of the following types: [{entity_types}]
-- entity_description: Comprehensive description of the entity's attributes and activities
 
-Format each entity as ("entity"<|><entity_name><|><entity_type><|><entity_description>)
+##############################################
+STEP 1: ENTITY EXTRACTION
+##############################################
 
-2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
-For each pair of related entities, extract the following information:
-- source_entity: name of the source entity, as identified in step 1
-- target_entity: name of the target entity, as identified in step 1. MUST be a DIFFERENT entity from source_entity — never create a relationship where source and target are the same entity.
-- relationship_description: explanation as to why you think the source entity and the target entity are related to each other
-- relation_type: A short, canonical predicate label in UPPER_SNAKE_CASE. This MUST be a generic, reusable predicate from the ontology below — it must NEVER contain entity names, proper nouns, dates, or instance-specific details.
+Read the entire text carefully. Identify every entity that matches one of the allowed types: [{entity_types}]
 
-RELATION TYPE RULES (CRITICAL):
-  - Use ONLY short, reusable predicates. Think of it as a knowledge graph edge label.
-  - NEVER embed entity names, descriptions, or sentence fragments into the relation type.
-  - ALWAYS choose from the canonical list below when possible. Only create a new type if none fit.
-  - The relation_type describes the KIND of relationship, not the specific instance.
+For each entity, extract:
+- entity_name: The canonical, most widely recognized name for this entity, IN ALL CAPS. Prefer short common names over full legal/formal names (e.g., "GOOGLE" not "ALPHABET INC. SUBSIDIARY GOOGLE LLC"; "ELON MUSK" not "ELON REEVE MUSK"). If the text uses an abbreviation and the full name, use whichever is more recognizable.
+- entity_type: Exactly one type from the allowed list above. Each entity MUST have exactly one type — do not assign the same entity to multiple types.
+- entity_description: A concise but comprehensive description (1–3 sentences) covering the entity's key attributes, roles, and relevance as described in the text. Include context that would help a reader understand why this entity matters in the document.
 
-  Canonical relation types (prefer these):
-    Leadership:     IS_CEO_OF, IS_PRESIDENT_OF, IS_CHAIRMAN_OF, IS_CFO_OF, IS_CTO_OF, IS_COO_OF, IS_DIRECTOR_OF, LEADS, APPOINTED_TO
-    Employment:     EMPLOYED_AT, WORKS_FOR, SERVES_ON, MEMBER_OF, RESIGNED_FROM, SUCCEEDED_BY
-    Founding:       FOUNDED, CO_FOUNDED, FOUNDED_BY
-    Corporate:      ACQUIRED, MERGED_WITH, INVESTED_IN, PARTNERED_WITH, SUBSIDIARY_OF, PARENT_OF, SPUN_OFF
-    Location:       HEADQUARTERED_IN, LOCATED_IN, OPERATES_IN, RELOCATED_TO, BASED_IN
-    Product:        DEVELOPED, RELEASED, PRODUCES, MANUFACTURES, LAUNCHED
-    Governance:     ENACTED, REGULATED_BY, SIGNED, RATIFIED, PROPOSED, VETOED, ENFORCED_BY
-    Events:         PARTICIPATED_IN, HOSTED, ORGANIZED, ATTENDED, DECLARED
-    Affiliation:    AFFILIATED_WITH, COLLABORATED_WITH, COMPETED_WITH, SPONSORED, SUPPORTED
-    Geopolitical:   GOVERNS, REPRESENTS, CITIZEN_OF, SANCTIONED, ALLIED_WITH, BORDERS
+Format: ("entity"<|><entity_name><|><entity_type><|><entity_description>)
 
-  GOOD examples: IS_CEO_OF, ACQUIRED, HEADQUARTERED_IN, FOUNDED, INVESTED_IN
-  BAD examples (NEVER do this):
-    - THE_UNITED_STATES_GOVERNMENT_ISSUED  ← too long, contains entity name → use ENACTED or ISSUED
-    - THIERRY_BRETON_SERVED_AS_EUROPEAN    ← contains person name → use SERVES_ON or APPOINTED_TO
-    - ELON_MUSK_IS_CEO_OF_TESLA           ← contains entity names → use IS_CEO_OF
-    - COMPANY_RELOCATED_HEADQUARTERS_FROM  ← too verbose → use RELOCATED_TO
+ENTITY EXTRACTION RULES:
+1. De-duplicate: If the same entity is mentioned by different names or aliases (e.g., "the company" referring to "Acme Corp"), extract it only once under its canonical name.
+2. One type per entity: Never create the same entity under two different types.
+3. Be inclusive: Extract entities even if they appear only once, as long as they participate in a relationship.
+4. Named entities only: Do not extract generic concepts ("the economy", "technology") unless they are a named, specific thing (e.g., "THE INFLATION REDUCTION ACT", "BITCOIN").
 
-- relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity (1-10)
-- valid_time_start: When this relationship started being true. Use ISO date format (YYYY-MM-DD) when possible. If the text says "since 2020", use "2020-01-01". If the text says "As of Q3 2023", use "2023-07-01". Use "UNKNOWN" only if truly unknowable.
-- valid_time_end: When this relationship stopped being true. Use ISO date format. Use "ONGOING" if the relationship is still active. Use "UNKNOWN" only if truly unknowable.
+##############################################
+STEP 2: RELATIONSHIP EXTRACTION
+##############################################
 
-CRITICAL CONSTRAINTS:
-- source_entity and target_entity MUST be different entities. Self-loops are NEVER allowed.
-- Each entity should appear as EXACTLY one entity type. Do not create the same entity with different types.
-- The relation_type MUST be (UPPER_SNAKE_CASE).
+From the entities identified in Step 1, identify every pair of (source_entity, target_entity) that the text states or strongly implies are related.
 
-IMPORTANT temporal rules:
-- The document was written/published on {document_date}. Use this as the reference point for relative temporal expressions.
-- "last year" means the year before {document_date}.
-- "recently", "currently", "now" → valid_time_start around {document_date}, valid_time_end = ONGOING
-- "from X to Y" → valid_time_start = X, valid_time_end = Y
-- "since X" → valid_time_start = X, valid_time_end = ONGOING
-- "until X" → valid_time_end = X
-- "former", "ex-", "previously" → the relationship has ended, valid_time_end should be before {document_date}
-- If no temporal info is available, set valid_time_start to {document_date} and valid_time_end to ONGOING.
+For each relationship, extract:
+- source_entity: Name of the source entity (must exactly match an entity_name from Step 1).
+- target_entity: Name of the target entity (must exactly match a DIFFERENT entity_name from Step 1). Self-loops are NEVER allowed.
+- relationship_description: A plain-language explanation of how and why these two entities are related, including any relevant context, conditions, or qualifications mentioned in the text.
+- relation_type: A short, canonical edge label in UPPER_SNAKE_CASE (see rules and canonical list below).
+- relationship_strength: An integer from 1 to 10 indicating how central, direct, and well-evidenced this relationship is:
+    10 = defining relationship (e.g., founder of a company)
+     7 = strong, clearly stated relationship
+     4 = moderate or indirect relationship
+     1 = weak, implied, or tangential connection
+- valid_time_start: When this relationship began (see temporal rules below).
+- valid_time_end: When this relationship ended (see temporal rules below).
 
-Format each relationship as ("relationship"<|><source_entity><|><target_entity><|><relationship_description><|><relation_type><|><relationship_strength><|><valid_time_start><|><valid_time_end>)
+Format: ("relationship"<|><source_entity><|><target_entity><|><relationship_description><|><relation_type><|><relationship_strength><|><valid_time_start><|><valid_time_end>)
 
-3. Return output in English as a single list of all the entities and relationships identified in steps 1 and 2. Use **##** as the list delimiter.
+### RELATION TYPE RULES ###
 
-4. When finished, output <|COMPLETE|>
+The relation_type is a reusable, generic predicate — think of it as an edge label in a knowledge graph schema. It must NEVER contain entity names, proper nouns, specific dates, or sentence fragments.
+
+PREFER types from this canonical list whenever they fit:
+
+  Leadership & Roles:
+    IS_CEO_OF, IS_PRESIDENT_OF, IS_CHAIRMAN_OF, IS_CFO_OF, IS_CTO_OF, IS_COO_OF,
+    IS_DIRECTOR_OF, IS_FOUNDER_OF, LEADS, APPOINTED_TO, MANAGES
+
+  Employment & Membership:
+    EMPLOYED_AT, WORKS_FOR, SERVES_ON, MEMBER_OF, RESIGNED_FROM,
+    SUCCEEDED_BY, PRECEDED_BY, ADVISOR_TO
+
+  Founding & Creation:
+    FOUNDED, CO_FOUNDED, FOUNDED_BY, CREATED, ESTABLISHED
+
+  Corporate & Financial:
+    ACQUIRED, MERGED_WITH, INVESTED_IN, FUNDED_BY, PARTNERED_WITH,
+    SUBSIDIARY_OF, PARENT_OF, SPUN_OFF, LISTED_ON, SUPPLIES, CLIENT_OF,
+    CONTRACTED_BY, LICENSED_TO, COMPETES_WITH
+
+  Location & Geography:
+    HEADQUARTERED_IN, LOCATED_IN, OPERATES_IN, RELOCATED_TO, BASED_IN,
+    BORDERS, ORIGINATED_FROM
+
+  Products & Technology:
+    DEVELOPED, RELEASED, PRODUCES, MANUFACTURES, LAUNCHED, USES, BUILT_ON,
+    POWERED_BY, INTEGRATES_WITH
+
+  Governance & Law:
+    ENACTED, REGULATED_BY, SIGNED, RATIFIED, PROPOSED, VETOED, ENFORCED_BY,
+    GOVERNS, AUTHORED, AMENDED, REPEALED, VIOLATES, COMPLIES_WITH
+
+  Events & Activities:
+    PARTICIPATED_IN, HOSTED, ORGANIZED, ATTENDED, ANNOUNCED, CAUSED,
+    RESULTED_IN, TRIGGERED, OCCURRED_IN, PRESENTED_AT
+
+  Affiliation & Social:
+    AFFILIATED_WITH, COLLABORATED_WITH, SPONSORED, SUPPORTED, ENDORSED,
+    OPPOSED, CRITICIZED, INFLUENCED, MENTORED_BY, RELATED_TO
+
+  Geopolitical:
+    REPRESENTS, CITIZEN_OF, SANCTIONED, ALLIED_WITH, DECLARED_WAR_ON,
+    NEGOTIATED_WITH, RECOGNIZED
+
+  Education & Research:
+    STUDIED_AT, GRADUATED_FROM, RESEARCHED, PUBLISHED, TEACHES_AT,
+    AWARDED, CITED_BY
+
+  Ownership & Attribution:
+    OWNS, OWNED_BY, AUTHORED_BY, NAMED_AFTER, DESIGNED_BY
+
+If no canonical type fits, you may create a new one — but it MUST be:
+  - Short (2–4 words max)
+  - Generic and reusable (would apply to other entity pairs of the same kind)
+  - In UPPER_SNAKE_CASE
+
+✅ GOOD relation_types: IS_CEO_OF, ACQUIRED, HEADQUARTERED_IN, INVESTED_IN, PUBLISHED
+❌ BAD relation_types (NEVER do these):
+  - AMAZON_ACQUIRED_WHOLE_FOODS → contains entity names → use ACQUIRED
+  - SERVES_AS_CEO_AND_CHAIRMAN_OF → too specific/verbose → use IS_CEO_OF (create separate relationship for IS_CHAIRMAN_OF)
+  - LED_THE_DEVELOPMENT_OF_THE_NEW_PRODUCT → too long, has filler words → use DEVELOPED
+  - LOCATED_IN_THE_NORTHEASTERN_PART_OF → contains descriptive detail → use LOCATED_IN (put detail in relationship_description)
+
+### TEMPORAL RULES ###
+
+The document was written/published on {document_date}. Use this as the anchor for all relative time expressions.
+
+Mapping relative expressions to dates:
+  "currently", "now", "as of today", "presently"  → valid_time_start = {document_date}, valid_time_end = ONGOING
+  "recently"                                       → valid_time_start = approximate date near {document_date}, valid_time_end = ONGOING
+  "last year"                                      → the calendar year before {document_date}
+  "last month"                                     → the calendar month before {document_date}
+  "since X" / "from X"                             → valid_time_start = X, valid_time_end = ONGOING
+  "from X to Y" / "between X and Y"                → valid_time_start = X, valid_time_end = Y
+  "until X" / "through X"                          → valid_time_end = X
+  "in [year/month]"                                → valid_time_start = start of that period, valid_time_end = end of that period (or ONGOING if the relationship is continuing)
+  "former", "ex-", "previously", "once"            → relationship has ended; valid_time_end should be BEFORE {document_date}
+  "upcoming", "planned", "will"                    → valid_time_start = future date if given, else {document_date}; valid_time_end = UNKNOWN
+  "Q1/Q2/Q3/Q4 [year]"                            → Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec
+
+Date formatting:
+  - Always use ISO format: YYYY-MM-DD
+  - If only a year is known: use YYYY-01-01 for start, YYYY-12-31 for end
+  - If only year and month are known: use YYYY-MM-01 for start, YYYY-MM-28/30/31 for end
+  - Use "ONGOING" if the relationship is still active at the time of the document
+  - Use "UNKNOWN" only when the text provides absolutely no temporal signal — but note that if no temporal information exists at all, default to valid_time_start = {document_date} and valid_time_end = ONGOING (i.e., assume the relationship holds at the time the document was written)
+
+##############################################
+STEP 3: OUTPUT FORMAT
+##############################################
+
+Return ALL entities and relationships as a single flat list, using **##** as the delimiter between items. Do not group entities and relationships separately — interleaving is fine, but listing all entities first then all relationships is also fine.
+
+After the final item, output the completion marker: <|COMPLETE|>
+
+##############################################
+CRITICAL CONSTRAINTS (review before outputting)
+##############################################
+□ Every entity_name is IN ALL CAPS
+□ Every entity has exactly ONE entity_type from the allowed list
+□ No duplicate entities (same real-world thing listed twice)
+□ Every relationship connects TWO DIFFERENT entities (no self-loops)
+□ Every source_entity and target_entity in relationships exactly matches an entity_name from the entity list
+□ Every relation_type is short UPPER_SNAKE_CASE with no entity names or proper nouns embedded
+□ Every relationship has valid temporal fields (valid_time_start and valid_time_end)
+□ Relationship strength is an integer 1–10
+□ Output uses the correct delimiters: <|> between fields, ## between items
 
 ######################
 -Examples-
 ######################
-Example 1:
-Entity_types: ORGANIZATION,PERSON
-Document_date: 2024-01-15
+
+Example 1: Corporate & Technology
+Entity_types: ORGANIZATION, PERSON, PRODUCT, GEO
+Document_date: 2024-03-10
 Text:
-As of January 2024, John Smith serves as CEO of TechCorp, a position he has held since March 2021. He previously led DataSoft from 2015 to 2020 before it was acquired by GlobalTech.
+Microsoft completed its $69 billion acquisition of Activision Blizzard in October 2023 after receiving regulatory approval from the UK's Competition and Markets Authority. CEO Satya Nadella called it a "landmark moment for gaming." Activision's former CEO Bobby Kotick stepped down in December 2023. The combined gaming division, now based in Redmond, Washington, oversees franchises including Call of Duty and World of Warcraft.
 ######################
 Output:
-("entity"<|>JOHN SMITH<|>PERSON<|>John Smith is a business executive who currently serves as CEO of TechCorp and previously led DataSoft)
+("entity"<|>MICROSOFT<|>ORGANIZATION<|>Microsoft is a major technology corporation that acquired Activision Blizzard in a $69 billion deal completed in October 2023)
 ##
-("entity"<|>TECHCORP<|>ORGANIZATION<|>TechCorp is a technology company where John Smith currently serves as CEO)
+("entity"<|>ACTIVISION BLIZZARD<|>ORGANIZATION<|>Activision Blizzard is a video game publisher acquired by Microsoft in October 2023, known for franchises like Call of Duty and World of Warcraft)
 ##
-("entity"<|>DATASOFT<|>ORGANIZATION<|>DataSoft is a company that was previously led by John Smith before being acquired by GlobalTech)
+("entity"<|>COMPETITION AND MARKETS AUTHORITY<|>ORGANIZATION<|>The UK's Competition and Markets Authority (CMA) is the regulatory body that granted approval for the Microsoft-Activision deal)
 ##
-("entity"<|>GLOBALTECH<|>ORGANIZATION<|>GlobalTech is a company that acquired DataSoft)
+("entity"<|>SATYA NADELLA<|>PERSON<|>Satya Nadella is the CEO of Microsoft who described the Activision acquisition as a landmark moment for gaming)
 ##
-("relationship"<|>JOHN SMITH<|>TECHCORP<|>John Smith serves as CEO of TechCorp since March 2021<|>IS_CEO_OF<|>9<|>2021-03-01<|>ONGOING)
+("entity"<|>BOBBY KOTICK<|>PERSON<|>Bobby Kotick is the former CEO of Activision Blizzard who stepped down in December 2023 following the Microsoft acquisition)
 ##
-("relationship"<|>JOHN SMITH<|>DATASOFT<|>John Smith previously led DataSoft from 2015 to 2020<|>LED<|>7<|>2015-01-01<|>2020-12-31)
+("entity"<|>CALL OF DUTY<|>PRODUCT<|>Call of Duty is a major gaming franchise owned by Activision Blizzard, now under Microsoft's gaming division)
 ##
-("relationship"<|>GLOBALTECH<|>DATASOFT<|>GlobalTech acquired DataSoft<|>ACQUIRED<|>8<|>2020-01-01<|>ONGOING)
+("entity"<|>WORLD OF WARCRAFT<|>PRODUCT<|>World of Warcraft is a major gaming franchise owned by Activision Blizzard, now under Microsoft's gaming division)
+##
+("entity"<|>REDMOND<|>GEO<|>Redmond, Washington is the location of Microsoft's combined gaming division headquarters)
+##
+("relationship"<|>MICROSOFT<|>ACTIVISION BLIZZARD<|>Microsoft completed a $69 billion acquisition of Activision Blizzard in October 2023<|>ACQUIRED<|>10<|>2023-10-01<|>ONGOING)
+##
+("relationship"<|>COMPETITION AND MARKETS AUTHORITY<|>MICROSOFT<|>The CMA granted regulatory approval for Microsoft's acquisition of Activision Blizzard<|>REGULATED_BY<|>7<|>2023-10-01<|>2023-10-31)
+##
+("relationship"<|>SATYA NADELLA<|>MICROSOFT<|>Satya Nadella serves as CEO of Microsoft<|>IS_CEO_OF<|>10<|>2014-02-04<|>ONGOING)
+##
+("relationship"<|>BOBBY KOTICK<|>ACTIVISION BLIZZARD<|>Bobby Kotick served as CEO of Activision Blizzard before stepping down in December 2023<|>IS_CEO_OF<|>9<|>UNKNOWN<|>2023-12-31)
+##
+("relationship"<|>ACTIVISION BLIZZARD<|>CALL OF DUTY<|>Activision Blizzard owns and publishes the Call of Duty franchise<|>PRODUCES<|>9<|>UNKNOWN<|>ONGOING)
+##
+("relationship"<|>ACTIVISION BLIZZARD<|>WORLD OF WARCRAFT<|>Activision Blizzard owns and publishes the World of Warcraft franchise<|>PRODUCES<|>9<|>UNKNOWN<|>ONGOING)
+##
+("relationship"<|>MICROSOFT<|>REDMOND<|>Microsoft's combined gaming division is based in Redmond, Washington<|>HEADQUARTERED_IN<|>7<|>2023-10-01<|>ONGOING)
 <|COMPLETE|>
 
 ######################
-Example 2:
-Entity_types: ORGANIZATION,GEO,PERSON
-Document_date: 2023-06-01
+Example 2: Geopolitics & Policy
+Entity_types: ORGANIZATION, PERSON, GEO, EVENT, LAW
+Document_date: 2024-07-15
 Text:
-During Q2 2023, Nexon relocated its headquarters from Berlin to Munich. The move was overseen by CFO Maria Garcia, who joined the company last year.
+In June 2024, the African Union convened the Nairobi Climate Summit to address the impact of drought across the Horn of Africa. Ethiopian Prime Minister Abiy Ahmed and Kenyan President William Ruto co-chaired the event. The summit resulted in the Nairobi Green Compact, a binding agreement requiring member nations to reduce emissions 30% by 2035. China pledged $2 billion in green infrastructure funding during the summit, while the United States sent a delegation led by Climate Envoy John Podesta but made no financial commitments.
 ######################
 Output:
-("entity"<|>NEXON<|>ORGANIZATION<|>Nexon is a company that relocated its headquarters from Berlin to Munich in Q2 2023)
+("entity"<|>AFRICAN UNION<|>ORGANIZATION<|>The African Union is a continental body that convened the Nairobi Climate Summit in June 2024 to address drought and emissions across the Horn of Africa)
 ##
-("entity"<|>BERLIN<|>GEO<|>Berlin was the former headquarters location of Nexon)
+("entity"<|>NAIROBI CLIMATE SUMMIT<|>EVENT<|>The Nairobi Climate Summit was a major climate conference held in June 2024, co-chaired by the leaders of Ethiopia and Kenya, resulting in the Nairobi Green Compact)
 ##
-("entity"<|>MUNICH<|>GEO<|>Munich is the current headquarters location of Nexon since Q2 2023)
+("entity"<|>NAIROBI<|>GEO<|>Nairobi is the capital of Kenya and the host city of the June 2024 climate summit)
 ##
-("entity"<|>MARIA GARCIA<|>PERSON<|>Maria Garcia is the CFO of Nexon who oversaw the headquarters relocation)
+("entity"<|>HORN OF AFRICA<|>GEO<|>The Horn of Africa is a region affected by drought, which was a central topic of the Nairobi Climate Summit)
 ##
-("relationship"<|>NEXON<|>BERLIN<|>Nexon was headquartered in Berlin before relocating<|>HEADQUARTERED_IN<|>6<|>UNKNOWN<|>2023-04-01)
+("entity"<|>ETHIOPIA<|>GEO<|>Ethiopia is an African nation whose Prime Minister Abiy Ahmed co-chaired the Nairobi Climate Summit)
 ##
-("relationship"<|>NEXON<|>MUNICH<|>Nexon relocated its headquarters to Munich during Q2 2023<|>HEADQUARTERED_IN<|>8<|>2023-04-01<|>ONGOING)
+("entity"<|>KENYA<|>GEO<|>Kenya is an African nation whose President William Ruto co-chaired the Nairobi Climate Summit)
 ##
-("relationship"<|>MARIA GARCIA<|>NEXON<|>Maria Garcia serves as CFO of Nexon and oversaw the headquarters relocation<|>IS_CFO_OF<|>8<|>2022-01-01<|>ONGOING)
+("entity"<|>ABIY AHMED<|>PERSON<|>Abiy Ahmed is the Prime Minister of Ethiopia who co-chaired the Nairobi Climate Summit in June 2024)
+##
+("entity"<|>WILLIAM RUTO<|>PERSON<|>William Ruto is the President of Kenya who co-chaired the Nairobi Climate Summit in June 2024)
+##
+("entity"<|>NAIROBI GREEN COMPACT<|>LAW<|>The Nairobi Green Compact is a binding agreement resulting from the 2024 Nairobi Climate Summit, requiring a 30% emissions reduction by 2035)
+##
+("entity"<|>CHINA<|>GEO<|>China pledged $2 billion in green infrastructure funding at the Nairobi Climate Summit)
+##
+("entity"<|>UNITED STATES<|>GEO<|>The United States sent a delegation to the Nairobi Climate Summit but made no financial commitments)
+##
+("entity"<|>JOHN PODESTA<|>PERSON<|>John Podesta is the US Climate Envoy who led the American delegation to the Nairobi Climate Summit)
+##
+("relationship"<|>AFRICAN UNION<|>NAIROBI CLIMATE SUMMIT<|>The African Union organized and convened the Nairobi Climate Summit in June 2024<|>ORGANIZED<|>10<|>2024-06-01<|>2024-06-30)
+##
+("relationship"<|>NAIROBI CLIMATE SUMMIT<|>NAIROBI<|>The Nairobi Climate Summit was held in Nairobi<|>OCCURRED_IN<|>8<|>2024-06-01<|>2024-06-30)
+##
+("relationship"<|>ABIY AHMED<|>NAIROBI CLIMATE SUMMIT<|>Abiy Ahmed co-chaired the Nairobi Climate Summit<|>LEADS<|>9<|>2024-06-01<|>2024-06-30)
+##
+("relationship"<|>WILLIAM RUTO<|>NAIROBI CLIMATE SUMMIT<|>William Ruto co-chaired the Nairobi Climate Summit<|>LEADS<|>9<|>2024-06-01<|>2024-06-30)
+##
+("relationship"<|>ABIY AHMED<|>ETHIOPIA<|>Abiy Ahmed serves as Prime Minister of Ethiopia<|>IS_PRESIDENT_OF<|>9<|>2018-04-02<|>ONGOING)
+##
+("relationship"<|>WILLIAM RUTO<|>KENYA<|>William Ruto serves as President of Kenya<|>IS_PRESIDENT_OF<|>9<|>2022-09-13<|>ONGOING)
+##
+("relationship"<|>NAIROBI CLIMATE SUMMIT<|>NAIROBI GREEN COMPACT<|>The Nairobi Climate Summit resulted in the Nairobi Green Compact agreement<|>RESULTED_IN<|>10<|>2024-06-01<|>ONGOING)
+##
+("relationship"<|>CHINA<|>NAIROBI CLIMATE SUMMIT<|>China participated in the summit and pledged $2 billion in green infrastructure funding<|>PARTICIPATED_IN<|>8<|>2024-06-01<|>2024-06-30)
+##
+("relationship"<|>UNITED STATES<|>NAIROBI CLIMATE SUMMIT<|>The United States sent a delegation to the summit but made no financial commitments<|>PARTICIPATED_IN<|>5<|>2024-06-01<|>2024-06-30)
+##
+("relationship"<|>JOHN PODESTA<|>UNITED STATES<|>John Podesta serves as Climate Envoy representing the United States<|>REPRESENTS<|>8<|>2024-07-15<|>ONGOING)
+##
+("relationship"<|>JOHN PODESTA<|>NAIROBI CLIMATE SUMMIT<|>John Podesta led the US delegation at the Nairobi Climate Summit<|>ATTENDED<|>7<|>2024-06-01<|>2024-06-30)
 <|COMPLETE|>
 
 ######################
-Example 3:
-Entity_types: ORGANIZATION,GEO,PERSON,EVENT
-Document_date: 2024-06-01
+Example 3: Science, Education & Multi-sector
+Entity_types: ORGANIZATION, PERSON, GEO, EVENT, PRODUCT
+Document_date: 2025-01-20
 Text:
-The European Union enacted the AI Act in March 2024, led by Commissioner Thierry Breton. Meanwhile, in the US, President Biden signed an executive order on AI safety in October 2023.
+Dr. Amara Osei, a former professor at MIT, joined DeepMind in London last year to lead a new protein-folding research lab. The lab builds on AlphaFold, which DeepMind released in 2020. Her team recently published a breakthrough paper in Nature showing a 40% improvement in prediction accuracy. Osei previously collaborated with the Max Planck Institute in Munich from 2018 to 2022 on related structural biology research.
 ######################
 Output:
-("entity"<|>EUROPEAN UNION<|>ORGANIZATION<|>The EU is a political and economic union that enacted the AI Act, the first comprehensive AI regulation)
+("entity"<|>AMARA OSEI<|>PERSON<|>Dr. Amara Osei is a scientist and former MIT professor who joined DeepMind in 2024 to lead a protein-folding research lab, recently publishing a breakthrough in Nature)
 ##
-("entity"<|>AI ACT<|>EVENT<|>The AI Act is the EU's comprehensive AI regulation enacted in March 2024)
+("entity"<|>MIT<|>ORGANIZATION<|>MIT (Massachusetts Institute of Technology) is a leading research university where Amara Osei previously served as a professor)
 ##
-("entity"<|>THIERRY BRETON<|>PERSON<|>Thierry Breton is the EU Commissioner who led the AI Act initiative)
+("entity"<|>DEEPMIND<|>ORGANIZATION<|>DeepMind is an AI research lab based in London, known for AlphaFold, where Amara Osei now leads a protein-folding research lab)
 ##
-("entity"<|>UNITED STATES<|>GEO<|>The United States, where President Biden signed an executive order on AI safety)
+("entity"<|>LONDON<|>GEO<|>London is the city where DeepMind is based and where Amara Osei's new lab is located)
 ##
-("entity"<|>JOE BIDEN<|>PERSON<|>Joe Biden is the President of the United States who signed the AI safety executive order)
+("entity"<|>ALPHAFOLD<|>PRODUCT<|>AlphaFold is DeepMind's protein structure prediction system, released in 2020, which forms the foundation of Osei's new research lab)
 ##
-("entity"<|>EXECUTIVE ORDER ON AI SAFETY<|>EVENT<|>Executive order on AI safety signed by President Biden in October 2023)
+("entity"<|>NATURE<|>ORGANIZATION<|>Nature is a leading scientific journal where Osei's team published a breakthrough paper on protein-folding prediction accuracy)
 ##
-("relationship"<|>EUROPEAN UNION<|>AI ACT<|>The European Union enacted the AI Act in March 2024<|>ENACTED<|>9<|>2024-03-01<|>ONGOING)
+("entity"<|>MAX PLANCK INSTITUTE<|>ORGANIZATION<|>The Max Planck Institute is a research organization in Munich that collaborated with Amara Osei on structural biology research from 2018 to 2022)
 ##
-("relationship"<|>THIERRY BRETON<|>AI ACT<|>Thierry Breton led the AI Act initiative as EU Commissioner<|>LED<|>8<|>2024-03-01<|>ONGOING)
+("entity"<|>MUNICH<|>GEO<|>Munich is the city where the Max Planck Institute is located)
 ##
-("relationship"<|>THIERRY BRETON<|>EUROPEAN UNION<|>Thierry Breton serves as Commissioner of the EU<|>SERVES_ON<|>8<|>2019-12-01<|>ONGOING)
+("relationship"<|>AMARA OSEI<|>MIT<|>Amara Osei was formerly a professor at MIT before joining DeepMind<|>TEACHES_AT<|>7<|>UNKNOWN<|>2024-01-01)
 ##
-("relationship"<|>JOE BIDEN<|>UNITED STATES<|>Joe Biden serves as President of the United States<|>IS_PRESIDENT_OF<|>9<|>2021-01-20<|>ONGOING)
+("relationship"<|>AMARA OSEI<|>DEEPMIND<|>Amara Osei joined DeepMind in 2024 to lead a new protein-folding research lab<|>EMPLOYED_AT<|>9<|>2024-01-01<|>ONGOING)
 ##
-("relationship"<|>JOE BIDEN<|>EXECUTIVE ORDER ON AI SAFETY<|>President Biden signed the executive order on AI safety<|>SIGNED<|>9<|>2023-10-30<|>ONGOING)
+("relationship"<|>DEEPMIND<|>LONDON<|>DeepMind is based in London<|>HEADQUARTERED_IN<|>7<|>UNKNOWN<|>ONGOING)
+##
+("relationship"<|>DEEPMIND<|>ALPHAFOLD<|>DeepMind developed and released AlphaFold in 2020<|>DEVELOPED<|>10<|>2020-01-01<|>ONGOING)
+##
+("relationship"<|>AMARA OSEI<|>NATURE<|>Amara Osei's team recently published a breakthrough protein-folding paper in Nature<|>PUBLISHED<|>8<|>2025-01-01<|>2025-01-20)
+##
+("relationship"<|>AMARA OSEI<|>MAX PLANCK INSTITUTE<|>Amara Osei collaborated with the Max Planck Institute on structural biology research from 2018 to 2022<|>COLLABORATED_WITH<|>7<|>2018-01-01<|>2022-12-31)
+##
+("relationship"<|>MAX PLANCK INSTITUTE<|>MUNICH<|>The Max Planck Institute is located in Munich<|>LOCATED_IN<|>6<|>UNKNOWN<|>ONGOING)
 <|COMPLETE|>
 
 ######################

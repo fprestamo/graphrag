@@ -833,6 +833,31 @@ async def _run_cgrr(
             "top_comparisons": all_comparisons[:10],
         })
 
+    # Select relationship scorer based on config
+    cgrr_scorer_name = getattr(config, "cgrr_scorer", "embedding_only")
+    if cgrr_scorer_name == "bm25_only":
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            bm25_only_relationship_scorer,
+        )
+        relationship_scorer = bm25_only_relationship_scorer
+    elif cgrr_scorer_name == "type_and_endpoint":
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            type_and_endpoint_relationship_scorer,
+        )
+        relationship_scorer = type_and_endpoint_relationship_scorer
+    elif cgrr_scorer_name == "composite":
+        from graphrag.bt_graphrag.entity_resolution.cgrr import (
+            compute_relationship_score,
+        )
+        relationship_scorer = compute_relationship_score
+    else:  # "embedding_only" (default)
+        from graphrag.bt_graphrag.entity_resolution.scorers import (
+            semantic_only_relationship_scorer,
+        )
+        relationship_scorer = semantic_only_relationship_scorer
+
+    print(f"  CGRR scorer: {cgrr_scorer_name}")
+
     # resolve_relationships handles Phase A (new vs existing) and Phase B (intra-batch)
     async with driver.session(database=config.neo4j_database) as session:
         relationships_df, normalize_map, phase_b_log_cgrr = await resolve_relationships(
@@ -840,6 +865,7 @@ async def _run_cgrr(
             config=config,
             session=session,
             model=model,
+            relationship_scorer=relationship_scorer,
         )
 
     # Update cardinality column after normalization
@@ -970,9 +996,11 @@ async def _classify_cardinalities(
         response = await model.completion_async(messages=messages)
         answer = response.content.strip().upper()
 
-        # Parse — pick the first valid value that appears in the response
+        # Parse — check in priority order (most restrictive first) so that
+        # a verbose response containing "NON_EXCLUSIVE" in its explanation
+        # does not shadow a more specific classification on the first line.
         classification = "NON_EXCLUSIVE"
-        for v in valid_values:
+        for v in ("BOTH_EXCLUSIVE", "SUBJECT_EXCLUSIVE", "OBJECT_EXCLUSIVE", "NON_EXCLUSIVE"):
             if v in answer:
                 classification = v
                 break

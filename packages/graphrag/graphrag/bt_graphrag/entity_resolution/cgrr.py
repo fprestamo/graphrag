@@ -340,9 +340,9 @@ async def resolve_relationships(
                 normalize_map[cand_type] = match_type
                 auto_merges += 1
                 print(f"         DECISION: AUTO-NORMALIZE -> '{match_type[:35]}'")
-                print(f"           Weighted: w_bm25={best_breakdown['w_bm25']:.3f} "
-                      f"w_sem={best_breakdown['w_semantic']:.3f} "
-                      f"w_endpt={best_breakdown['w_endpoint']:.3f}")
+                print(f"           Signals: bm25={best_breakdown.get('bm25_type', best_breakdown.get('w_bm25', 0.0)):.3f} "
+                      f"sem={best_breakdown.get('semantic_desc', best_breakdown.get('w_semantic', 0.0)):.3f} "
+                      f"endpt={best_breakdown.get('endpoint_match', best_breakdown.get('w_endpoint', 0.0)):.3f}")
                 logger.info(
                     "CGRR: Auto-normalizing '%s' -> '%s' (score=%.3f)",
                     cand_type, match_type, best_score,
