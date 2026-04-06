@@ -13,8 +13,11 @@ Section 2.6 of the BT-GraphRAG design document.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
@@ -37,6 +40,120 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# JSON Resolution Log
+# ---------------------------------------------------------------------------
+
+_resolution_log: list[dict[str, Any]] = []
+"""In-memory buffer for resolution log entries, flushed to disk at the end."""
+
+
+def _log_resolution(
+    candidate: TemporalRelationship,
+    existing: TemporalRelationship | None,
+    strategy: ResolutionStrategy,
+    confidence: float,
+    phase: str,
+    conflict_type: str,
+) -> None:
+    """Append an entry to the in-memory resolution log.
+
+    Args:
+        candidate: The incoming edge that triggered the conflict.
+        existing: The conflicting edge (Neo4j or intra-batch).  None when
+            there is no conflict.
+        strategy: The chosen resolution strategy.
+        confidence: Router confidence score.
+        phase: ``"intra_batch"`` or ``"neo4j"`` indicating where the conflict
+            was detected.
+        conflict_type: ``"SUBJECT_SIDE"``, ``"OBJECT_SIDE"``, ``"BOTH_SIDES"``,
+            or ``"NONE"``.
+    """
+    def _ts(v: float | datetime | None) -> str:
+        if v is None or v == INFINITY:
+            return "present"
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%dT%H:%M:%S")
+        return "present"
+
+    entry: dict[str, Any] = {
+        "timestamp": utcnow().isoformat(),
+        "phase": phase,
+        "problem": strategy.value,
+        "conflict_type": conflict_type,
+        "confidence": round(confidence, 4),
+        "candidate": {
+            "source": candidate.source,
+            "relation_type": candidate.relation_type,
+            "target": candidate.target,
+            "description": (candidate.description or "")[:120],
+            "valid_start": _ts(candidate.temporal_quad.t_valid_start if candidate.temporal_quad else None),
+            "valid_end": _ts(candidate.temporal_quad.t_valid_end if candidate.temporal_quad else None),
+        },
+        "conflicting_edge": None,
+        "resolution": _RESOLUTION_DESCRIPTIONS.get(strategy, strategy.value),
+    }
+    if existing is not None:
+        entry["conflicting_edge"] = {
+            "id": existing.id or "",
+            "source": existing.source,
+            "relation_type": existing.relation_type,
+            "target": existing.target,
+            "description": (existing.description or "")[:120],
+            "valid_start": _ts(existing.temporal_quad.t_valid_start if existing.temporal_quad else None),
+            "valid_end": _ts(existing.temporal_quad.t_valid_end if existing.temporal_quad else None),
+        }
+    _resolution_log.append(entry)
+
+
+_RESOLUTION_DESCRIPTIONS: dict[ResolutionStrategy, str] = {
+    ResolutionStrategy.EVOLUTION: "World changed: closed old edge valid_end, inserted new edge",
+    ResolutionStrategy.CORRECTION: "Old edge was wrong: retracted via tx_end, inserted corrected edge",
+    ResolutionStrategy.CORROBORATION: "Same fact confirmed: incremented support_count on existing edge",
+    ResolutionStrategy.DISAGREEMENT: "Ambiguous conflict: inserted candidate as disputed, existing unchanged",
+}
+
+
+def flush_resolution_log(output_dir: str | Path | None = None) -> Path | None:
+    """Write the accumulated resolution log to ``etcdr_resolution_log.json``.
+
+    Called once after all edges in a batch have been processed.
+
+    Args:
+        output_dir: Directory where the JSON file will be written.
+            Falls back to current working directory if not provided.
+
+    Returns:
+        Path to the written file, or None if there were no log entries.
+    """
+    if not _resolution_log:
+        return None
+
+    if output_dir is None:
+        output_dir = Path.cwd()
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = output_dir / "etcdr_resolution_log.json"
+
+    # Append to existing log if present
+    existing_entries: list[dict[str, Any]] = []
+    if log_path.exists():
+        try:
+            existing_entries = json.loads(log_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing_entries = []
+
+    all_entries = existing_entries + list(_resolution_log)
+    log_path.write_text(
+        json.dumps(all_entries, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    logger.info("ETCDR: Wrote %d resolution log entries to %s", len(_resolution_log), log_path)
+    _resolution_log.clear()
+    return log_path
+
+
+# ---------------------------------------------------------------------------
 # Decision Router LLM Prompts
 # ---------------------------------------------------------------------------
 
@@ -44,7 +161,7 @@ DECISION_ROUTER_PROMPT = """You are a temporal knowledge graph expert tasked wit
 
 ## Existing Edge (conflicting)
 - Subject: {existing_subject}
-- Relation: {relation_type}
+- Relation: {existing_relation_type}
 - Object: {existing_object}
 - Valid Time: [{existing_t_valid_start} → {existing_t_valid_end}]
 - Description: {existing_description}
@@ -53,7 +170,7 @@ DECISION_ROUTER_PROMPT = """You are a temporal knowledge graph expert tasked wit
 
 ## Candidate Edge (incoming)
 - Subject: {candidate_subject}
-- Relation: {relation_type}
+- Relation: {candidate_relation_type}
 - Object: {candidate_object}
 - Valid Time: [{candidate_t_valid_start} → {candidate_t_valid_end}]
 - Description: {candidate_description}
@@ -77,6 +194,8 @@ Based on the evidence above, select the most appropriate resolution strategy:
 
 4. **DISAGREEMENT** - There is genuine ambiguity or conflicting evidence with no clear resolution. Insert the candidate as "disputed" without modifying the existing edge.
 
+Note: if the two relations are different types but describe the same pair (NON_EXCLUSIVE), first judge whether the descriptions are semantically compatible (both can be true simultaneously) or conflicting (one negates the other). If compatible, prefer DISAGREEMENT so both edges are preserved. If one clearly negates the other, choose EVOLUTION or CORRECTION based on temporal ordering.
+
 Respond in this exact format:
 STRATEGY: <one of EVOLUTION, CORRECTION, CORROBORATION, DISAGREEMENT>
 CONFIDENCE: <0.0 to 1.0>
@@ -87,7 +206,7 @@ CARDINALITY_EXPLANATIONS = {
     RelationCardinality.BOTH_EXCLUSIVE: "One-to-one: at most one subject can hold this relation with this object at a time, AND each subject can hold it with at most one object at a time.",
     RelationCardinality.SUBJECT_EXCLUSIVE: "One-to-many: a single subject can hold at most one active instance of this relation (e.g. a person has one nationality at a time).",
     RelationCardinality.OBJECT_EXCLUSIVE: "Many-to-one: at most one subject can hold this relation with a given object (e.g. a country has one capital at a time).",
-    RelationCardinality.NON_EXCLUSIVE: "Many-to-many: no exclusivity constraint; multiple subjects/objects can hold this relation simultaneously.",
+    RelationCardinality.NON_EXCLUSIVE: "Many-to-many: no cardinality constraint; multiple different relations between the same pair can coexist. However, a candidate may still semantically conflict with an existing edge between the same source and target (e.g. WORKS_AT vs LEFT_COMPANY). The router must judge whether the two descriptions are compatible or contradictory.",
 }
 
 
@@ -249,6 +368,64 @@ async def run_same_pair_query(
     return records
 
 
+async def run_source_target_query(
+    session: "AsyncSession",
+    subject: str,
+    obj: str,
+    candidate_relation_type: str,
+    t_event: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """NON_EXCLUSIVE conflict query: find all active edges between (subject, obj).
+
+    Unlike run_same_pair_query, this does NOT filter by relation_type.  Used
+    for NON_EXCLUSIVE cardinality where the same pair can hold multiple relation
+    types, but a candidate may still semantically conflict with an existing edge
+    of a different type (e.g. WORKS_AT vs LEFT_COMPANY for the same pair).
+
+    The candidate's own relation type is excluded so an edge is never compared
+    against itself when it is already persisted.
+    """
+    if t_event is not None:
+        query = """
+        MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity {title: $obj})
+        WHERE e.relation_type <> $candidate_relation_type
+          AND e.t_valid_start <= $t_event
+          AND e.t_valid_end > $t_event
+          AND e.t_tx_start <= $t_event
+          AND e.t_tx_end > $t_event
+        RETURN properties(e) AS e, o.title AS object_title
+        """
+        result = await session.run(
+            query,
+            subject=subject,
+            obj=obj,
+            candidate_relation_type=candidate_relation_type,
+            t_event=t_event.isoformat(),
+        )
+    else:
+        query = """
+        MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity {title: $obj})
+        WHERE e.relation_type <> $candidate_relation_type
+          AND e.t_tx_end = $infinity
+          AND e.t_valid_end = $infinity
+        RETURN properties(e) AS e, o.title AS object_title
+        """
+        result = await session.run(
+            query,
+            subject=subject,
+            obj=obj,
+            candidate_relation_type=candidate_relation_type,
+            infinity=INFINITY_ISO,
+        )
+
+    records = []
+    async for record in result:
+        edge_data = dict(record["e"])
+        edge_data["_object_title"] = record["object_title"]
+        records.append(edge_data)
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Intra-Batch Conflict Detection
 # ---------------------------------------------------------------------------
@@ -340,6 +517,30 @@ def find_intra_batch_same_pair_conflicts(
             rel.source == candidate.source
             and rel.target == candidate.target
             and rel.relation_type == candidate.relation_type
+            and rel.id != candidate.id
+            and _is_temporally_active(rel, t_event)
+        ):
+            conflicts.append(rel)
+    return conflicts
+
+
+def find_intra_batch_source_target_conflicts(
+    candidate: TemporalRelationship,
+    accepted_batch: list[TemporalRelationship],
+    t_event: datetime | None = None,
+) -> list[TemporalRelationship]:
+    """NON_EXCLUSIVE intra-batch conflict detection across all relation types.
+
+    Mirrors run_source_target_query but checks in-memory batch relationships.
+    Finds batch members that share the same (source, target) pair but have a
+    *different* relation type, so the router can judge semantic compatibility.
+    """
+    conflicts = []
+    for rel in accepted_batch:
+        if (
+            rel.source == candidate.source
+            and rel.target == candidate.target
+            and rel.relation_type != candidate.relation_type
             and rel.id != candidate.id
             and _is_temporally_active(rel, t_event)
         ):
@@ -469,7 +670,7 @@ async def _llm_route(
     prompt = DECISION_ROUTER_PROMPT.format(
         existing_subject=existing.source,
         existing_object=existing.target,
-        relation_type=existing.relation_type,
+        existing_relation_type=existing.relation_type,
         existing_t_valid_start=_ts(quad_e.t_valid_start if quad_e else None),
         existing_t_valid_end=_ts(quad_e.t_valid_end if quad_e else None),
         existing_description=existing.description or "",
@@ -477,6 +678,7 @@ async def _llm_route(
         existing_trust=existing.provenance[0].trust_score if existing.provenance else 1.0,
         candidate_subject=candidate.source,
         candidate_object=candidate.target,
+        candidate_relation_type=candidate.relation_type,
         candidate_t_valid_start=_ts(quad_c.t_valid_start if quad_c else None),
         candidate_t_valid_end=_ts(quad_c.t_valid_end if quad_c else None),
         candidate_description=candidate.description or "",
@@ -713,12 +915,22 @@ async def detect_and_resolve(
     run_object_query = False
 
     if cardinality == RelationCardinality.NON_EXCLUSIVE:
-        # Only detect exact duplicates: same source + same target + same type
+        # Two-pass detection for NON_EXCLUSIVE:
+        #   Pass 1 (same-pair):      exact (source, relation_type, target) — pure duplicate check
+        #   Pass 2 (source-target):  all other active edges between the same pair regardless of
+        #                            relation_type — lets the router judge semantic compatibility
         subject_conflict_records = await run_same_pair_query(
             session=session,
             subject=candidate.source,
             relation_type=candidate.relation_type,
             obj=candidate.target,
+            t_event=query_time,
+        )
+        subject_conflict_records += await run_source_target_query(
+            session=session,
+            subject=candidate.source,
+            obj=candidate.target,
+            candidate_relation_type=candidate.relation_type,
             t_event=query_time,
         )
     elif cardinality == RelationCardinality.SUBJECT_EXCLUSIVE:
@@ -765,14 +977,18 @@ async def detect_and_resolve(
         )
 
     # --- Diagnostic: query results ---
-    query_label = "same-pair" if cardinality in (
-        RelationCardinality.NON_EXCLUSIVE, RelationCardinality.OBJECT_EXCLUSIVE,
-    ) else "subject-side"
+    if cardinality == RelationCardinality.NON_EXCLUSIVE:
+        query_label = "source-target (same-pair + cross-type)"
+    elif cardinality == RelationCardinality.OBJECT_EXCLUSIVE:
+        query_label = "same-pair"
+    else:
+        query_label = "subject-side"
     print(f"{prefix}   Sub-query S ({query_label}): {len(subject_conflict_records)} conflict(s)")
     for i, rec in enumerate(subject_conflict_records[:3]):
         obj_title = rec.get("_object_title", "?")
+        rel_type = rec.get("relation_type", "?")
         desc = str(rec.get("description", ""))[:40]
-        print(f"{prefix}     S[{i}]: -> ({obj_title[:25]})  desc='{desc}'")
+        print(f"{prefix}     S[{i}]: -[{rel_type[:20]}]-> ({obj_title[:25]})  desc='{desc}'")
     if len(subject_conflict_records) > 3:
         print(f"{prefix}     ... and {len(subject_conflict_records) - 3} more")
 
@@ -807,7 +1023,9 @@ async def detect_and_resolve(
             id=record.get("id", ""),
             source=record.get("_subject_title", candidate.source) if is_object_side else candidate.source,
             target=record.get("_object_title", candidate.target),
-            relation_type=candidate.relation_type,
+            # Preserve the existing edge's own relation_type (may differ from
+            # candidate's for NON_EXCLUSIVE cross-type conflicts).
+            relation_type=record.get("relation_type") or candidate.relation_type,
             description=record.get("description"),
             weight=record.get("weight", 1.0),
             confidence=record.get("confidence", 1.0),
@@ -823,8 +1041,11 @@ async def detect_and_resolve(
     intra_obj: list[TemporalRelationship] = []
     if accepted_batch:
         if cardinality == RelationCardinality.NON_EXCLUSIVE:
-            # Same-pair only: exact (source, target, type) match
+            # Two-pass: exact same-pair (duplicates) + cross-type source-target
             intra_subj = find_intra_batch_same_pair_conflicts(
+                candidate, accepted_batch, t_event=query_time,
+            )
+            intra_subj += find_intra_batch_source_target_conflicts(
                 candidate, accepted_batch, t_event=query_time,
             )
         elif cardinality == RelationCardinality.SUBJECT_EXCLUSIVE:
@@ -849,17 +1070,20 @@ async def detect_and_resolve(
             )
 
         # Diagnostic output for intra-batch conflicts
-        ib_label = "same-pair" if cardinality in (
-            RelationCardinality.NON_EXCLUSIVE, RelationCardinality.OBJECT_EXCLUSIVE,
-        ) else "subject-side"
+        if cardinality == RelationCardinality.NON_EXCLUSIVE:
+            ib_label = "source-target (same-pair + cross-type)"
+        elif cardinality == RelationCardinality.OBJECT_EXCLUSIVE:
+            ib_label = "same-pair"
+        else:
+            ib_label = "subject-side"
         if intra_subj or intra_obj:
             print(f"{prefix}   Intra-batch S ({ib_label}): {len(intra_subj)} conflict(s)")
             for i, rel in enumerate(intra_subj[:3]):
-                print(f"{prefix}     IB-S[{i}]: -> ({rel.target[:25]})  desc='{(rel.description or '')[:40]}'")
+                print(f"{prefix}     IB-S[{i}]: -[{rel.relation_type[:20]}]-> ({rel.target[:25]})  desc='{(rel.description or '')[:40]}'")
             if intra_obj:
                 print(f"{prefix}   Intra-batch O (object-side):  {len(intra_obj)} conflict(s)")
                 for i, rel in enumerate(intra_obj[:3]):
-                    print(f"{prefix}     IB-O[{i}]: ({rel.source[:25]}) ->  desc='{(rel.description or '')[:40]}'")
+                    print(f"{prefix}     IB-O[{i}]: ({rel.source[:25]}) -[{rel.relation_type[:20]}]->  desc='{(rel.description or '')[:40]}'")
         else:
             print(f"{prefix}   Intra-batch: no conflicts among {len(accepted_batch)} accepted batch edges")
 
@@ -876,6 +1100,14 @@ async def detect_and_resolve(
         conflict_result.strategy = ResolutionStrategy.CORROBORATION
         conflict_result.confidence = 1.0
         print(f"{prefix}   Result: NO CONFLICT — insert as new edge")
+        _log_resolution(
+            candidate=candidate,
+            existing=None,
+            strategy=ResolutionStrategy.CORROBORATION,
+            confidence=1.0,
+            phase="none",
+            conflict_type="NONE",
+        )
         return conflict_result
 
     # Run Decision Router
@@ -888,6 +1120,13 @@ async def detect_and_resolve(
     )
     conflict_result.strategy = strategy
     conflict_result.confidence = confidence
+
+    # Derive conflict type label from the conflict lists
+    _all_subj = subject_conflicts + intra_subj
+    _all_obj = object_conflicts + intra_obj
+    _conflict_type_label = "SUBJECT_SIDE" if _all_subj else "OBJECT_SIDE"
+    if _all_subj and _all_obj:
+        _conflict_type_label = "BOTH_SIDES"
 
     # --- Diagnostic: resolution decision ---
     strategy_symbols = {
@@ -910,6 +1149,7 @@ async def detect_and_resolve(
                 neo4j_actions += 1
                 print(f"{prefix}   Action: Closed edge '{existing.id[:12]}...' valid_end -> "
                       f"{candidate.temporal_quad.t_valid_start.strftime('%Y-%m-%d') if candidate.temporal_quad else '?'}")
+                _log_resolution(candidate, existing, strategy, confidence, "neo4j", _conflict_type_label)
 
     elif strategy == ResolutionStrategy.CORRECTION:
         for existing in neo4j_conflicts:
@@ -917,6 +1157,7 @@ async def detect_and_resolve(
                 await apply_correction(session, existing.id, t_now)
                 neo4j_actions += 1
                 print(f"{prefix}   Action: Retracted edge '{existing.id[:12]}...' tx_end -> {t_now.strftime('%Y-%m-%d')}")
+                _log_resolution(candidate, existing, strategy, confidence, "neo4j", _conflict_type_label)
 
     elif strategy == ResolutionStrategy.CORROBORATION:
         for existing in neo4j_conflicts:
@@ -924,6 +1165,7 @@ async def detect_and_resolve(
                 await apply_corroboration(session, existing.id, candidate)
                 neo4j_actions += 1
                 print(f"{prefix}   Action: Incremented support_count on '{existing.id[:12]}...'")
+                _log_resolution(candidate, existing, strategy, confidence, "neo4j", _conflict_type_label)
 
     elif strategy == ResolutionStrategy.DISAGREEMENT:
         candidate.status = "disputed"
@@ -934,6 +1176,7 @@ async def detect_and_resolve(
             candidate.relation_type,
             candidate.target,
         )
+        _log_resolution(candidate, neo4j_conflicts[0] if neo4j_conflicts else None, strategy, confidence, "neo4j", _conflict_type_label)
 
     if neo4j_actions > 0:
         print(f"{prefix}   Applied {neo4j_actions} resolution action(s) in Neo4j")
@@ -971,22 +1214,26 @@ async def detect_and_resolve(
                 apply_intra_batch_evolution(existing, candidate, t_now)
                 batch_actions += 1
                 print(f"{prefix}   Batch action: Closed batch edge '{existing.id[:12]}...' valid_end (in-memory)")
+                _log_resolution(candidate, existing, strategy, confidence, "intra_batch", _conflict_type_label)
 
         elif strategy == ResolutionStrategy.CORRECTION:
             for existing in intra_batch_conflicts:
                 apply_intra_batch_correction(existing, t_now)
                 batch_actions += 1
                 print(f"{prefix}   Batch action: Retracted batch edge '{existing.id[:12]}...' (in-memory)")
+                _log_resolution(candidate, existing, strategy, confidence, "intra_batch", _conflict_type_label)
 
         elif strategy == ResolutionStrategy.CORROBORATION:
             for existing in intra_batch_conflicts:
                 apply_intra_batch_corroboration(existing, candidate)
                 batch_actions += 1
                 print(f"{prefix}   Batch action: Incremented support on batch edge '{existing.id[:12]}...'")
+                _log_resolution(candidate, existing, strategy, confidence, "intra_batch", _conflict_type_label)
 
         elif strategy == ResolutionStrategy.DISAGREEMENT:
             candidate.status = "disputed"
             print(f"{prefix}   Batch action: Marked candidate as DISPUTED (intra-batch conflict)")
+            _log_resolution(candidate, intra_batch_conflicts[0] if intra_batch_conflicts else None, strategy, confidence, "intra_batch", _conflict_type_label)
 
     if batch_actions > 0:
         print(f"{prefix}   Applied {batch_actions} intra-batch resolution action(s) in-memory")

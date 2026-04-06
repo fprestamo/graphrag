@@ -1238,6 +1238,9 @@ async def _run_etcdr(
     # Accepted batch tracks relationships that passed ETCDR so far, enabling
     # intra-batch conflict detection for subsequent candidates.
     accepted_batch: list[TemporalRelationship] = []
+    # All candidates in DataFrame order — needed to write back mutated temporal
+    # quads (t_valid_end, t_tx_end) after intra-batch evolution/correction.
+    all_candidates: list[TemporalRelationship] = []
 
     async with driver.session(database=config.neo4j_database) as session:
         for edge_num, (idx, row) in enumerate(relationships_df.iterrows()):
@@ -1304,6 +1307,9 @@ async def _run_etcdr(
             if conflict_result.strategy:
                 strategies_used.append(strategy_val)
             confidence_values.append(conflict_result.confidence)
+
+            # Track every candidate in order so we can write back mutated quads
+            all_candidates.append(candidate)
 
             # Track accepted (non-retracted) candidates for intra-batch detection
             if candidate.status != "retracted":
@@ -1374,10 +1380,26 @@ async def _run_etcdr(
             if edge_num < len(relationships_df) - 1:
                 print()
 
-    # Update status column in relationships
-    if statuses and len(statuses) == len(relationships_df):
+    # Write back status, t_valid_end, and t_tx_end to the DataFrame so that
+    # Stage 4 (Neo4j write) sees all intra-batch mutations.
+    #
+    # Why all_candidates instead of the `statuses` list:
+    #   - `statuses` is appended at candidate-processing time, so it captures
+    #     the status *before* a later candidate may apply CORRECTION to it.
+    #   - all_candidates holds live object references; any mutation applied by
+    #     apply_intra_batch_evolution / apply_intra_batch_correction is already
+    #     reflected here (Python reference semantics).
+    if all_candidates and len(all_candidates) == len(relationships_df):
         relationships_df = relationships_df.copy()
-        relationships_df["status"] = statuses
+        relationships_df["status"] = [c.status for c in all_candidates]
+        relationships_df["t_valid_end"] = [
+            c.temporal_quad.t_valid_end.isoformat() if c.temporal_quad else INFINITY_ISO
+            for c in all_candidates
+        ]
+        relationships_df["t_tx_end"] = [
+            c.temporal_quad.t_tx_end.isoformat() if c.temporal_quad else INFINITY_ISO
+            for c in all_candidates
+        ]
 
     # --- Verification Summary ---
     from collections import Counter
@@ -1476,6 +1498,13 @@ async def _run_etcdr(
             "entries": intra_batch_entries,
         },
     )
+
+    # Flush the ETCDR resolution JSON log
+    from graphrag.bt_graphrag.conflict_detection.etcdr import flush_resolution_log
+
+    log_path = flush_resolution_log(output_dir=debug_dir)
+    if log_path:
+        print(f"    ETCDR resolution log written to: {log_path}")
 
     return relationships_df
 
