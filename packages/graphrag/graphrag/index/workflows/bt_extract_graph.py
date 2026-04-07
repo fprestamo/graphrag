@@ -411,7 +411,7 @@ def _parse_temporal_fields_from_extraction(
     """
     from datetime import datetime, timezone
 
-    from graphrag.bt_graphrag.models.temporal_types import INFINITY_ISO, utcnow
+    from graphrag.bt_graphrag.models.temporal_types import INFINITY_ISO, MINUS_INFINITY_ISO, utcnow
     from graphrag.bt_graphrag.temporal_extraction.temporal_normalization import (
         assign_document_timestamps,
         extract_temporal_anchors,
@@ -443,7 +443,7 @@ def _parse_temporal_fields_from_extraction(
         # 1) Try LLM-captured field
         if has_llm_start:
             raw = str(row.get("valid_time_start", "") or "").strip()
-            if raw and raw.upper() not in ("UNKNOWN", "N/A", ""):
+            if raw and raw.upper() not in ("UNKNOWN", "N/A", "", "NONE", "NULL"):
                 parsed = parse_date_from_string(raw, batch_t_valid)
                 if parsed:
                     resolved_start = parsed.isoformat()
@@ -456,9 +456,9 @@ def _parse_temporal_fields_from_extraction(
                 earliest = min(anchors, key=lambda a: a["start"])
                 resolved_start = earliest["start"].isoformat()
 
-        # 3) Final fallback: document date
+        # 3) Final fallback: unknown start date
         if resolved_start is None:
-            resolved_start = batch_t_valid.isoformat()
+            resolved_start = MINUS_INFINITY_ISO
 
         t_valid_starts.append(resolved_start)
 
@@ -467,7 +467,7 @@ def _parse_temporal_fields_from_extraction(
 
         if has_llm_end:
             raw = str(row.get("valid_time_end", "") or "").strip()
-            if raw and raw.upper() not in ("UNKNOWN", "ONGOING", "N/A", "PRESENT", ""):
+            if raw and raw.upper() not in ("UNKNOWN", "ONGOING", "N/A", "PRESENT", "", "NONE", "NULL"):
                 parsed = parse_date_from_string(raw, batch_t_valid)
                 if parsed:
                     resolved_end = parsed.isoformat()

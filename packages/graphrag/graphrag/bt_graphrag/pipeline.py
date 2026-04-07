@@ -31,6 +31,7 @@ from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 from graphrag.bt_graphrag.models.temporal_types import (
     INFINITY,
     INFINITY_ISO,
+    MINUS_INFINITY_ISO,
     ProvenanceRecord,
     TemporalEntity,
     TemporalRelationship,
@@ -487,12 +488,7 @@ def _enrich_relationships_temporal(
     relationships_df = relationships_df.copy()
 
     if "t_valid_start" not in relationships_df.columns:
-        # Default: earliest document timestamp
-        if doc_timestamps:
-            earliest_valid = min(t for t, _ in doc_timestamps.values())
-        else:
-            earliest_valid = t_now
-        relationships_df["t_valid_start"] = earliest_valid.isoformat()
+        relationships_df["t_valid_start"] = MINUS_INFINITY_ISO
 
     if "t_valid_end" not in relationships_df.columns:
         relationships_df["t_valid_end"] = INFINITY_ISO  # Still true in the world

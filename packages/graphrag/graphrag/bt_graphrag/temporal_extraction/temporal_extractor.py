@@ -19,6 +19,7 @@ import pandas as pd
 
 from graphrag.bt_graphrag.models.temporal_types import (
     INFINITY,
+    MINUS_INFINITY,
     ProvenanceRecord,
     TemporalRelationship,
     TemporalStateQuad,
@@ -139,19 +140,19 @@ def parse_temporal_extraction_result(
                 temporal_offset = 5
 
             # Parse temporal fields
-            t_valid_start = document_t_valid
+            t_valid_start = MINUS_INFINITY
             t_valid_end: float | datetime = INFINITY
 
             if len(record_attributes) >= temporal_offset + 1:
                 start_str = record_attributes[temporal_offset].strip()
-                if start_str and start_str.upper() not in ("UNKNOWN", "N/A", ""):
+                if start_str and start_str.upper() not in ("UNKNOWN", "N/A", "", "NONE", "NULL"):
                     parsed = parse_date_from_string(start_str, document_t_valid)
                     if parsed:
                         t_valid_start = parsed
 
             if len(record_attributes) >= temporal_offset + 2:
                 end_str = record_attributes[temporal_offset + 1].strip()
-                if end_str and end_str.upper() not in ("UNKNOWN", "ONGOING", "N/A", "PRESENT", ""):
+                if end_str and end_str.upper() not in ("UNKNOWN", "ONGOING", "N/A", "PRESENT", "", "NONE", "NULL"):
                     parsed = parse_date_from_string(end_str, document_t_valid)
                     if parsed:
                         t_valid_end = parsed

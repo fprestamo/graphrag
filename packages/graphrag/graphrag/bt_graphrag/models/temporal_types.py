@@ -30,6 +30,18 @@ comparisons without IS NULL fallbacks.
 INFINITY_ISO = INFINITY.isoformat()
 """Pre-computed ISO-8601 string of INFINITY for serialization."""
 
+MINUS_INFINITY = datetime(1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+"""Far-past sentinel for unknown start dates (we don't know when the fact began).
+
+Symmetric counterpart to INFINITY: where INFINITY means "no known end",
+MINUS_INFINITY means "no known beginning".  Using an explicit datetime
+instead of NULL keeps Neo4j comparisons (e.g. t_valid_start <= $at_time)
+correct without IS NULL fallbacks.
+"""
+
+MINUS_INFINITY_ISO = MINUS_INFINITY.isoformat()
+"""Pre-computed ISO-8601 string of MINUS_INFINITY for serialization."""
+
 
 def utcnow() -> datetime:
     """Return the current UTC time."""
@@ -169,10 +181,17 @@ class TemporalStateQuad:
         def _parse(v: str | None) -> datetime:
             if v is None or v == INFINITY_ISO:
                 return INFINITY
+            if v == MINUS_INFINITY_ISO:
+                return MINUS_INFINITY
+            return datetime.fromisoformat(v)
+
+        def _parse_start(v: str | None) -> datetime:
+            if v is None or v == MINUS_INFINITY_ISO:
+                return MINUS_INFINITY
             return datetime.fromisoformat(v)
 
         return cls(
-            t_valid_start=datetime.fromisoformat(d["t_valid_start"]),
+            t_valid_start=_parse_start(d.get("t_valid_start")),
             t_valid_end=_parse(d.get("t_valid_end")),
             t_tx_start=datetime.fromisoformat(d["t_tx_start"]),
             t_tx_end=_parse(d.get("t_tx_end")),

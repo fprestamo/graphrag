@@ -143,7 +143,7 @@ class TemporalGraphExtractor(GraphExtractor):
                 if len(record_attributes) >= temporal_offset + 1:
                     start_str = clean_str(record_attributes[temporal_offset])
                     if start_str and start_str.upper() not in (
-                        "UNKNOWN", "N/A", "", "NONE"
+                        "UNKNOWN", "N/A", "", "NONE", "NULL"
                     ):
                         t_valid_start = parse_date_from_string(
                             start_str, ref_date
@@ -152,7 +152,7 @@ class TemporalGraphExtractor(GraphExtractor):
                 if len(record_attributes) >= temporal_offset + 2:
                     end_str = clean_str(record_attributes[temporal_offset + 1])
                     if end_str and end_str.upper() not in (
-                        "UNKNOWN", "ONGOING", "N/A", "PRESENT", "", "NONE"
+                        "UNKNOWN", "ONGOING", "N/A", "PRESENT", "", "NONE", "NULL"
                     ):
                         t_valid_end = parse_date_from_string(
                             end_str, ref_date
