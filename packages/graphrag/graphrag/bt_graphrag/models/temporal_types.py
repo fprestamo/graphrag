@@ -101,6 +101,9 @@ class ResolutionStrategy(str, Enum):
     DISAGREEMENT = "DISAGREEMENT"
     """No clear resolution: insert candidate with status=disputed."""
 
+    NEW_EDGE = "NEW_EDGE"
+    """No conflict detected: insert candidate as a new, independent edge."""
+
 
 # ---------------------------------------------------------------------------
 # Temporal State Quad (Section 2.7)

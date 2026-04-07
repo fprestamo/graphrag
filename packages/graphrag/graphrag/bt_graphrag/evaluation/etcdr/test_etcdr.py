@@ -91,6 +91,7 @@ def _rel(
     valid_end: datetime = INFINITY,
     confidence: float = 1.0,
     description: str = "",
+    tx_start: datetime | None = None,
 ) -> TemporalRelationship:
     return TemporalRelationship(
         id=str(uuid4()),
@@ -102,7 +103,7 @@ def _rel(
         temporal_quad=TemporalStateQuad(
             t_valid_start=valid_start,
             t_valid_end=valid_end,
-            t_tx_start=utcnow(),
+            t_tx_start=tx_start if tx_start is not None else utcnow(),
             t_tx_end=INFINITY,
         ),
         provenance=[
@@ -270,8 +271,8 @@ async def run_no_conflict(session, model) -> None:
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=0,
     )
     _print_result(result)
-    ok = not result.has_conflicts and result.strategy == ResolutionStrategy.CORROBORATION
-    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected no conflicts + CORROBORATION")
+    ok = not result.has_conflicts and result.strategy == ResolutionStrategy.NEW_EDGE
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected no conflicts + NEW_EDGE")
 
 
 async def run_evolution(session, model) -> None:
@@ -394,6 +395,18 @@ async def run_corroboration(session, model) -> None:
 
 async def run_disagreement_low_confidence(session, model) -> None:
     _sep("SCENARIO 5 — DISAGREEMENT (LLM low confidence → possible override)")
+    # Seed an active Tesla CEO edge from a different person so there IS a conflict.
+    # Previous scenarios closed all existing Tesla CEO edges, so we plant a fresh one.
+    await upsert_entity(session, _entity("Mary Johnson", "person"))
+    ref = _rel(
+        "Mary Johnson", "IS_CEO_OF", "Tesla",
+        valid_start=_dt(2022),
+        confidence=0.5,
+        description="Mary Johnson controversially named CEO of Tesla in 2022",
+    )
+    await insert_relationship(session, ref)
+
+    # Candidate: same role, same time, low confidence → expect conflict + LLM routing
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "Tesla",
         valid_start=_dt(2022),
@@ -405,27 +418,39 @@ async def run_disagreement_low_confidence(session, model) -> None:
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=4,
     )
     _print_result(result)
+    ok = result.has_conflicts
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: conflict detected (Mary vs Elon, both Tesla CEO @2022)")
     print(f"  → LLM decided: strategy={result.strategy.value if result.strategy else 'None'}, confidence={result.confidence:.2f}")
-    print(f"  → (With real LLM, strategy depends on model reasoning)")
 
 
 async def run_disagreement_explicit(session, model) -> None:
-    _sep("SCENARIO 6 — Contested claim (conflicting evidence)")
+    _sep("SCENARIO 6 — Contested claim (conflicting evidence, expect DISAGREEMENT)")
+    # Seed Gwynne as active SpaceX CEO (the edge scenario 2 resolved but never inserted).
+    await upsert_entity(session, _entity("Gwynne Shotwell", "person"))
+    ref = _rel(
+        "Gwynne Shotwell", "IS_CEO_OF", "SpaceX",
+        valid_start=_dt(2025),
+        confidence=0.9,
+        description="Gwynne Shotwell appointed CEO of SpaceX in 2025",
+    )
+    await insert_relationship(session, ref)
+
+    # Candidate: Elon re-claims SpaceX CEO at the same time with lower confidence
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "SpaceX",
-        valid_start=_dt(2020),
-        confidence=0.6,
-        description="Alternative contested claim about SpaceX CEO in 2020",
+        valid_start=_dt(2025),
+        confidence=0.5,
+        description="Contested: Elon Musk still acting as SpaceX CEO in 2025",
     )
 
     result = await detect_and_resolve(
         candidate=candidate, session=session, config=CONFIG, model=model, edge_index=5,
     )
     _print_result(result)
+    ok = result.has_conflicts
     strategy_name = result.strategy.value if result.strategy else "None"
-    disputed = getattr(result.candidate, "status", None) == "disputed"
-    print(f"  → LLM decided: strategy={strategy_name}")
-    print(f"  → candidate.status = '{getattr(result.candidate, 'status', 'N/A')}' (disputed={disputed})")
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: conflict detected (Gwynne vs Elon, both SpaceX CEO @2025)")
+    print(f"  → LLM decided: strategy={strategy_name}, candidate.status={getattr(result.candidate, 'status', 'N/A')}")
 
 
 async def run_heuristic_no_model(session) -> None:
@@ -440,15 +465,21 @@ async def run_heuristic_no_model(session) -> None:
         candidate=candidate, session=session, config=CONFIG, model=None, edge_index=6,
     )
     _print_result(result)
-    ok = result.strategy == ResolutionStrategy.CORROBORATION and not result.has_conflicts
-    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected no conflict + CORROBORATION (new NON_EXCLUSIVE)")
+    ok = result.strategy == ResolutionStrategy.NEW_EDGE and not result.has_conflicts
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected no conflict + NEW_EDGE (new NON_EXCLUSIVE)")
 
 
 async def run_late_arrival(session, model) -> None:
     _sep("SCENARIO 8 — Late arrival (t_event=2010, historical conflict query)")
+    # The late-arrival query filters t_tx_end = INFINITY (currently believed)
+    # AND t_valid_start <= t_event AND t_valid_end > t_event.
+    # We seed a reference edge with valid period 2004–2024 so it overlaps 2010.
+    # The seeded edge from seed_database() has t_valid_end=2024, so the same-pair
+    # query for OBJECT_EXCLUSIVE (S0 pass) will find it.
+    # No special tx_start trick needed — the query now uses t_tx_end = INFINITY.
     candidate = _rel(
         "Elon Musk", "IS_CEO_OF", "Tesla",
-        valid_start=_dt(2010),
+        valid_start=_dt(2010), valid_end=_dt(2012),
         confidence=0.85,
         description="Late-arriving 2010 document: Elon was CEO of Tesla",
     )
@@ -458,7 +489,11 @@ async def run_late_arrival(session, model) -> None:
         is_late_arrival=True, t_event=_dt(2010), edge_index=7,
     )
     _print_result(result, label="late@2010")
-    print(f"  → {'✓ PASS' if result.strategy is not None else '✗ FAIL'}: strategy produced for late arrival")
+    # With the fixed late-arrival query (t_tx_end = INFINITY), the seeded
+    # Elon IS_CEO_OF Tesla @2004-2024 edge overlaps t_event=2010 and should
+    # be found via the S0 same-pair pass → conflict expected.
+    ok = result.has_conflicts and result.strategy is not None
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: late-arrival conflict detected against historical edge")
 
 
 async def run_intra_batch_conflict(session, model) -> None:
@@ -498,6 +533,222 @@ async def run_intra_batch_conflict(session, model) -> None:
     a_still_active = a_quad and a_quad.t_valid_end >= INFINITY and a_quad.t_tx_end >= INFINITY
     print(f"  → candidate_a still fully active: {a_still_active}")
     print(f"  → candidate_a status: {candidate_a.status}")
+
+
+async def run_subject_crosstype_conflict(session, model) -> None:
+    _sep("SCENARIO 11 — Subject-side cross-type conflict (SUBJECT_EXCLUSIVE, different rel names)")
+    # Seed an existing edge with a different type name than the candidate.
+    # The cross-type subject-side query (run_subject_any_type_query) must surface it
+    # because the subject already holds a leadership role — even though the type names differ.
+    await upsert_entity(session, _entity("Alice Johnson", "person"))
+    await upsert_entity(session, _entity("Acme Corp", "organization"))
+    existing = _rel(
+        "Alice Johnson", "IS_DIRECTOR_OF", "Acme Corp",
+        valid_start=_dt(2020),
+        description="Alice Johnson serves as Director of Acme Corp since 2020",
+    )
+    await insert_relationship(session, existing)
+
+    candidate = _rel(
+        "Alice Johnson", "LEADS", "Acme Corp",
+        valid_start=_dt(2023),
+        confidence=0.9,
+        description="Alice Johnson is leading Acme Corp from 2023 onward",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model, edge_index=10,
+    )
+    _print_result(result, label="subj-crosstype")
+    ok = result.has_conflicts and len(result.subject_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected subject-side conflict via cross-type query (IS_DIRECTOR_OF ≠ LEADS)")
+    print(f"  → subject_conflicts={len(result.subject_conflicts)}, strategy={result.strategy.value if result.strategy else 'None'}")
+
+
+async def run_object_crosstype_conflict(session, model) -> None:
+    _sep("SCENARIO 12 — Object-side cross-type conflict (OBJECT_EXCLUSIVE, different rel names)")
+    # Seed Bob as president of Beta Corp.  A new person (Carol) arrives with relation type
+    # RUNS — different name, same cardinality class.  run_object_any_type_query must find Bob.
+    await upsert_entity(session, _entity("Bob Smith", "person"))
+    await upsert_entity(session, _entity("Carol Davis", "person"))
+    await upsert_entity(session, _entity("Beta Corp", "organization"))
+    existing = _rel(
+        "Bob Smith", "IS_PRESIDENT_OF", "Beta Corp",
+        valid_start=_dt(2018),
+        description="Bob Smith is president of Beta Corp since 2018",
+    )
+    await insert_relationship(session, existing)
+
+    candidate = _rel(
+        "Carol Davis", "RUNS", "Beta Corp",
+        valid_start=_dt(2023),
+        confidence=0.88,
+        description="Carol Davis runs Beta Corp starting 2023",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model, edge_index=11,
+    )
+    _print_result(result, label="obj-crosstype")
+    ok = result.has_conflicts and len(result.object_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected object-side conflict via cross-type query (IS_PRESIDENT_OF ≠ RUNS)")
+    print(f"  → object_conflicts={len(result.object_conflicts)}, strategy={result.strategy.value if result.strategy else 'None'}")
+
+
+async def run_both_exclusive_crosstype_subject(session, model) -> None:
+    _sep("SCENARIO 13a — BOTH_EXCLUSIVE cross-type: subject side (same subject, different rel name)")
+    # Seed Dave as ruler of Gamma Nation.  Candidate is the same subject with COMMANDS.
+    # BOTH_EXCLUSIVE triggers run_subject_any_type_query → finds IS_RULER_OF.
+    await upsert_entity(session, _entity("Dave Evans", "person"))
+    await upsert_entity(session, _entity("Gamma Nation", "geo"))
+    existing = _rel(
+        "Dave Evans", "IS_RULER_OF", "Gamma Nation",
+        valid_start=_dt(2010),
+        description="Dave Evans has ruled Gamma Nation since 2010",
+    )
+    await insert_relationship(session, existing)
+
+    candidate = _rel(
+        "Dave Evans", "COMMANDS", "Gamma Nation",
+        valid_start=_dt(2023),
+        confidence=0.85,
+        description="Dave Evans commands Gamma Nation from 2023",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model, edge_index=12,
+    )
+    _print_result(result, label="both-subj-crosstype")
+    ok = result.has_conflicts and len(result.subject_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected BOTH_EXCLUSIVE subject-side cross-type conflict")
+    print(f"  → subject_conflicts={len(result.subject_conflicts)}, object_conflicts={len(result.object_conflicts)}, "
+          f"strategy={result.strategy.value if result.strategy else 'None'}")
+
+
+async def run_both_exclusive_crosstype_object(session, model) -> None:
+    _sep("SCENARIO 13b — BOTH_EXCLUSIVE cross-type: object side (different subject, different rel name)")
+    # Uses independent entities — NOT shared with 13a so the active edge is not already closed.
+    # Victor Reign IS_RULER_OF Delta Empire (BOTH_EXCLUSIVE, active).
+    # Eve Foster arrives with COMMANDS to the same nation — different subject AND different type.
+    # run_object_any_type_query must find Victor's IS_RULER_OF edge.
+    await upsert_entity(session, _entity("Victor Reign", "person"))
+    await upsert_entity(session, _entity("Eve Foster", "person"))
+    await upsert_entity(session, _entity("Delta Empire", "geo"))
+    existing = _rel(
+        "Victor Reign", "IS_RULER_OF", "Delta Empire",
+        valid_start=_dt(2005),
+        description="Victor Reign has ruled Delta Empire since 2005",
+    )
+    await insert_relationship(session, existing)
+
+    candidate = _rel(
+        "Eve Foster", "COMMANDS", "Delta Empire",
+        valid_start=_dt(2024),
+        confidence=0.8,
+        description="Eve Foster commands Delta Empire from 2024",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model, edge_index=13,
+    )
+    _print_result(result, label="both-obj-crosstype")
+    ok = result.has_conflicts and len(result.object_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected BOTH_EXCLUSIVE object-side cross-type conflict")
+    print(f"  → subject_conflicts={len(result.subject_conflicts)}, object_conflicts={len(result.object_conflicts)}, "
+          f"strategy={result.strategy.value if result.strategy else 'None'}")
+
+
+async def run_non_exclusive_crosstype_conflict(session, model) -> None:
+    _sep("SCENARIO 14 — NON_EXCLUSIVE cross-type source-target conflict (same pair, opposing types)")
+    # Seed Frank working for Delta Inc.  Candidate LEFT_JOB_AT uses the same (source, target)
+    # pair but contradicts the existing edge.  run_source_target_query (second pass for NON_EXCLUSIVE)
+    # must surface the WORKS_FOR edge even though the relation type differs.
+    await upsert_entity(session, _entity("Frank Garcia", "person"))
+    await upsert_entity(session, _entity("Delta Inc", "organization"))
+    existing = _rel(
+        "Frank Garcia", "WORKS_FOR", "Delta Inc",
+        valid_start=_dt(2015),
+        description="Frank Garcia works for Delta Inc since 2015",
+    )
+    await insert_relationship(session, existing)
+
+    candidate = _rel(
+        "Frank Garcia", "LEFT_JOB_AT", "Delta Inc",
+        valid_start=_dt(2023),
+        confidence=0.9,
+        description="Frank Garcia left his job at Delta Inc in 2023",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model, edge_index=14,
+    )
+    _print_result(result, label="non-excl-crosstype")
+    # NON_EXCLUSIVE source-target cross-type conflicts land in subject_conflicts
+    ok = result.has_conflicts and len(result.subject_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected NON_EXCLUSIVE cross-type conflict via source-target query (WORKS_FOR ≠ LEFT_JOB_AT)")
+    print(f"  → subject_conflicts={len(result.subject_conflicts)}, strategy={result.strategy.value if result.strategy else 'None'}")
+
+
+async def run_intra_batch_subject_crosstype(session, model) -> None:
+    _sep("SCENARIO 15 — Intra-batch cross-type SUBJECT_EXCLUSIVE conflict")
+    # Both edges are in the same batch — no Neo4j seed needed.
+    # Accepted batch has IS_DIRECTOR_OF; candidate brings LEADS.
+    # find_intra_batch_subject_any_type_conflicts must catch this.
+    batch_edge = _rel(
+        "Grace Hill", "IS_DIRECTOR_OF", "Epsilon Corp",
+        valid_start=_dt(2021),
+        confidence=0.9,
+        description="Grace Hill is Director of Epsilon Corp",
+    )
+    accepted_batch = [batch_edge]
+
+    candidate = _rel(
+        "Grace Hill", "LEADS", "Epsilon Corp",
+        valid_start=_dt(2021),
+        confidence=0.85,
+        description="Grace Hill leads Epsilon Corp — extracted from a different sentence",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model,
+        edge_index=15, accepted_batch=accepted_batch,
+    )
+    _print_result(result, label="ib-subj-crosstype")
+    ok = result.has_intra_batch_conflicts and len(result.intra_batch_subject_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected intra-batch subject cross-type conflict (IS_DIRECTOR_OF ≠ LEADS)")
+    print(f"  → intra_batch_subject_conflicts={len(result.intra_batch_subject_conflicts)}, "
+          f"strategy={result.strategy.value if result.strategy else 'None'}")
+
+
+async def run_intra_batch_object_crosstype(session, model) -> None:
+    _sep("SCENARIO 16 — Intra-batch cross-type OBJECT_EXCLUSIVE conflict")
+    # Accepted batch has Henry Jones IS_PRESIDENT_OF Zeta Corp.
+    # Candidate Ivy King RUNS Zeta Corp — different subject, different type, same target.
+    # find_intra_batch_object_any_type_conflicts must surface Henry's edge.
+    batch_edge = _rel(
+        "Henry Jones", "IS_PRESIDENT_OF", "Zeta Corp",
+        valid_start=_dt(2019),
+        confidence=0.92,
+        description="Henry Jones is President of Zeta Corp",
+    )
+    accepted_batch = [batch_edge]
+
+    candidate = _rel(
+        "Ivy King", "RUNS", "Zeta Corp",
+        valid_start=_dt(2022),
+        confidence=0.78,
+        description="Ivy King runs Zeta Corp from 2022",
+    )
+
+    result = await detect_and_resolve(
+        candidate=candidate, session=session, config=CONFIG, model=model,
+        edge_index=16, accepted_batch=accepted_batch,
+    )
+    _print_result(result, label="ib-obj-crosstype")
+    ok = result.has_intra_batch_conflicts and len(result.intra_batch_object_conflicts) > 0
+    print(f"  → {'✓ PASS' if ok else '✗ FAIL'}: expected intra-batch object cross-type conflict (IS_PRESIDENT_OF ≠ RUNS)")
+    print(f"  → intra_batch_object_conflicts={len(result.intra_batch_object_conflicts)}, "
+          f"strategy={result.strategy.value if result.strategy else 'None'}")
 
 
 async def run_db_invariants(session) -> None:
@@ -556,17 +807,38 @@ async def main() -> None:
 
     model = _real_llm()
 
+    # Pre-set cardinalities for the cross-type scenarios (11-16) so the LLM
+    # classification stage skips them and the tests are fully deterministic.
+    CONFIG.relation_cardinality_overrides.update({
+        # Scenario 11 + 15 — SUBJECT_EXCLUSIVE cross-type
+        "IS_DIRECTOR_OF": "SUBJECT_EXCLUSIVE",
+        "LEADS": "SUBJECT_EXCLUSIVE",
+        # Scenario 12 + 16 — OBJECT_EXCLUSIVE cross-type
+        "IS_PRESIDENT_OF": "OBJECT_EXCLUSIVE",
+        "RUNS": "OBJECT_EXCLUSIVE",
+        # Scenario 13a + 13b — BOTH_EXCLUSIVE cross-type
+        "IS_RULER_OF": "BOTH_EXCLUSIVE",
+        "COMMANDS": "BOTH_EXCLUSIVE",
+        # Scenario 14 — NON_EXCLUSIVE cross-type (same pair, opposing semantics)
+        "WORKS_FOR": "NON_EXCLUSIVE",
+        "LEFT_JOB_AT": "NON_EXCLUSIVE",
+    })
+
     try:
         await init_schema(driver, database=TEST_DB)
 
         async with driver.session(database=TEST_DB) as session:
             await seed_database(session)
 
-            # Stage 2c equivalent: classify cardinalities via LLM
-            # Gather all relation types used across seed + scenario edges
+            # Stage 2c equivalent: classify cardinalities via LLM.
+            # Only unknown types reach the LLM; the cross-type ones above are skipped.
             all_relation_types = [
                 "IS_CEO_OF", "HAS_CAPITAL",
                 "WORKED_AT", "COLLABORATED_WITH",
+                "IS_DIRECTOR_OF", "LEADS",
+                "IS_PRESIDENT_OF", "RUNS",
+                "IS_RULER_OF", "COMMANDS",
+                "WORKS_FOR", "LEFT_JOB_AT",
             ]
             seed_examples = [
                 _rel("Elon Musk", "IS_CEO_OF", "Tesla",
@@ -593,6 +865,14 @@ async def main() -> None:
             await run_heuristic_no_model(session)
             await run_late_arrival(session, model)
             await run_intra_batch_conflict(session, model)
+            # Cross-type conflict scenarios (11-16)
+            await run_subject_crosstype_conflict(session, model)
+            await run_object_crosstype_conflict(session, model)
+            await run_both_exclusive_crosstype_subject(session, model)
+            await run_both_exclusive_crosstype_object(session, model)
+            await run_non_exclusive_crosstype_conflict(session, model)
+            await run_intra_batch_subject_crosstype(session, model)
+            await run_intra_batch_object_crosstype(session, model)
             await run_db_invariants(session)
 
     except Exception as exc:
