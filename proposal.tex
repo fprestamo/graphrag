@@ -1,1 +1,337 @@
 \chapter{Propuesta}\label{chapter:proposal}
+
+Este capítulo presenta BT-GRAPHRAG, la propuesta de solución de la presente investigación. La propuesta responde a las seis limitaciones identificadas en la sección~\ref{sec:soa-conclusions} y resumidas en la Tabla~\ref{tab:soa-comparison}. La idea principal es integrar la temporalidad como dimensión de primera clase dentro del \emph{pipeline} de GraphRAG. La integración no descarta los componentes existentes de GraphRAG~\cite{edge2024local}: la sumarización jerárquica por comunidades de Leiden y la búsqueda por comunidades se conservan. Lo que se añade son cuatro mecanismos nuevos: un modelo bitemporal a nivel de arista, una clasificación de cardinalidad asimétrica, un mecanismo de resolución temporal de entidades y un módulo de detección y resolución activa de conflictos durante la indexación.
+
+El capítulo se organiza en ocho secciones. La sección~\ref{sec:bt-overview} expone los objetivos de diseño y la correspondencia entre cada componente propuesto y las limitaciones del estado del arte. La sección~\ref{sec:bt-pipeline} describe la arquitectura del \emph{pipeline} de indexación y sus siete etapas. La sección~\ref{sec:bt-bitemporal} formaliza la cuádrupla de estado temporal y los cuatro estados epistémicos que se derivan de ella. La sección~\ref{sec:bt-cardinality} introduce la clasificación de cardinalidad en cuatro categorías y explica cómo dirige la búsqueda de conflictos. La sección~\ref{sec:bt-cger} describe los mecanismos de resolución de entidades y de tipos de relación, con el solapamiento temporal como señal nueva. La sección~\ref{sec:bt-etcdr} describe el módulo de detección bidireccional de conflictos y el componente que decide cómo resolverlos. La sección~\ref{sec:bt-integration} muestra la integración con la pirámide de comunidades, la descomposición temporal de consultas y la actualización incremental del corpus. El capítulo cierra en la sección~\ref{sec:bt-conclusions} con la traza uno-a-uno entre las limitaciones del estado del arte y los componentes que las resuelven.
+
+%% ============================================================
+\section{Visión general de BT-GRAPHRAG}\label{sec:bt-overview}
+
+BT-GRAPHRAG (\emph{Bitemporal GraphRAG}) es un sistema de Generación Aumentada por Recuperación basado en grafos de conocimiento. Su rasgo distintivo es que cada arista del grafo lleva, además de la tripleta sujeto-relación-objeto, una marca temporal estructurada que captura tanto cuándo el hecho fue verdadero en el mundo como cuándo el sistema llegó a creerlo.
+
+La propuesta se sostiene sobre cinco objetivos de diseño:
+
+\begin{itemize}
+    \item \textbf{Bitemporalidad nativa.} Cada arista lleva una cuádrupla de marcas temporales que separa el tiempo válido del tiempo de transacción. Esta separación se basa en el marco formal de TLINQ y VLINQ~\cite{tlinq_vlinq_placeholder}. La novedad es que la separación se incorpora al propio \emph{pipeline} de GraphRAG, no a un sistema de memoria externo como ocurre en ZEP/Graphiti~\cite{zep2025}.
+    \item \textbf{Resolución activa de conflictos en lugar de evasión.} Los sistemas T-GRAG~\cite{tgrag2025} y TG-RAG~\cite{tg_rag2025} delegan la coherencia temporal al filtrado de la consulta. BT-GRAPHRAG detecta los conflictos durante la indexación, decide cómo resolverlos y aplica esa decisión sobre las marcas temporales de la arista.
+    \item \textbf{Asimetría estructural de la cardinalidad.} La etiqueta binaria exclusiva/no-exclusiva de TREK~\cite{trek2025} se sustituye por una clasificación de cuatro categorías. La nueva clasificación distingue desde qué extremo de la relación opera la restricción de exclusividad. Esta asimetría es lo que permite formular una búsqueda dirigida de conflictos.
+    \item \textbf{Resolución temporal de entidades.} Para decidir si dos menciones se refieren a la misma entidad, la propuesta añade el solapamiento de períodos activos como una señal más del \emph{scoring}. Así se evita fusionar dos estados muy distintos de una misma entidad o, en el caso inverso, fragmentar una entidad cuyo nombre cambió con el tiempo.
+    \item \textbf{Integración no invasiva con GraphRAG.} El \emph{pipeline} de GraphRAG~\cite{edge2024local} (extracción, deduplicación, particionamiento de Leiden, sumarización jerárquica, búsqueda local y global) se conserva. Los componentes nuevos se insertan como etapas adicionales y respetan los formatos de salida del sistema base.
+\end{itemize}
+
+% TODO: figura fig:bt-graphrag-overview que ilustre los componentes principales de BT-GRAPHRAG y su correspondencia con las limitaciones del estado del arte.
+
+La Tabla~\ref{tab:limitations-to-components} resume cómo cada componente de la propuesta responde a las limitaciones del estado del arte. La correspondencia es directa: a cada limitación se le asigna un componente y la sección del capítulo donde se desarrolla.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{0.45\linewidth}p{0.30\linewidth}p{0.18\linewidth}}
+\hline
+\textbf{Limitación del SoA} & \textbf{Componente BT-GRAPHRAG} & \textbf{Sección} \\ \hline
+1: Temporalidad no integrada al \emph{pipeline} & \emph{Pipeline} de indexación temporal y consulta temporal & \ref{sec:bt-pipeline}, \ref{sec:bt-integration} \\
+2: Sistemas evaden la resolución de conflictos & Detección bidireccional y selección de estrategia & \ref{sec:bt-etcdr} \\
+3: Cardinalidad simétrica (TREK) & Clasificación en cuatro categorías & \ref{sec:bt-cardinality} \\
+4: Bitemporalidad fuera del \emph{pipeline} GraphRAG & Cuádrupla de estado temporal en cada arista & \ref{sec:bt-bitemporal} \\
+5: Resolución de entidades sin temporalidad & Solapamiento temporal como señal del \emph{scoring} & \ref{sec:bt-cger} \\
+6: Corrección y evolución sin distinción formal & Estados epistémicos derivados de la cuádrupla & \ref{sec:bt-bitemporal} \\ \hline
+\end{tabular}
+\caption{Correspondencia entre las limitaciones identificadas en el estado del arte y los componentes de BT-GRAPHRAG que las resuelven.}
+\label{tab:limitations-to-components}
+\end{table}
+
+El alcance del capítulo se limita al diseño conceptual: el modelo de datos, los algoritmos y la arquitectura. Los detalles sobre tecnologías, configuración y plan de evaluación quedan fuera de este capítulo.
+
+%% ============================================================
+\section{Arquitectura del pipeline de indexación}\label{sec:bt-pipeline}
+
+El \emph{pipeline} de indexación de BT-GRAPHRAG se organiza en siete etapas secuenciales. Las cuatro primeras procesan cada lote de documentos nuevos antes de modificar el grafo. Las tres últimas mantienen las estructuras derivadas y abren la fase de consulta.
+
+\begin{enumerate}
+    \item \textbf{Extracción temporal.} Un LLM procesa cada bloque de texto y extrae entidades y relaciones, igual que en GraphRAG. La diferencia es que cada relación lleva además dos campos temporales: cuándo empezó el hecho y cuándo terminó. El \emph{prompt} recibe la fecha del documento como contexto y normaliza expresiones temporales relativas. Si la fecha del documento es muy posterior a la fecha del hecho, el documento se marca como \emph{late arrival} y dispara la lógica \emph{as-of} que se describe en la sección~\ref{sec:bt-bitemporal}.
+    \item \textbf{Resolución contextual de entidades.} Las entidades nuevas se contrastan con las que ya existen en el grafo. El componente combina un pre-filtrado por similitud, un \emph{scoring} compuesto y, en los casos dudosos, una verificación por LLM que recibe el período activo de cada entidad como parte del contexto. Los detalles aparecen en la sección~\ref{sec:bt-cger}.
+    \item \textbf{Resolución de tipos de relación.} El mismo principio se aplica a los tipos de relación. El objetivo es consolidar etiquetas semánticamente equivalentes (por ejemplo, \texttt{IS\_CEO\_OF} y \texttt{LEADS}) bajo un canon único antes de evaluar la cardinalidad y los conflictos.
+    \item \textbf{Clasificación de cardinalidad.} Cada tipo de relación se clasifica una sola vez en una de las cuatro categorías de cardinalidad. El resultado se guarda como atributo del tipo y gobierna la dirección de la búsqueda de conflictos. Los detalles aparecen en la sección~\ref{sec:bt-cardinality}.
+    \item \textbf{Detección y resolución de conflictos.} Para cada arista candidata, el módulo lanza consultas dirigidas por la cardinalidad. Cuando hay un conflicto, un componente basado en LLM elige una de cinco estrategias y la aplica sobre las marcas temporales. La sección~\ref{sec:bt-etcdr} cubre este módulo en detalle.
+    \item \textbf{Escritura en el almacén bitemporal.} Las aristas y entidades resultantes se persisten en un almacén que mantiene dos representaciones complementarias. La primera es una representación tabular compatible con los \emph{artifacts} que produce GraphRAG; sirve para que la sumarización por comunidades y la búsqueda local y global del sistema base operen sin modificación. La segunda es una representación de grafo que conserva la cuádrupla temporal completa y soporta consultas dirigidas por cardinalidad. La sección no entra en cuál es la tecnología concreta de cada representación; el punto importante es que ambas existen y se mantienen sincronizadas.
+    \item \textbf{Reportes de comunidad temporales y consulta.} Sobre el grafo se ejecuta el algoritmo de Leiden de GraphRAG, que produce la jerarquía de comunidades. Cada reporte se enriquece con una narrativa temporal que sintetiza la evolución del subgrafo en el período correspondiente. La fase de consulta descompone preguntas con varias referencias temporales en sub-consultas y agrega los resultados con una síntesis temporal. El detalle aparece en la sección~\ref{sec:bt-integration}.
+\end{enumerate}
+
+% TODO: figura fig:bt-pipeline que muestre las siete etapas en secuencia, con sus entradas y salidas.
+
+La decisión arquitectónica más importante es mantener \textbf{dos representaciones complementarias} del grafo. Una representación es tabular y conserva el formato esperado por las herramientas de GraphRAG. La otra es de grafo y conserva la cuádrupla temporal completa, lo que es necesario para las consultas \emph{as-of} y para la búsqueda dirigida por cardinalidad. Sin la primera, BT-GRAPHRAG dejaría de ser una extensión de GraphRAG. Sin la segunda, no sería viable formular las consultas bidireccionales del módulo de conflictos.
+
+El esquema de datos amplía las tablas de entidades y relaciones del modelo de GraphRAG con las columnas que aparecen en la Tabla~\ref{tab:bt-schema}. Las columnas se añaden sin alterar las anteriores. De esa forma, una salida producida por BT-GRAPHRAG sigue siendo consumible por la búsqueda local y global del sistema base.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{0.18\linewidth}p{0.22\linewidth}p{0.50\linewidth}}
+\hline
+\textbf{Tabla} & \textbf{Columna} & \textbf{Significado} \\ \hline
+Relación & \texttt{t\_valid\_start} & Inicio del intervalo de validez en el mundo \\
+Relación & \texttt{t\_valid\_end} & Fin del intervalo de validez (abierto si el hecho sigue siendo verdadero) \\
+Relación & \texttt{t\_tx\_start} & Inicio del intervalo de creencia del sistema \\
+Relación & \texttt{t\_tx\_end} & Fin del intervalo de creencia (abierto si el sistema sigue creyendo el hecho) \\
+Relación & \texttt{cardinality} & Una de las cuatro categorías de cardinalidad \\
+Relación & \texttt{status} & \texttt{active}, \texttt{disputed} o \texttt{retracted} \\
+Relación & \texttt{support\_count} & Número de fuentes que corroboran la arista \\
+Entidad  & \texttt{first\_seen} & Primera observación de la entidad en el corpus \\
+Entidad  & \texttt{last\_seen} & Última observación \\
+Entidad  & \texttt{active\_start} & Inicio inferido del período activo \\
+Entidad  & \texttt{active\_end}   & Fin inferido del período activo (abierto si la entidad sigue activa) \\ \hline
+\end{tabular}
+\caption{Columnas que BT-GRAPHRAG añade a las tablas de relaciones y entidades del esquema de GraphRAG.}
+\label{tab:bt-schema}
+\end{table}
+
+A diferencia de los sistemas analizados en la sección~\ref{sec:temporal-graphrag}, la temporalidad no es un filtro que se aplica al final sobre un grafo estático. Es una dimensión que está presente en cada etapa del \emph{pipeline} de indexación. Esto resuelve la primera limitación del estado del arte. También habilita el resto de los componentes: sin las marcas temporales en cada arista, ni los estados epistémicos de la sección~\ref{sec:bt-bitemporal} ni la búsqueda bidireccional de conflictos podrían formularse.
+
+%% ============================================================
+\section{Modelo bitemporal a nivel de arista}\label{sec:bt-bitemporal}
+
+\subsection{Cuádrupla de estado temporal}
+
+Cada arista del grafo lleva una cuádrupla $(t_v^s, t_v^e, t_t^s, t_t^e)$ que codifica los dos ejes temporales descritos en la sección~\ref{sec:bitemporal}. Para una arista $a = (s, r, o)$, su estado temporal se define como
+\begin{equation}
+\mathrm{Q}(a) = \bigl(\,t_v^s,\; t_v^e,\; t_t^s,\; t_t^e\,\bigr) \;\in\; \mathcal{T}^4,
+\end{equation}
+donde $[t_v^s, t_v^e)$ es el \emph{tiempo válido} (intervalo en el que el hecho fue verdadero en el mundo) y $[t_t^s, t_t^e)$ es el \emph{tiempo de transacción} (intervalo en el que el sistema creyó el hecho). Para representar intervalos abiertos sin recurrir a valores nulos, BT-GRAPHRAG usa una constante $+\infty$:
+\begin{equation}
+t_v^e = +\infty \;\Longleftrightarrow\; \text{el hecho sigue siendo verdadero}, \qquad
+t_t^e = +\infty \;\Longleftrightarrow\; \text{el sistema sigue creyéndolo}.
+\end{equation}
+Usar un valor explícito en lugar de un valor nulo simplifica las comparaciones temporales. Todas las consultas se expresan como desigualdades sobre marcas reales y no necesitan caminos especiales para los casos abiertos.
+
+\subsection{Estados epistémicos derivados}
+
+La cuádrupla, mediante dos comparaciones contra $+\infty$, induce una partición del estado de cada arista en cuatro \emph{estados epistémicos} mutuamente excluyentes. Esta es la formalización operativa de los cuatro estados que la sección~\ref{sec:bitemporal} introdujo en el plano teórico.
+
+\begin{itemize}
+    \item \texttt{CURRENT\_TRUTH} ($t_v^e = +\infty \wedge t_t^e = +\infty$). Hecho actualmente verdadero y actualmente creído. Ejemplo: ``Tim Cook es CEO de Apple'' registrado en 2024 sin contradicción posterior.
+    \item \texttt{HISTORICAL\_TRUTH} ($t_v^e < +\infty \wedge t_t^e = +\infty$). Hecho que fue verdadero en un intervalo cerrado del pasado. El sistema sigue creyendo que esa descripción del pasado es correcta. Ejemplo: ``Steve Jobs fue CEO de Apple entre 1997 y 2011''.
+    \item \texttt{RETRACTED\_ERROR} ($t_v^e = +\infty \wedge t_t^e < +\infty$). Hecho que el sistema asumió como verdadero pero que después retractó por haberse identificado como error. Ejemplo: una extracción incorrecta del LLM en la que se atribuyó un cargo a la persona equivocada y que un documento posterior desmiente sin reemplazar el hecho con uno nuevo.
+    \item \texttt{RETROACTIVE\_CORRECTION} ($t_v^e < +\infty \wedge t_t^e < +\infty$). Hecho histórico que el sistema creyó durante un tiempo y luego desplazó por una versión corregida. Ejemplo: una arista ``Empresa X fundada en 1998'' que se reemplaza por ``Empresa X fundada en 1999'' al disponer de una fuente más fiable. La arista original conserva su intervalo de transacción cerrado y la nueva queda como verdad actual.
+\end{itemize}
+
+Estos estados no se almacenan como un campo independiente. Se derivan de la cuádrupla en tiempo de consulta. Esa derivación garantiza que el estado nunca contradice las marcas temporales: la única forma de mover una arista entre estados es modificar $t_v^e$ o $t_t^e$.
+
+\subsection{Late arrivals y consultas as-of}
+
+Un \emph{late arrival} es un documento cuya fecha del evento $t_{\text{event}}$ es bastante anterior a su fecha de incorporación al sistema $t_{\text{tx}}$. BT-GRAPHRAG marca como tales los documentos en los que la diferencia $t_{\text{tx}} - t_{\text{event}}$ supera un umbral. En estos casos, la búsqueda de conflictos no se ejecuta sobre el estado actual del grafo, sino sobre el estado que el grafo tenía en $t_{\text{event}}$. Una consulta \emph{as-of} a tiempo $T$ se define como
+\begin{equation}
+G_{\,\text{as-of}}(T) \;=\; \bigl\{\, a \in G \;\big|\; t_v^s(a) \le T < t_v^e(a) \;\wedge\; t_t^s(a) \le T_{\text{now}} < t_t^e(a) \,\bigr\},
+\end{equation}
+donde $T_{\text{now}}$ es el instante de la consulta. La primera condición restringe el grafo al tiempo válido consultado. La segunda mantiene solo las aristas que el sistema cree en el momento de la consulta. Esta combinación permite responder preguntas del tipo ``¿quién dirigía la empresa X en 2015, según lo que sabemos hoy?'' sin que las correcciones posteriores a 2015 contaminen la respuesta.
+
+Esta sección resuelve las limitaciones~4 y~6 del estado del arte. La limitación~4 surge porque ningún sistema de GraphRAG analizado integra la bitemporalidad en su \emph{pipeline}; aquí la cuádrupla está en la propia tabla de aristas. La limitación~6 surge porque los sistemas previos no distinguen formalmente la corrección de la evolución; aquí ambas situaciones ocupan estados epistémicos diferentes (\texttt{RETROACTIVE\_CORRECTION} frente a \texttt{HISTORICAL\_TRUTH}) que se derivan sin ambigüedad de la cuádrupla.
+
+%% ============================================================
+\section{Clasificación de cardinalidad asimétrica}\label{sec:bt-cardinality}
+
+\subsection{Las cuatro categorías}
+
+La sección~\ref{sec:temporal-reasoning} estableció que la clasificación binaria exclusiva/no-exclusiva de TREK~\cite{trek2025} no captura la asimetría real de muchas relaciones. BT-GRAPHRAG sustituye esa clasificación binaria por una clasificación de cuatro categorías. Para cada tipo de relación $r$ con instancias $(s, r, o)$:
+
+\begin{itemize}
+    \item \texttt{SUBJECT\_EXCLUSIVE}: para un sujeto $s$ fijo, a lo sumo un objeto $o$ puede estar activo a la vez. Ejemplo: \texttt{HEADQUARTERED\_IN}. Una organización tiene una única sede activa, pero varias organizaciones pueden compartir la misma ciudad.
+    \item \texttt{OBJECT\_EXCLUSIVE}: para un objeto $o$ fijo, a lo sumo un sujeto $s$ puede estar activo a la vez. Ejemplo: \texttt{IS\_CEO\_OF}. Una empresa tiene un único CEO activo, pero una persona puede ser CEO de varias empresas en paralelo.
+    \item \texttt{BOTH\_EXCLUSIVE}: relación uno-a-uno; la exclusividad rige en ambos extremos. Ejemplo: \texttt{IS\_PRESIDENT\_OF}. Un país tiene un único presidente y, en la mayoría de los regímenes, una persona ocupa una única presidencia a la vez.
+    \item \texttt{NON\_EXCLUSIVE}: ningún extremo impone exclusividad; las instancias pueden coexistir libremente. Ejemplos: \texttt{COLLABORATED\_WITH}, \texttt{PARTICIPATED\_IN}, \texttt{DEVELOPED}.
+\end{itemize}
+
+La utilidad práctica de esta distinción se aprecia en el ejemplo \texttt{nació\_en} discutido en la sección~\ref{sec:temporal-reasoning}. Vista desde la persona la relación es exclusiva (una persona nace en un único lugar). Vista desde el lugar deja de serlo (en una ciudad nacen muchas personas). En la clasificación de TREK, etiquetar \texttt{nació\_en} como ``exclusiva'' generaría falsos conflictos cada vez que dos personas distintas nacieran en la misma ciudad. Etiquetarla como ``no exclusiva'' dejaría pasar el conflicto real cuando dos documentos atribuyeran a una misma persona dos lugares de nacimiento distintos. En BT-GRAPHRAG la relación se clasifica como \texttt{SUBJECT\_EXCLUSIVE}: la búsqueda de conflictos se dispara solo desde el sujeto. Así se captura la asimetría sin introducir ruido.
+
+\subsection{Clasificación por LLM en tiempo de indexación}
+
+La clasificación se realiza una sola vez por tipo de relación, no por instancia. Tras la consolidación de tipos descrita en la sección~\ref{sec:bt-cger}, BT-GRAPHRAG envía a un LLM cada tipo nuevo con un puñado de ejemplos del grafo y un \emph{prompt} con definiciones de las cuatro categorías. La salida es exactamente una de las cuatro etiquetas. El \emph{prompt} se inclina por defecto hacia \texttt{NON\_EXCLUSIVE}: solo asigna una categoría exclusiva cuando hay una restricción del mundo real claramente establecida. Esta política reduce los falsos positivos.
+
+El resultado se guarda como atributo del tipo de relación. El sistema admite además un mapa de sobreescrituras manual para dominios en los que el experto desea forzar una clasificación. Como la clasificación es por tipo y no por arista, su costo es pequeño aun para corpus grandes.
+
+\subsection{Cómo dirige la búsqueda de conflictos}
+
+La cardinalidad determina por completo qué consultas de conflicto se ejecutan en la sección~\ref{sec:bt-etcdr}. Para una arista candidata $(s, r, o)$:
+
+\begin{itemize}
+    \item Si la cardinalidad de $r$ es \texttt{SUBJECT\_EXCLUSIVE}, el sistema busca aristas activas de la forma $(s, r, *)$ con objeto distinto.
+    \item Si es \texttt{OBJECT\_EXCLUSIVE}, busca aristas activas de la forma $(*, r, o)$ con sujeto distinto. Esta es la consulta que ZEP/Graphiti omite, según se discute en la sección~\ref{sec:bt-etcdr}.
+    \item Si es \texttt{BOTH\_EXCLUSIVE}, ejecuta ambas consultas anteriores.
+    \item Si es \texttt{NON\_EXCLUSIVE}, omite ambas consultas estructurales y se limita a comprobar si la propia pareja $(s, o)$ ya tiene una arista del mismo tipo, para detectar duplicados por corroboración.
+\end{itemize}
+
+Esta sección resuelve la limitación~3 del estado del arte. La cardinalidad pasa de ser una etiqueta simétrica de uso interno en TREK a ser un mecanismo de despacho que gobierna la dirección de la búsqueda de conflictos en el siguiente módulo del \emph{pipeline}.
+
+%% ============================================================
+\section{Resolución contextual y temporal de entidades (CGER y CGRR)}\label{sec:bt-cger}
+
+CGER (\emph{Cross-Graph Entity Resolution}) sustituye la coincidencia exacta de nombres del GraphRAG original por un procedimiento en tres pasos: pre-filtrado por similitud, \emph{scoring} compuesto y verificación por LLM en la zona de incertidumbre. CGRR (\emph{Cross-Graph Relationship Resolution}) aplica el mismo patrón a los tipos de relación.
+
+\subsection{Pre-filtrado por similitud}
+
+Comparar cada entidad nueva contra todas las del grafo es prohibitivo en corpus grandes. CGER reduce el espacio de búsqueda mediante una consulta por similitud sobre los \emph{embeddings} de descripción. Para cada entidad candidata se recuperan los $K$ vecinos más próximos por similitud coseno. El parámetro $K$ es configurable. Solo sobre esos $K$ candidatos se evalúa el \emph{scoring} completo. Esta etapa transforma una operación cuadrática en una operación lineal en el número de entidades nuevas.
+
+\subsection{Scoring compuesto de cinco señales}
+
+Para cada par (entidad nueva, candidato), CGER calcula un \emph{score} agregado a partir de cinco señales independientes:
+
+\begin{enumerate}
+    \item \textbf{Similitud semántica de descripción.} Coseno entre los \emph{embeddings} de las descripciones generadas en la extracción.
+    \item \textbf{BM25 sobre nombres.} Similitud léxica clásica entre los nombres canónicos.
+    \item \textbf{Jaccard de caracteres.} Similitud morfológica que captura variaciones tipográficas, abreviaturas y errores menores que BM25 no detecta.
+    \item \textbf{Solapamiento de períodos activos.} Razón entre la intersección y la unión de los intervalos $[\,\texttt{active\_start}, \texttt{active\_end}\,]$ de las dos entidades.
+    \item \textbf{Similitud del contexto relacional.} Solapamiento Jaccard entre los conjuntos de tipos de relación que cada entidad mantiene con sus vecinos.
+\end{enumerate}
+
+El \emph{score} final es una combinación lineal con pesos configurables. La cuarta señal es la novedad propia de BT-GRAPHRAG. Su utilidad se ilustra con el caso ``Apple 1985 vs. 2024'' citado en la sección~\ref{subsec:entity-resolution}. Las descripciones, los \emph{embeddings} de descripción e incluso BM25 sobre el nombre coinciden casi perfectamente entre las dos menciones. Sin la señal temporal, sistemas como DALK~\cite{dalk2024} y DYNAMO~\cite{dynamo2025} fusionarían ambas entradas en un único nodo y perderían la diferencia de estado. Con la señal de solapamiento temporal, dos menciones cuyos intervalos activos están separados por décadas reciben una penalización suficiente para que el \emph{score} agregado caiga por debajo del umbral de fusión. De ese modo se preservan las dos entidades como nodos diferenciados.
+
+\subsection{Verificación por LLM en zona de incertidumbre}
+
+CGER aplica tres umbrales sobre el \emph{score} compuesto $\sigma$:
+\begin{itemize}
+    \item Si $\sigma \ge \tau_{\text{merge}}$ (auto-merge), las entidades se fusionan sin invocar al LLM.
+    \item Si $\sigma \le \tau_{\text{low}}$, las entidades se mantienen separadas sin invocar al LLM.
+    \item Si $\tau_{\text{low}} < \sigma < \tau_{\text{merge}}$, se entra en la \emph{zona de incertidumbre} y se invoca al LLM con un \emph{prompt} de verificación que recibe nombre, tipo, descripción, período activo y relaciones conocidas de cada entidad. La salida es \texttt{SAME}, \texttt{DIFFERENT} o \texttt{UNCERTAIN}.
+\end{itemize}
+
+La doble cota acota el costo en llamadas al LLM. Que el LLM reciba el período activo como parte del contexto le permite, además, replicar a nivel cualitativo la decisión que la señal temporal ya empujó cuantitativamente.
+
+\subsection{Resolución de tipos de relación}
+
+CGRR aplica el mismo patrón a los tipos de relación. Recibe los tipos extraídos por el LLM y los confronta con los tipos ya consolidados. El \emph{scoring} de tipos combina BM25 sobre el nombre, similitud semántica de la descripción y un indicador de coincidencia de extremos. Si los pares sujeto-objeto coinciden, la evidencia de equivalencia es más fuerte. Por ejemplo, el sistema puede fusionar \texttt{IS\_CEO\_OF} y \texttt{LEADS} cuando el contexto indica que se refieren al mismo predicado. Esto reduce la dispersión del vocabulario de relaciones antes de invocar a la clasificación de cardinalidad y al módulo de conflictos.
+
+Esta sección responde a la limitación~5 del estado del arte. La resolución de entidades en sistemas como DALK y DYNAMO es puramente semántica y, según señala la sección~\ref{subsec:entity-resolution}, no contempla que dos menciones en períodos distintos puedan describir estados muy distintos de una misma entidad. CGER incorpora el solapamiento temporal como señal explícita del \emph{scoring} y permite que el LLM razone con el período activo como parte del contexto. La consolidación de tipos que aporta CGRR garantiza que la clasificación de cardinalidad y la detección de conflictos operen sobre un vocabulario canónico.
+
+%% ============================================================
+\section{Detección y resolución de conflictos temporales (ETCDR)}\label{sec:bt-etcdr}
+
+ETCDR (\emph{Edge-level Temporal Conflict Detection and Resolution}) es el módulo que da nombre al sistema. A diferencia de T-GRAG~\cite{tgrag2025} y TG-RAG~\cite{tg_rag2025}, no aplaza la coherencia temporal a la fase de consulta. Detecta y resuelve los conflictos durante la indexación y deja constancia explícita de cada decisión.
+
+\subsection{Detección bidireccional dirigida por cardinalidad}
+
+Para cada arista candidata $(s, r, o)$, el sistema ejecuta como máximo tres familias de consultas, escogidas según la cardinalidad de $r$:
+
+\begin{itemize}
+    \item \textbf{Consulta del lado del sujeto} (relaciones \texttt{SUBJECT\_EXCLUSIVE} o \texttt{BOTH\_EXCLUSIVE}). Recupera las aristas activas $(s, r, o')$ con $o' \neq o$. Detecta conflictos del tipo ``este sujeto ya tiene asignado otro objeto para esta relación''.
+    \item \textbf{Consulta del lado del objeto} (relaciones \texttt{OBJECT\_EXCLUSIVE} o \texttt{BOTH\_EXCLUSIVE}). Recupera las aristas activas $(s', r, o)$ con $s' \neq s$. Detecta conflictos del tipo ``este objeto ya tiene asignado otro sujeto para esta relación''.
+    \item \textbf{Consulta sobre la misma pareja} (todas las cardinalidades). Recupera aristas activas $(s, r, o)$ con el mismo sujeto y objeto, para identificar candidatos a corroboración.
+\end{itemize}
+
+La consulta del lado del objeto es la aportación clave frente a ZEP/Graphiti~\cite{zep2025}. La sección~\ref{sec:bitemporal} presenta a ese sistema como el más cercano al modelo bitemporal y le señala explícitamente esta omisión. ZEP/Graphiti detecta contradicciones por similitud semántica entre aristas del mismo sujeto, lo que cubre el caso del lado del sujeto pero no el del objeto. Si dos personas distintas se atribuyen el mismo cargo en la misma empresa en el mismo intervalo, el sistema no levanta alerta. ETCDR cubre el caso porque la cardinalidad \texttt{OBJECT\_EXCLUSIVE} o \texttt{BOTH\_EXCLUSIVE} dispara explícitamente la consulta del lado del objeto.
+
+Las consultas se ejecutan tanto sobre el grafo ya persistido como sobre el lote actual de aristas en memoria. Esto es necesario porque dos aristas extraídas en el mismo lote pueden entrar en conflicto entre sí antes de haber tocado el grafo.
+
+\subsection{Decision Router}
+
+Cuando alguna de las consultas devuelve aristas conflictivas, ETCDR delega la decisión a un componente basado en LLM al que llamamos \emph{Decision Router}. El \emph{router} recibe como entrada (i) la arista existente con su cuádrupla y descripción, (ii) la arista candidata con su cuádrupla y descripción, (iii) la cardinalidad del tipo de relación, (iv) el tipo de conflicto detectado y (v) la procedencia y la confianza de cada extremo. Su salida es una de las cinco estrategias del subapartado siguiente, junto con una confianza en el rango $[0, 1]$ y una breve justificación. Cuando la confianza queda por debajo de un umbral configurable, el sistema degrada la decisión a \texttt{DISAGREEMENT}. Esta política evita propagar resoluciones cuestionables al grafo.
+
+\begin{algorithm}
+\caption{Resolución de un candidato en ETCDR}\label{alg:etcdr}
+\begin{algorithmic}[1]
+\Require Arista candidata $a = (s, r, o)$ con cuádrupla $\widetilde{Q}$
+\State $c \gets \texttt{cardinality}(r)$
+\State $C_S \gets \emptyset$;\, $C_O \gets \emptyset$;\, $C_P \gets \emptyset$
+\If{$c \in \{\texttt{SUBJECT\_EXCLUSIVE}, \texttt{BOTH\_EXCLUSIVE}\}$}
+    \State $C_S \gets$ aristas activas $(s, r, *)$ con objeto $\neq o$
+\EndIf
+\If{$c \in \{\texttt{OBJECT\_EXCLUSIVE}, \texttt{BOTH\_EXCLUSIVE}\}$}
+    \State $C_O \gets$ aristas activas $(*, r, o)$ con sujeto $\neq s$
+\EndIf
+\State $C_P \gets$ aristas activas $(s, r, o)$
+\If{$C_S \cup C_O \cup C_P = \emptyset$}
+    \State \Return \texttt{NEW\_EDGE}
+\EndIf
+\State $(\sigma, \kappa) \gets \texttt{DecisionRouterLLM}(a, C_S \cup C_O \cup C_P, c)$
+\If{$\kappa < \tau_{\text{conf}}$}
+    \State \Return \texttt{DISAGREEMENT}
+\EndIf
+\State \Return $\sigma$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Cinco estrategias de resolución}
+
+Las cinco estrategias y su efecto sobre la cuádrupla aparecen en la Tabla~\ref{tab:etcdr-strategies}. La operación bitemporal se reduce a, a lo sumo, dos modificaciones de los campos \texttt{t\_valid\_end} o \texttt{t\_tx\_end} y la inserción opcional de una nueva arista. Que toda resolución se exprese como un cambio acotado sobre la cuádrupla es lo que garantiza la trazabilidad y la \emph{no destrucción} del estado anterior. Las aristas históricas se cierran, no se borran.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{0.16\linewidth}p{0.24\linewidth}p{0.18\linewidth}p{0.16\linewidth}p{0.20\linewidth}}
+\hline
+\textbf{Estrategia} & \textbf{Condición} & \textbf{Efecto sobre $t_v^e$ existente} & \textbf{Efecto sobre $t_t^e$ existente} & \textbf{Otros efectos} \\ \hline
+\texttt{EVOLUTION} & El mundo cambió genuinamente & Se cierra al $t_v^s$ del candidato & Sin cambio & Inserta candidato como \texttt{CURRENT\_TRUTH} \\
+\texttt{CORRECTION} & La arista existente era errónea & Sin cambio & Se cierra a $t_{\text{now}}$ & Inserta candidato heredando el $t_v$ del original \\
+\texttt{CORROBORATION} & Candidato confirma la existente & Sin cambio & Sin cambio & Incrementa \texttt{support\_count} y agrega procedencia \\
+\texttt{DISAGREEMENT} & Ambigüedad o evidencia conflictiva & Sin cambio & Sin cambio & Inserta candidato con \texttt{status = disputed} \\
+\texttt{NEW\_EDGE} & Sin conflicto detectado & --- & --- & Inserta candidato como arista independiente \\ \hline
+\end{tabular}
+\caption{Estrategias de resolución de ETCDR y su efecto sobre la cuádrupla bitemporal de la arista existente.}
+\label{tab:etcdr-strategies}
+\end{table}
+
+La distinción entre \texttt{EVOLUTION} y \texttt{CORRECTION} es la traducción operativa de la diferencia conceptual entre evolución natural y corrección retroactiva discutida en las secciones~\ref{sec:graphrag-foundations} y~\ref{sec:bitemporal}. \texttt{EVOLUTION} cierra el tiempo válido de la arista anterior porque el hecho fue verdadero hasta ese punto. \texttt{CORRECTION} cierra el tiempo de transacción porque el sistema deja de creer en la arista anterior, pero el hecho subyacente nunca fue verdadero. \texttt{CORROBORATION} no modifica la cuádrupla pero refuerza la confianza al incrementar \texttt{support\_count}. \texttt{DISAGREEMENT} preserva ambas versiones marcando la nueva como \texttt{disputed}, lo que permite que el módulo de consulta de la sección~\ref{sec:bt-integration} la trate de forma diferenciada.
+
+\subsection{Trazabilidad de las resoluciones}
+
+Cada decisión de ETCDR se serializa en un log estructurado de auditoría. Cada entrada del log contiene la arista candidata, las aristas conflictivas detectadas, el tipo de conflicto, la cardinalidad consultada, la estrategia elegida, la confianza emitida por el \emph{Decision Router} y la justificación textual del modelo. Este registro cumple dos funciones. Como herramienta de auditoría, permite reconstruir por qué una arista quedó \texttt{disputed} o por qué otra fue retractada. Como instrumento de evaluación, alimenta los experimentos del próximo capítulo: comparar la calidad de las decisiones de ETCDR con anotaciones manuales requiere precisamente este nivel de granularidad.
+
+A diferencia de T-GRAG y TG-RAG (sección~\ref{sec:temporal-graphrag}), que delegan toda la coherencia temporal al filtrado por fecha en la consulta y que no detectan ni resuelven los conflictos durante la indexación, ETCDR los resuelve en el mismo \emph{pipeline} en el que se inserta el conocimiento. La consecuencia es que el grafo resultante no contiene contradicciones latentes a la espera de ser ocultadas por una restricción temporal del usuario. Las contradicciones existen solo cuando el sistema las ha clasificado explícitamente como \texttt{DISAGREEMENT} y queda constancia auditable de ello.
+
+%% ============================================================
+\section{Integración con el pipeline de GraphRAG y consulta temporal}\label{sec:bt-integration}
+
+\subsection{Reportes de comunidad temporales}
+
+La pirámide de comunidades de Leiden de GraphRAG~\cite{edge2024local} se mantiene tal cual. BT-GRAPHRAG no cambia el algoritmo de partición ni la estructura jerárquica que produce. La modificación se concentra en la generación de los reportes de comunidad. Para cada nivel de la jerarquía y cada comunidad, el \emph{prompt} del reporte se sustituye por una variante que recibe, además de las entidades y relaciones del subgrafo, las marcas temporales de cada arista. La salida añade una sección de \emph{evolución temporal} al título, resumen, hallazgos y \emph{rating} habituales. Esa sección sintetiza, en lenguaje natural, las transiciones relevantes del período: cuándo aparecieron o desaparecieron entidades, qué relaciones cambiaron de estado y qué hechos están actualmente en disputa.
+
+% TODO: figura fig:bt-temporal-report que muestre un fragmento de reporte temporal con sus secciones (resumen, evolución, hallazgos) marcadas.
+
+El reporte mantiene el formato consumido por la búsqueda global de GraphRAG. Por ello, la búsqueda global pre-existente sigue funcionando sobre los reportes enriquecidos sin modificación. Las respuestas que produce contienen ahora narrativa temporal porque los reportes la contienen. La búsqueda local también se beneficia: al recuperar el vecindario de las entidades semilla, las descripciones de las aristas portan ya las marcas temporales y el modelo puede situarlas en su período correcto.
+
+\subsection{Descomposición temporal de consultas}
+
+Las consultas que mezclan referencias a varios momentos del tiempo (``¿quién dirigía la empresa X cuando se fusionó con Y?'') no se resuelven con un único filtro temporal. BT-GRAPHRAG las descompone en sub-consultas, cada una asociada a una restricción temporal explícita. Para cada sub-consulta el sistema clasifica su tipo (\texttt{POINT\_IN\_TIME}, \texttt{RANGE}, \texttt{EVOLUTION} o \texttt{COMPARISON}) y la ejecuta sobre el grafo en el modo \emph{as-of} apropiado. Los resultados parciales se agregan con una síntesis temporal que explicita las transiciones entre los períodos. Las aristas marcadas como \texttt{disputed} pasan por una resolución de disputas que pondera la fecha de cada versión, la confianza de la fuente y el \texttt{support\_count}.
+
+La idea de descomponer consultas temporalmente no es nueva: T-GRAG~\cite{tgrag2025} y MRAG~\cite{trek2025} introdujeron variantes de la misma idea. La diferencia en BT-GRAPHRAG es que la descomposición opera sobre un grafo en el que la temporalidad ya está saneada en la indexación: los conflictos están resueltos o etiquetados, las entidades están temporalmente diferenciadas y la cardinalidad es asimétrica. En consecuencia, el filtrado \emph{as-of} de una sub-consulta devuelve un subgrafo coherente y no se necesita reconciliar contradicciones en tiempo de consulta.
+
+\subsection{Actualización incremental del corpus}
+
+La actualización del corpus es un escenario natural de BT-GRAPHRAG. Cada arista nueva pasa por las mismas siete etapas del \emph{pipeline} y se reconcilia con el estado existente vía CGER, CGRR y ETCDR. Para evitar reprocesar documentos ya indexados, el sistema mantiene un registro de los documentos que ya han sido incorporados al grafo. Solo los documentos nuevos entran en el lote.
+
+La regeneración de los reportes de comunidad sigue el patrón propuesto por TG-RAG~\cite{tg_rag2025}. En lugar de reconstruir toda la pirámide, BT-GRAPHRAG identifica los nodos del grafo afectados por las aristas nuevas o modificadas, calcula su vecindario hasta una distancia $k$ configurable y reejecuta la partición de Leiden y la generación de reportes solo sobre las comunidades que intersecan ese vecindario. Las comunidades no afectadas conservan sus reportes anteriores. Esta política reduce el costo amortizado de la actualización a una fracción del costo de la indexación inicial. Hace viable mantener el grafo al día en escenarios de ingestión continua.
+
+%% ============================================================
+\section{Conclusiones}\label{sec:bt-conclusions}
+
+Este capítulo ha presentado BT-GRAPHRAG como una extensión del \emph{pipeline} de GraphRAG. La extensión integra la semántica bitemporal a nivel de arista y resuelve los conflictos temporales durante la indexación. La propuesta se compone de cuatro componentes principales:
+
+\begin{itemize}
+    \item la cuádrupla de estado temporal con sus cuatro estados epistémicos derivados,
+    \item la clasificación asimétrica de cardinalidad en cuatro categorías,
+    \item los módulos CGER y CGRR de resolución contextual y temporal de entidades y de tipos,
+    \item el módulo ETCDR de detección bidireccional y resolución por \emph{Decision Router}.
+\end{itemize}
+
+Estos componentes se insertan en un \emph{pipeline} de siete etapas. El \emph{pipeline} preserva la compatibilidad con la búsqueda local, global y DRIFT del GraphRAG original. Al mismo tiempo, mantiene una representación bitemporal completa que sostiene las consultas \emph{as-of} y la detección bidireccional dirigida por cardinalidad.
+
+La Tabla~\ref{tab:bt-vs-soa} extiende la Tabla~\ref{tab:soa-comparison} del estado del arte. Para cada una de las seis limitaciones, la columna correspondiente indica el componente de BT-GRAPHRAG que la resuelve.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{0.06\linewidth}p{0.36\linewidth}p{0.50\linewidth}}
+\hline
+\textbf{Lim.} & \textbf{Limitación del SoA (\ref{sec:soa-conclusions})} & \textbf{Respuesta de BT-GRAPHRAG} \\ \hline
+1 & Temporalidad presente pero no integrada en el \emph{pipeline} de GraphRAG. & \emph{Pipeline} de siete etapas con la temporalidad como atributo de primera clase y representación dual del grafo (\ref{sec:bt-pipeline}). \\
+2 & Separación temporal en lugar de resolución de conflictos. & ETCDR: detección bidireccional dirigida por cardinalidad, \emph{Decision Router} y cinco estrategias de resolución (\ref{sec:bt-etcdr}). \\
+3 & Cardinalidad simétrica de TREK (exclusiva/no-exclusiva). & Clasificación de cuatro categorías \texttt{SUBJECT\_EXCLUSIVE}, \texttt{OBJECT\_EXCLUSIVE}, \texttt{BOTH\_EXCLUSIVE}, \texttt{NON\_EXCLUSIVE} (\ref{sec:bt-cardinality}). \\
+4 & Bitemporalidad fuera del \emph{pipeline} de GraphRAG. & Cuádrupla $(t_v^s, t_v^e, t_t^s, t_t^e)$ embebida en cada arista del modelo de datos (\ref{sec:bt-bitemporal}). \\
+5 & Resolución de entidades sin temporalidad. & CGER con solapamiento temporal como quinta señal del \emph{scoring} compuesto y verificación LLM con contexto temporal (\ref{sec:bt-cger}). \\
+6 & Corrección y evolución sin distinción formal. & Estados epistémicos \texttt{HISTORICAL\_TRUTH} vs.\ \texttt{RETROACTIVE\_CORRECTION} y estrategias \texttt{EVOLUTION} vs.\ \texttt{CORRECTION} en ETCDR (\ref{sec:bt-bitemporal}, \ref{sec:bt-etcdr}). \\ \hline
+\end{tabular}
+\caption{Correspondencia uno-a-uno entre las seis limitaciones del estado del arte y los componentes de BT-GRAPHRAG que las resuelven.}
+\label{tab:bt-vs-soa}
+\end{table}
+
+La integración de los componentes no es accidental. La cuádrupla habilita los estados epistémicos. Los estados epistémicos se materializan a través de las cinco estrategias de ETCDR. ETCDR se dirige por la cardinalidad asimétrica. La cardinalidad opera sobre tipos previamente consolidados por CGRR. Y CGER usa el período activo de las entidades como una de las señales de su \emph{scoring}. Cada componente apoya al siguiente. Ninguno tiene sentido aislado.
+
+El siguiente capítulo aborda la evaluación experimental de la propuesta. La estrategia de evaluación cubre tres dimensiones: la corrección temporal de las respuestas a consultas con restricciones \emph{as-of}, la calidad de las decisiones de ETCDR contra anotaciones manuales sobre conflictos sembrados en el corpus y el costo amortizado de la actualización incremental sobre corpus que evolucionan en el tiempo.
