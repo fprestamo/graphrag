@@ -1,0 +1,13 @@
+name: crag
+description: >
+  Comprehensive RAG Benchmark (Yang et al., 2024).  Q&A across 5 domains
+  (finance, sports, music, movie, open) and 8 question types.
+dataset:
+  # CRAG is distributed via HuggingFace; see load_dataset.py for details.
+  hf_repo: "CRAG/crag"
+  hf_split: "validation"
+  local_path: "evaluation/benchmarks/crag/data/crag.jsonl"
+  max_examples: 500
+evaluation:
+  metric: "crag_truthfulness_score"
+  use_llm_judge: true
