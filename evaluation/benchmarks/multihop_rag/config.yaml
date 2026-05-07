@@ -1,0 +1,12 @@
+name: multihop_rag
+description: >
+  MultiHop-RAG (Tang & Yang, 2024).  English news multi-hop RAG benchmark with
+  inference, comparison, temporal and null query types.
+dataset:
+  source: "https://github.com/yixuantt/MultiHop-RAG"
+  raw_url: "https://raw.githubusercontent.com/yixuantt/MultiHop-RAG/main/dataset/MultiHopRAG.json"
+  local_path: "evaluation/benchmarks/multihop_rag/data/multihop_rag.jsonl"
+  max_examples: 500
+evaluation:
+  metric: "accuracy by query type"
+  use_llm_judge: true

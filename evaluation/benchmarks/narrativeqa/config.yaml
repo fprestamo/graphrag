@@ -1,0 +1,12 @@
+name: narrativeqa
+description: >
+  NarrativeQA (Kočiský et al., 2018).  Long-form QA over books and movie
+  scripts with two reference answers per question.
+dataset:
+  hf_repo: "deepmind/narrativeqa"
+  hf_split: "test"
+  local_path: "evaluation/benchmarks/narrativeqa/data/narrativeqa.jsonl"
+  max_examples: 200
+evaluation:
+  metric: "token_f1 + llm_judge"
+  use_llm_judge: true
