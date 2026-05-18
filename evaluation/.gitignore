@@ -1,5 +1,0 @@
-# Datasets and results are large or non-redistributable; do not commit them.
-benchmarks/*/data/
-results/
-__pycache__/
-*.pyc

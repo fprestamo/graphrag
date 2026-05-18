@@ -1,8 +1,0 @@
-# Optional dependencies for the BT-GraphRAG evaluation pipeline.
-# The core harness only needs the standard library + the project itself; these
-# packages are required by some `load_dataset.py` / `evaluate.py` scripts.
-
-datasets>=2.18.0     # CRAG, NarrativeQA dataset loaders
-rouge-score>=0.1.2   # Optional ROUGE-L for NarrativeQA
-sacrebleu>=2.4.0     # Optional BLEU for free-form benchmarks
-PyYAML>=6.0          # Read benchmark config.yaml files
