@@ -93,7 +93,9 @@ def _records_from_split(
     split: str,
     corpus_dir: Path,
     seen: dict[str, str],
+    max_entities: int | None = None,
 ) -> Iterable[EvalRecord]:
+    split_entities: set[str] = set()
     for raw in raws:
         idx = str(raw.get("idx") or raw.get("id") or "")
         if not idx:
@@ -103,6 +105,10 @@ def _records_from_split(
         if not question or not targets:
             continue
         entity_id = _entity_id(idx)
+        if max_entities is not None and entity_id not in split_entities:
+            if len(split_entities) >= max_entities:
+                continue
+            split_entities.add(entity_id)
         filename = seen.get(entity_id)
         if filename is None:
             filename = _filename_for(entity_id)
@@ -144,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("evaluation/timeqa/data/corpus"),
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--entities-per-split",
+        type=int,
+        default=None,
+        help="Keep only the first N unique entities (/wiki/...) from each split.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -162,7 +174,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[warn] {in_path} does not exist, skipping", file=sys.stderr)
             continue
         raws = _read_raw(in_path)
-        records.extend(_records_from_split(raws, split, args.out_corpus, seen))
+        records.extend(
+            _records_from_split(
+                raws, split, args.out_corpus, seen, args.entities_per_split
+            )
+        )
 
     if args.limit is not None and args.limit >= 0:
         records = records[: args.limit]
