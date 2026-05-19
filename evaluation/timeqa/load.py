@@ -1,4 +1,10 @@
-"""TimeQA loader: raw JSON (easy/hard) → JSONL + per-entity .txt corpus."""
+"""TimeQA loader (hard split, open-domain RAG protocol).
+
+Builds a single unified corpus from every unique Wikipedia entity referenced in
+`hard.json`. All pages go into one directory (`out-corpus/`), one `.txt` per
+entity. The indexer chunks/embeds that pool once; at query time the system has
+to retrieve the relevant chunks itself — the correct page is never disclosed.
+"""
 
 from __future__ import annotations
 
@@ -72,14 +78,6 @@ def _filename_for(entity_id: str) -> str:
     return f"{stem}.txt"
 
 
-def _filename_for_question(split: str, idx: str) -> str:
-    stem = idx.replace("/wiki/", "", 1)
-    stem = _SAFE_RE.sub("_", stem).strip("_") or "q"
-    if len(stem) > _FILENAME_MAX:
-        stem = stem[:_FILENAME_MAX]
-    return f"{split}_{stem}.txt"
-
-
 def _corpus_text(raw: dict[str, Any]) -> str:
     ctx = raw.get("context")
     if isinstance(ctx, str) and ctx.strip():
@@ -96,14 +94,20 @@ def _corpus_text(raw: dict[str, Any]) -> str:
     return "\n\n".join(parts).strip() + "\n" if parts else ""
 
 
-def _records_from_split(
+def _build_records(
     raws: Iterable[dict[str, Any]],
-    split: str,
     corpus_dir: Path,
-    seen: dict[str, str],
     max_entities: int | None = None,
-) -> Iterable[EvalRecord]:
-    split_entities: set[str] = set()
+) -> tuple[list[EvalRecord], int]:
+    """Emit one EvalRecord per question and write the unified corpus.
+
+    Every unique /wiki/... entity contributes one .txt to `corpus_dir`. All
+    questions share that single pool — there is no per-entity corpus.
+    """
+    records: list[EvalRecord] = []
+    seen: dict[str, str] = {}  # entity_id -> filename
+    kept_entities: set[str] = set()
+
     for raw in raws:
         idx = str(raw.get("idx") or raw.get("id") or "")
         if not idx:
@@ -112,93 +116,48 @@ def _records_from_split(
         targets = _flatten_targets(raw.get("targets"))
         if not question or not targets:
             continue
+
         entity_id = _entity_id(idx)
-        if max_entities is not None and entity_id not in split_entities:
-            if len(split_entities) >= max_entities:
+        if max_entities is not None and entity_id not in kept_entities:
+            if len(kept_entities) >= max_entities:
                 continue
-            split_entities.add(entity_id)
+            kept_entities.add(entity_id)
+
         filename = seen.get(entity_id)
         if filename is None:
             filename = _filename_for(entity_id)
             text = _corpus_text(raw)
             if text:
-                out_path = corpus_dir / filename
-                out_path.write_text(text, encoding="utf-8")
-                seen[entity_id] = filename
-            else:
-                seen[entity_id] = filename  # avoid retrying empty contexts
-        yield EvalRecord(
-            qid=idx,
-            question=question,
-            answer=targets[0],
-            aliases=targets[1:],
-            context={
-                "split": split,
-                "entity_id": entity_id,
-                "doc_id": filename,
-            },
-        )
-
-
-def _unique_entities_in_order(
-    splits: Iterable[tuple[str, list[dict[str, Any]]]],
-) -> list[str]:
-    """Collect entity ids in order of first appearance across the given splits."""
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for _split, raws in splits:
-        for raw in raws:
-            idx = str(raw.get("idx") or raw.get("id") or "")
-            if not idx:
-                continue
-            ent = _entity_id(idx)
-            if ent and ent not in seen:
-                seen.add(ent)
-                ordered.append(ent)
-    return ordered
-
-
-def _records_for_single_entity(
-    splits: Iterable[tuple[str, list[dict[str, Any]]]],
-    target_entity: str,
-    corpus_dir: Path,
-) -> Iterable[EvalRecord]:
-    """Emit one .txt per question (split-prefixed, idx-named) for a single entity."""
-    for split, raws in splits:
-        for raw in raws:
-            idx = str(raw.get("idx") or raw.get("id") or "")
-            if not idx:
-                continue
-            if _entity_id(idx) != target_entity:
-                continue
-            question = (raw.get("question") or "").strip()
-            targets = _flatten_targets(raw.get("targets"))
-            if not question or not targets:
-                continue
-            filename = _filename_for_question(split, idx)
-            text = _corpus_text(raw)
-            if text:
                 (corpus_dir / filename).write_text(text, encoding="utf-8")
-            yield EvalRecord(
+            seen[entity_id] = filename
+
+        records.append(
+            EvalRecord(
                 qid=idx,
                 question=question,
                 answer=targets[0],
                 aliases=targets[1:],
-                context={
-                    "split": split,
-                    "entity_id": target_entity,
-                    "doc_id": filename,
-                },
+                context={"entity_id": entity_id, "doc_id": filename},
             )
+        )
+
+    return records, len(seen)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m evaluation.timeqa.load",
-        description="Convert TimeQA JSON dumps into JSONL + corpus .txt files.",
+        description=(
+            "Convert TimeQA hard.json into JSONL + a unified corpus of "
+            "Wikipedia pages (open-domain RAG protocol)."
+        ),
     )
-    parser.add_argument("--input-easy", type=Path, required=False)
-    parser.add_argument("--input-hard", type=Path, required=False)
+    parser.add_argument(
+        "--input-hard",
+        type=Path,
+        default=Path("evaluation/timeqa/data/raw/hard.json"),
+        help="Path to TimeQA hard.json (JSON array or JSONL).",
+    )
     parser.add_argument(
         "--out-jsonl",
         type=Path,
@@ -211,72 +170,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
-        "--entities-per-split",
+        "--max-entities",
         type=int,
         default=None,
-        help="Keep only the first N unique entities (/wiki/...) from each split.",
-    )
-    parser.add_argument(
-        "--entity-index",
-        type=int,
-        default=None,
-        help=(
-            "1-based index of a single entity (ordered by first appearance across "
-            "easy then hard). When set, writes ONE .txt per question (named "
-            "{split}_{safe(idx)}.txt) and the JSONL only contains that entity's "
-            "questions. Useful for indexing one entity at a time."
-        ),
+        help="Keep only the first N unique entities (for quick smoke tests).",
     )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    if not args.input_easy and not args.input_hard:
-        parser.error("provide at least --input-easy or --input-hard")
+    if not args.input_hard.exists():
+        print(f"[error] {args.input_hard} does not exist", file=sys.stderr)
+        return 2
 
     args.out_corpus.mkdir(parents=True, exist_ok=True)
 
-    loaded: list[tuple[str, list[dict[str, Any]]]] = []
-    for split, in_path in (("easy", args.input_easy), ("hard", args.input_hard)):
-        if not in_path:
-            continue
-        if not in_path.exists():
-            print(f"[warn] {in_path} does not exist, skipping", file=sys.stderr)
-            continue
-        loaded.append((split, _read_raw(in_path)))
-
-    records: list[EvalRecord] = []
-
-    if args.entity_index is not None:
-        if args.entity_index < 1:
-            parser.error("--entity-index must be >= 1")
-        if args.entities_per_split is not None:
-            print(
-                "[warn] --entities-per-split is ignored when --entity-index is set",
-                file=sys.stderr,
-            )
-        ordered = _unique_entities_in_order(loaded)
-        if args.entity_index > len(ordered):
-            parser.error(
-                f"--entity-index {args.entity_index} is out of range "
-                f"(only {len(ordered)} unique entities found)"
-            )
-        target = ordered[args.entity_index - 1]
-        logger.info(
-            "Selected entity #%d/%d: %s",
-            args.entity_index, len(ordered), target,
-        )
-        records.extend(_records_for_single_entity(loaded, target, args.out_corpus))
-        doc_count = len({r.context.get("doc_id") for r in records if r.context.get("doc_id")})
-    else:
-        seen: dict[str, str] = {}
-        for split, raws in loaded:
-            records.extend(
-                _records_from_split(
-                    raws, split, args.out_corpus, seen, args.entities_per_split
-                )
-            )
-        doc_count = len(seen)
+    raws = _read_raw(args.input_hard)
+    records, doc_count = _build_records(raws, args.out_corpus, args.max_entities)
 
     if args.limit is not None and args.limit >= 0:
         records = records[: args.limit]

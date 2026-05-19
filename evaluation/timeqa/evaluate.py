@@ -1,4 +1,4 @@
-"""Single CLI: run BT-GraphRAG, vanilla GraphRAG, or both on TimeQA and report results."""
+"""Run BT-GraphRAG and/or vanilla GraphRAG on TimeQA hard (open-domain RAG)."""
 
 from __future__ import annotations
 
@@ -44,28 +44,6 @@ from evaluation.core.runners import BTConfig, VanillaConfig, bt_answer, vanilla_
 logger = logging.getLogger(__name__)
 
 SYSTEMS = ("btgraphrag", "graphrag")
-SCOPES = ("global", "per_entity")
-
-
-def _entity_name(rec: EvalRecord) -> str:
-    eid = str(rec.context.get("entity_id", "")).strip()
-    if eid.startswith("/wiki/"):
-        eid = eid[len("/wiki/"):]
-    return eid.replace("_", " ").strip()
-
-
-def _scoped_question(rec: EvalRecord, scope: str) -> str:
-    """In `per_entity` scope we prepend the Wikipedia entity name as a soft anchor.
-
-    This emulates "scope retrieval to this entity" without requiring a separate
-    per-entity index. The underlying graph is still the global one; the entity
-    name simply biases retrieval. Useful as an upper-bound / extraction-only signal.
-    """
-    if scope == "per_entity":
-        ent = _entity_name(rec)
-        if ent:
-            return f"In the context of {ent}, {rec.question}"
-    return rec.question
 
 
 @dataclass
@@ -101,38 +79,27 @@ def _default_scorer(
     return metrics
 
 
-def _truncate(s: str, n: int = 80) -> str:
-    s = " ".join((s or "").split())
-    return s if len(s) <= n else s[: n - 1] + "…"
-
-
 async def _eval_one(
     system: str,
     rec: EvalRecord,
     opts: _RunOpts,
     sem: asyncio.Semaphore,
-    scope: str,
 ) -> EvalPrediction:
     async with sem:
         started = time.perf_counter()
-        query = _scoped_question(rec, scope)
         if system == "btgraphrag":
-            result = await bt_answer(query, config=opts.bt_cfg)
+            result = await bt_answer(rec.question, config=opts.bt_cfg)
         else:
-            result = await vanilla_answer(query, config=opts.vanilla_cfg)
+            result = await vanilla_answer(rec.question, config=opts.vanilla_cfg)
 
         prediction = (result.get("answer") or "").strip()
 
-        # Judge always sees the original (unscoped) question — we're evaluating
-        # whether the answer is correct, not whether the scoped query was good.
         judge = await judge_answer(
             rec.question, rec.answer, prediction, use_llm=opts.use_judge
         )
 
         metrics = _default_scorer(rec, prediction, judge.label)
-        ctx: dict[str, Any] = {**rec.context, "scope": scope, "raw": result.get("raw", {})}
-        if query != rec.question:
-            ctx["scoped_question"] = query
+        ctx: dict[str, Any] = {**rec.context, "raw": result.get("raw", {})}
         ctx["_elapsed"] = round(time.perf_counter() - started, 2)
 
         raw = result.get("raw") or {}
@@ -200,7 +167,6 @@ def _build_report(
     dataset_path: Path,
     predictions: list[EvalPrediction],
     elapsed: float,
-    scope: str,
     tag: str = "",
     model: str = "",
 ) -> dict[str, Any]:
@@ -208,29 +174,15 @@ def _build_report(
     labels = [p.judge_label for p in predictions if p.judge_label is not None]
     truth = truthfulness(labels) if labels else {}
 
-    by_split: dict[str, dict[str, Any]] = {}
-    split_groups: dict[str, list[EvalPrediction]] = {}
-    for p in predictions:
-        split = str(p.context.get("split", "unknown"))
-        split_groups.setdefault(split, []).append(p)
-    for split, items in split_groups.items():
-        split_labels = [x.judge_label for x in items if x.judge_label is not None]
-        by_split[split] = {
-            "num_examples": len(items),
-            "metrics": _judge_only(aggregate(x.metrics for x in items)),
-            "truthfulness": truthfulness(split_labels) if split_labels else {},
-        }
-
     report: dict[str, Any] = {
         "benchmark": "timeqa",
-        "scope": scope,
+        "split": "hard",
         "system": system,
         "dataset": str(dataset_path),
         "num_examples": len(predictions),
         "elapsed_seconds": round(elapsed, 3),
         "metrics": metrics_all,
         "truthfulness": truth,
-        "extra": {"by_split": by_split},
     }
     if tag:
         report["tag"] = tag
@@ -242,14 +194,14 @@ def _build_report(
 _JUDGE_GLYPH = {"correct": "✓", "incorrect": "✗", "missing": "∅"}
 
 
-def _log_prediction(idx: int, total: int, system: str, scope: str, p: EvalPrediction) -> None:
+def _log_prediction(idx: int, total: int, system: str, p: EvalPrediction) -> None:
     glyph = _JUDGE_GLYPH.get(p.judge_label or "", "·")
     label = (p.judge_label or "n/a").upper()
     reason = p.judge_reason or ""
     judge_line = f"{glyph} {label}" + (f" — {reason}" if reason else "")
     err = p.context.get("_error")
     print()
-    print(f"[{system}/{scope}] {idx}/{total}")
+    print(f"[{system}] {idx}/{total}")
     print(f"  Q:     {p.question}")
     print(f"  Pred:  {p.prediction or '<empty>'}")
     print(f"  Gold:  {p.gold_answer or '<none>'}")
@@ -258,13 +210,13 @@ def _log_prediction(idx: int, total: int, system: str, scope: str, p: EvalPredic
         print(f"  ERROR: {err}")
 
 
-def _log_summary(system: str, scope: str, report: dict[str, Any]) -> None:
+def _log_summary(system: str, report: dict[str, Any]) -> None:
     m = report.get("metrics") or {}
     truth = report.get("truthfulness") or {}
     n = report.get("num_examples", 0)
     elapsed = report.get("elapsed_seconds", 0.0)
     logger.info("-" * 72)
-    logger.info("[%s/%s] SUMMARY — %d examples in %.1fs", system, scope, n, elapsed)
+    logger.info("[%s] SUMMARY — %d examples in %.1fs", system, n, elapsed)
     logger.info(
         "  EM=%.3f  F1=%.3f  EM_native=%.3f  F1_native=%.3f",
         m.get("exact_match", 0.0), m.get("f1", 0.0),
@@ -287,12 +239,11 @@ async def _run_system(
     out_dir: Path,
     dataset_path: Path,
     opts: _RunOpts,
-    scope: str,
     tag: str = "",
 ) -> dict[str, Any]:
     model_raw = _resolve_model(system, opts)
     model_dir = _safe_model_name(model_raw)
-    label = f"{system}/{scope}" + (f"/{tag}" if tag else "") + f"/{model_dir}"
+    label = f"{system}" + (f"/{tag}" if tag else "") + f"/{model_dir}"
     logger.info("=" * 72)
     logger.info(
         "[%s] %d examples (concurrency=%d, judge=%s, dry_run=%s)",
@@ -305,7 +256,7 @@ async def _run_system(
     started = time.perf_counter()
     total = len(records)
     tasks = [
-        asyncio.create_task(_eval_one(system, rec, opts, sem, scope))
+        asyncio.create_task(_eval_one(system, rec, opts, sem))
         for rec in records
     ]
     preds_by_qid: dict[str, EvalPrediction] = {}
@@ -313,25 +264,25 @@ async def _run_system(
     for fut in asyncio.as_completed(tasks):
         pred = await fut
         done_count += 1
-        _log_prediction(done_count, total, system, scope, pred)
+        _log_prediction(done_count, total, system, pred)
         preds_by_qid[pred.qid] = pred
     # Preserve original input order in outputs.
     preds = [preds_by_qid[r.qid] for r in records if r.qid in preds_by_qid]
     elapsed = time.perf_counter() - started
 
-    sys_dir = out_dir / system / "timeqa" / scope
+    sys_dir = out_dir / system / "timeqa"
     if tag:
         sys_dir = sys_dir / tag
     sys_dir = sys_dir / model_dir
     sys_dir.mkdir(parents=True, exist_ok=True)
     save_jsonl(sys_dir / "predictions.jsonl", preds)
     report = _build_report(
-        system, dataset_path, list(preds), elapsed, scope, tag, model_raw
+        system, dataset_path, list(preds), elapsed, tag, model_raw
     )
     (sys_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    _log_summary(system, scope, report)
+    _log_summary(system, report)
     logger.info(
         "[%s] wrote %s and %s",
         label,
@@ -371,7 +322,7 @@ def _latex_escape(s: str) -> str:
 
 
 def _write_comparison(
-    out_dir: Path, reports: dict[str, dict[str, Any]], scope: str, tag: str = ""
+    out_dir: Path, reports: dict[str, dict[str, Any]], tag: str = ""
 ) -> None:
     bt = reports.get("btgraphrag", {})
     gr = reports.get("graphrag", {})
@@ -390,7 +341,6 @@ def _write_comparison(
         rows.append(
             {
                 "benchmark": "timeqa",
-                "scope": scope,
                 "metric_key": key,
                 "metric": label,
                 "graphrag": gr_val,
@@ -401,14 +351,14 @@ def _write_comparison(
 
     compare = {
         "benchmark": "timeqa",
-        "scope": scope,
+        "split": "hard",
         "systems": {"graphrag": gr, "btgraphrag": bt},
         "headline_metric": "f1_native",
         "rows": rows,
     }
     if tag:
         compare["tag"] = tag
-    suffix = f"_{scope}" + (f"_{tag}" if tag else "")
+    suffix = f"_{tag}" if tag else ""
     compare_dir = out_dir / tag if tag else out_dir
     compare_dir.mkdir(parents=True, exist_ok=True)
     (compare_dir / f"compare{suffix}.json").write_text(
@@ -419,14 +369,11 @@ def _write_comparison(
         "w", encoding="utf-8", newline=""
     ) as fh:
         writer = csv.writer(fh)
-        writer.writerow(
-            ["benchmark", "scope", "metric", "graphrag", "btgraphrag", "delta"]
-        )
+        writer.writerow(["benchmark", "metric", "graphrag", "btgraphrag", "delta"])
         for r in rows:
             writer.writerow(
                 [
                     r["benchmark"],
-                    r["scope"],
                     r["metric"],
                     "" if r["graphrag"] is None else f"{r['graphrag']:.4f}",
                     "" if r["btgraphrag"] is None else f"{r['btgraphrag']:.4f}",
@@ -435,11 +382,10 @@ def _write_comparison(
             )
 
     lines = [
-        f"% Auto-generated by evaluation/timeqa/evaluate.py — scope={scope}, "
-        "headline metric: f1_native.",
-        "\\begin{tabular}{lllrrr}",
+        "% Auto-generated by evaluation/timeqa/evaluate.py — headline metric: f1_native.",
+        "\\begin{tabular}{llrrr}",
         "\\toprule",
-        "Benchmark & Scope & Metric & GraphRAG & BT-GraphRAG & $\\Delta$ \\\\",
+        "Benchmark & Metric & GraphRAG & BT-GraphRAG & $\\Delta$ \\\\",
         "\\midrule",
     ]
     for r in rows:
@@ -448,7 +394,6 @@ def _write_comparison(
         delta_cell = "--" if r["delta"] is None else f"{r['delta']:+.3f}"
         lines.append(
             f"{_latex_escape(r['benchmark'])} & "
-            f"{_latex_escape(r['scope'])} & "
             f"{_latex_escape(r['metric'])} & "
             f"{gr_cell} & {bt_cell} & {delta_cell} \\\\"
         )
@@ -458,8 +403,7 @@ def _write_comparison(
     )
 
     logger.info(
-        "[%s] wrote comparison: %s/compare%s.{json,csv,tex}",
-        scope, compare_dir, suffix,
+        "wrote comparison: %s/compare%s.{json,csv,tex}", compare_dir, suffix,
     )
 
 
@@ -471,7 +415,7 @@ def _write_comparison(
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m evaluation.timeqa.evaluate",
-        description="Evaluate BT-GraphRAG and/or vanilla GraphRAG on TimeQA.",
+        description="Evaluate BT-GraphRAG and/or vanilla GraphRAG on TimeQA hard.",
     )
     parser.add_argument(
         "--dataset",
@@ -507,21 +451,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         type=str,
         default="",
         help=(
-            "Optional label for this run (e.g. 'e1' for the first entity's corpus). "
-            "When set, outputs are written under <out>/<system>/timeqa/<scope>/<tag>/ "
-            "and comparison files under <out>/<tag>/compare_<scope>_<tag>.{json,csv,tex}. "
-            "The tag is also recorded inside report.json."
-        ),
-    )
-    parser.add_argument(
-        "--scope",
-        choices=["global", "per_entity", "both"],
-        default="both",
-        help=(
-            "Evaluation scope. 'global' = raw question against the full index. "
-            "'per_entity' = question prepended with the entity name as a soft anchor "
-            "(approximates per-entity scoping without separate indexing). "
-            "'both' runs each scope and writes separate reports."
+            "Optional label for this run. When set, outputs are written under "
+            "<out>/<system>/timeqa/<tag>/<model>/ and comparison files under "
+            "<out>/<tag>/compare_<tag>.{json,csv,tex}. The tag is also recorded "
+            "inside report.json."
         ),
     )
     return parser.parse_args(argv)
@@ -557,17 +490,15 @@ async def _amain(args: argparse.Namespace) -> int:
     )
 
     args.out.mkdir(parents=True, exist_ok=True)
-    scopes = list(SCOPES) if args.scope == "both" else [args.scope]
-
     tag = (args.tag or "").strip()
-    for scope in scopes:
-        reports: dict[str, dict[str, Any]] = {}
-        for system in args.systems:
-            reports[system] = await _run_system(
-                system, records, args.out, args.dataset, opts, scope, tag
-            )
-        if len(args.systems) >= 2:
-            _write_comparison(args.out, reports, scope, tag)
+
+    reports: dict[str, dict[str, Any]] = {}
+    for system in args.systems:
+        reports[system] = await _run_system(
+            system, records, args.out, args.dataset, opts, tag
+        )
+    if len(args.systems) >= 2:
+        _write_comparison(args.out, reports, tag)
 
     return 0
 
