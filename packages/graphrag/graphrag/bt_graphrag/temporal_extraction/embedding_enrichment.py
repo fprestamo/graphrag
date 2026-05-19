@@ -10,6 +10,7 @@ Neo4j store) has embeddings available without an extra pass.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,70 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from graphrag_llm.embedding import LLMEmbedding
+
+
+# OpenAI embeddings API has two limits per request:
+#   - 8191 tokens per individual input (text-embedding-3-*)
+#   - ~300_000 tokens summed across all inputs in one request
+# We pick safe values below those caps to leave headroom for tokenizer drift.
+_PER_INPUT_TOKEN_CAP = 8000
+_PER_REQUEST_TOKEN_CAP = 250_000
+_PER_REQUEST_ITEM_CAP = 2048
+
+
+async def _embed_in_batches(
+    texts: list[str],
+    embedding_model: "LLMEmbedding",
+) -> list[list[float]]:
+    """Embed a list of texts, splitting into multiple API calls when needed.
+
+    OpenAI rejects embedding requests whose total tokens exceed ~300k or whose
+    item count exceeds 2048. This helper groups inputs into batches that stay
+    under both caps and concatenates the resulting embeddings in input order.
+
+    Individual texts longer than the per-input cap are truncated using the
+    embedding model's tokenizer.
+    """
+    if not texts:
+        return []
+
+    tokenizer = embedding_model.tokenizer
+
+    # Truncate any oversized inputs so they fit the per-input cap.
+    prepared: list[str] = []
+    for t in texts:
+        if not t:
+            prepared.append(t)
+            continue
+        n = tokenizer.num_tokens(t)
+        if n <= _PER_INPUT_TOKEN_CAP:
+            prepared.append(t)
+        else:
+            ids = tokenizer.encode(t)[:_PER_INPUT_TOKEN_CAP]
+            prepared.append(tokenizer.decode(ids))
+
+    # Build batches under the per-request token + item caps.
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for t in prepared:
+        n = tokenizer.num_tokens(t) if t else 0
+        if current and (
+            current_tokens + n > _PER_REQUEST_TOKEN_CAP
+            or len(current) >= _PER_REQUEST_ITEM_CAP
+        ):
+            batches.append(current)
+            current = []
+            current_tokens = 0
+        current.append(t)
+        current_tokens += n
+    if current:
+        batches.append(current)
+
+    responses = await asyncio.gather(
+        *(embedding_model.embedding_async(input=b) for b in batches)
+    )
+    return [emb for resp in responses for emb in resp.embeddings]
 
 
 def normalize_relation_type_text(relation_type: str) -> str:
@@ -97,9 +162,11 @@ async def embed_dataframes(
     if not all_texts or all(not t for t in all_texts):
         return entities_df, relationships_df
 
-    # Single batched embedding call — minimises API round-trips
-    response = await embedding_model.embedding_async(input=all_texts)
-    all_embeddings: list[list[float]] = response.embeddings
+    # Token-aware batching: split into multiple API calls when the total
+    # exceeds OpenAI's per-request limits.
+    all_embeddings: list[list[float]] = await _embed_in_batches(
+        all_texts, embedding_model
+    )
 
     n_ent = len(entity_descs)
     n_rel = len(rel_descs)
@@ -209,10 +276,8 @@ async def enrich_entities_with_text_unit_embeddings(
         entities_df["text_unit_embedding"] = None
         return entities_df
 
-    response = await embedding_model.embedding_async(input=all_unique_texts)
-    text_to_emb: dict[str, list[float]] = dict(
-        zip(all_unique_texts, response.embeddings)
-    )
+    embeddings = await _embed_in_batches(all_unique_texts, embedding_model)
+    text_to_emb: dict[str, list[float]] = dict(zip(all_unique_texts, embeddings))
 
     # Compute per-entity mean vector
     text_unit_embeddings: list[list[float] | None] = []
