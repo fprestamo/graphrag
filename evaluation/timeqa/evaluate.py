@@ -12,6 +12,7 @@ import asyncio
 import csv
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,12 +165,44 @@ def _judge_only(metrics: dict[str, float]) -> dict[str, float]:
     return {k: v for k, v in metrics.items() if k in _REPORT_METRIC_KEYS}
 
 
+_MODEL_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_model_name(name: str) -> str:
+    stem = _MODEL_SAFE_RE.sub("_", name).strip("_")
+    return stem or "unknown"
+
+
+def _resolve_model(system: str, opts: "_RunOpts") -> str:
+    """Best-effort identification of the model used to answer questions."""
+    if system == "btgraphrag":
+        return (opts.bt_cfg.model_id or os.getenv("BTG_MODEL_ID") or "unknown").strip() or "unknown"
+    root = Path(opts.vanilla_cfg.root_dir)
+    for cfg_name in ("settings.yaml", "settings.yml"):
+        cfg_path = root / cfg_name
+        if not cfg_path.is_file():
+            continue
+        try:
+            import yaml  # type: ignore[import-untyped]
+
+            data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            models = data.get("completion_models") or {}
+            for v in models.values():
+                if isinstance(v, dict) and v.get("model"):
+                    return str(v["model"])
+        except Exception:  # noqa: BLE001
+            break
+    return "unknown"
+
+
 def _build_report(
     system: str,
     dataset_path: Path,
     predictions: list[EvalPrediction],
     elapsed: float,
     scope: str,
+    tag: str = "",
+    model: str = "",
 ) -> dict[str, Any]:
     metrics_all = _judge_only(aggregate(p.metrics for p in predictions))
     labels = [p.judge_label for p in predictions if p.judge_label is not None]
@@ -188,7 +221,7 @@ def _build_report(
             "truthfulness": truthfulness(split_labels) if split_labels else {},
         }
 
-    return {
+    report: dict[str, Any] = {
         "benchmark": "timeqa",
         "scope": scope,
         "system": system,
@@ -199,6 +232,11 @@ def _build_report(
         "truthfulness": truth,
         "extra": {"by_split": by_split},
     }
+    if tag:
+        report["tag"] = tag
+    if model:
+        report["model"] = model
+    return report
 
 
 _JUDGE_GLYPH = {"correct": "✓", "incorrect": "✗", "missing": "∅"}
@@ -250,11 +288,15 @@ async def _run_system(
     dataset_path: Path,
     opts: _RunOpts,
     scope: str,
+    tag: str = "",
 ) -> dict[str, Any]:
+    model_raw = _resolve_model(system, opts)
+    model_dir = _safe_model_name(model_raw)
+    label = f"{system}/{scope}" + (f"/{tag}" if tag else "") + f"/{model_dir}"
     logger.info("=" * 72)
     logger.info(
-        "[%s/%s] %d examples (concurrency=%d, judge=%s, dry_run=%s)",
-        system, scope, len(records), opts.concurrency,
+        "[%s] %d examples (concurrency=%d, judge=%s, dry_run=%s)",
+        label, len(records), opts.concurrency,
         "off" if not opts.use_judge else "on",
         opts.dry_run,
     )
@@ -278,16 +320,21 @@ async def _run_system(
     elapsed = time.perf_counter() - started
 
     sys_dir = out_dir / system / "timeqa" / scope
+    if tag:
+        sys_dir = sys_dir / tag
+    sys_dir = sys_dir / model_dir
     sys_dir.mkdir(parents=True, exist_ok=True)
     save_jsonl(sys_dir / "predictions.jsonl", preds)
-    report = _build_report(system, dataset_path, list(preds), elapsed, scope)
+    report = _build_report(
+        system, dataset_path, list(preds), elapsed, scope, tag, model_raw
+    )
     (sys_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     _log_summary(system, scope, report)
     logger.info(
-        "[%s/%s] wrote %s and %s",
-        system, scope,
+        "[%s] wrote %s and %s",
+        label,
         sys_dir / "predictions.jsonl",
         sys_dir / "report.json",
     )
@@ -324,7 +371,7 @@ def _latex_escape(s: str) -> str:
 
 
 def _write_comparison(
-    out_dir: Path, reports: dict[str, dict[str, Any]], scope: str
+    out_dir: Path, reports: dict[str, dict[str, Any]], scope: str, tag: str = ""
 ) -> None:
     bt = reports.get("btgraphrag", {})
     gr = reports.get("graphrag", {})
@@ -359,12 +406,16 @@ def _write_comparison(
         "headline_metric": "f1_native",
         "rows": rows,
     }
-    suffix = f"_{scope}"
-    (out_dir / f"compare{suffix}.json").write_text(
+    if tag:
+        compare["tag"] = tag
+    suffix = f"_{scope}" + (f"_{tag}" if tag else "")
+    compare_dir = out_dir / tag if tag else out_dir
+    compare_dir.mkdir(parents=True, exist_ok=True)
+    (compare_dir / f"compare{suffix}.json").write_text(
         json.dumps(compare, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    with (out_dir / f"compare{suffix}.csv").open(
+    with (compare_dir / f"compare{suffix}.csv").open(
         "w", encoding="utf-8", newline=""
     ) as fh:
         writer = csv.writer(fh)
@@ -402,13 +453,13 @@ def _write_comparison(
             f"{gr_cell} & {bt_cell} & {delta_cell} \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}", ""]
-    (out_dir / f"compare{suffix}.tex").write_text(
+    (compare_dir / f"compare{suffix}.tex").write_text(
         "\n".join(lines), encoding="utf-8"
     )
 
     logger.info(
-        "[%s] wrote comparison: compare%s.{json,csv,tex}",
-        scope, suffix,
+        "[%s] wrote comparison: %s/compare%s.{json,csv,tex}",
+        scope, compare_dir, suffix,
     )
 
 
@@ -450,6 +501,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--graphrag-data", type=Path, default=None)
     parser.add_argument(
         "--graphrag-search", choices=["local", "global"], default=None
+    )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default="",
+        help=(
+            "Optional label for this run (e.g. 'e1' for the first entity's corpus). "
+            "When set, outputs are written under <out>/<system>/timeqa/<scope>/<tag>/ "
+            "and comparison files under <out>/<tag>/compare_<scope>_<tag>.{json,csv,tex}. "
+            "The tag is also recorded inside report.json."
+        ),
     )
     parser.add_argument(
         "--scope",
@@ -497,14 +559,15 @@ async def _amain(args: argparse.Namespace) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     scopes = list(SCOPES) if args.scope == "both" else [args.scope]
 
+    tag = (args.tag or "").strip()
     for scope in scopes:
         reports: dict[str, dict[str, Any]] = {}
         for system in args.systems:
             reports[system] = await _run_system(
-                system, records, args.out, args.dataset, opts, scope
+                system, records, args.out, args.dataset, opts, scope, tag
             )
         if len(args.systems) >= 2:
-            _write_comparison(args.out, reports, scope)
+            _write_comparison(args.out, reports, scope, tag)
 
     return 0
 

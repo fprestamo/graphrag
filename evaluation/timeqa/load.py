@@ -72,6 +72,14 @@ def _filename_for(entity_id: str) -> str:
     return f"{stem}.txt"
 
 
+def _filename_for_question(split: str, idx: str) -> str:
+    stem = idx.replace("/wiki/", "", 1)
+    stem = _SAFE_RE.sub("_", stem).strip("_") or "q"
+    if len(stem) > _FILENAME_MAX:
+        stem = stem[:_FILENAME_MAX]
+    return f"{split}_{stem}.txt"
+
+
 def _corpus_text(raw: dict[str, Any]) -> str:
     ctx = raw.get("context")
     if isinstance(ctx, str) and ctx.strip():
@@ -132,6 +140,58 @@ def _records_from_split(
         )
 
 
+def _unique_entities_in_order(
+    splits: Iterable[tuple[str, list[dict[str, Any]]]],
+) -> list[str]:
+    """Collect entity ids in order of first appearance across the given splits."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _split, raws in splits:
+        for raw in raws:
+            idx = str(raw.get("idx") or raw.get("id") or "")
+            if not idx:
+                continue
+            ent = _entity_id(idx)
+            if ent and ent not in seen:
+                seen.add(ent)
+                ordered.append(ent)
+    return ordered
+
+
+def _records_for_single_entity(
+    splits: Iterable[tuple[str, list[dict[str, Any]]]],
+    target_entity: str,
+    corpus_dir: Path,
+) -> Iterable[EvalRecord]:
+    """Emit one .txt per question (split-prefixed, idx-named) for a single entity."""
+    for split, raws in splits:
+        for raw in raws:
+            idx = str(raw.get("idx") or raw.get("id") or "")
+            if not idx:
+                continue
+            if _entity_id(idx) != target_entity:
+                continue
+            question = (raw.get("question") or "").strip()
+            targets = _flatten_targets(raw.get("targets"))
+            if not question or not targets:
+                continue
+            filename = _filename_for_question(split, idx)
+            text = _corpus_text(raw)
+            if text:
+                (corpus_dir / filename).write_text(text, encoding="utf-8")
+            yield EvalRecord(
+                qid=idx,
+                question=question,
+                answer=targets[0],
+                aliases=targets[1:],
+                context={
+                    "split": split,
+                    "entity_id": target_entity,
+                    "doc_id": filename,
+                },
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m evaluation.timeqa.load",
@@ -156,6 +216,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Keep only the first N unique entities (/wiki/...) from each split.",
     )
+    parser.add_argument(
+        "--entity-index",
+        type=int,
+        default=None,
+        help=(
+            "1-based index of a single entity (ordered by first appearance across "
+            "easy then hard). When set, writes ONE .txt per question (named "
+            "{split}_{safe(idx)}.txt) and the JSONL only contains that entity's "
+            "questions. Useful for indexing one entity at a time."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -164,31 +235,58 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("provide at least --input-easy or --input-hard")
 
     args.out_corpus.mkdir(parents=True, exist_ok=True)
-    seen: dict[str, str] = {}
-    records: list[EvalRecord] = []
 
+    loaded: list[tuple[str, list[dict[str, Any]]]] = []
     for split, in_path in (("easy", args.input_easy), ("hard", args.input_hard)):
         if not in_path:
             continue
         if not in_path.exists():
             print(f"[warn] {in_path} does not exist, skipping", file=sys.stderr)
             continue
-        raws = _read_raw(in_path)
-        records.extend(
-            _records_from_split(
-                raws, split, args.out_corpus, seen, args.entities_per_split
+        loaded.append((split, _read_raw(in_path)))
+
+    records: list[EvalRecord] = []
+
+    if args.entity_index is not None:
+        if args.entity_index < 1:
+            parser.error("--entity-index must be >= 1")
+        if args.entities_per_split is not None:
+            print(
+                "[warn] --entities-per-split is ignored when --entity-index is set",
+                file=sys.stderr,
             )
+        ordered = _unique_entities_in_order(loaded)
+        if args.entity_index > len(ordered):
+            parser.error(
+                f"--entity-index {args.entity_index} is out of range "
+                f"(only {len(ordered)} unique entities found)"
+            )
+        target = ordered[args.entity_index - 1]
+        logger.info(
+            "Selected entity #%d/%d: %s",
+            args.entity_index, len(ordered), target,
         )
+        records.extend(_records_for_single_entity(loaded, target, args.out_corpus))
+        doc_count = len({r.context.get("doc_id") for r in records if r.context.get("doc_id")})
+    else:
+        seen: dict[str, str] = {}
+        for split, raws in loaded:
+            records.extend(
+                _records_from_split(
+                    raws, split, args.out_corpus, seen, args.entities_per_split
+                )
+            )
+        doc_count = len(seen)
 
     if args.limit is not None and args.limit >= 0:
         records = records[: args.limit]
 
     save_jsonl(args.out_jsonl, records)
     logger.info(
-        "Wrote %d records to %s and %d unique docs to %s",
+        "Wrote %d records to %s and %d docs to %s",
         len(records),
         args.out_jsonl,
-        len(seen),
+        doc_count,
         args.out_corpus,
     )
     return 0

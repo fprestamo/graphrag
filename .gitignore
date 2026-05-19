@@ -69,3 +69,6 @@ packages/graphrag-*/example_notebooks/**/cache
 
 # TimeQA evaluation data
 evaluation/timeqa/data/corpus/
+evaluation/timeqa/data/corpus_e*/
+evaluation/timeqa/data/timeqa.jsonl
+evaluation/timeqa/data/timeqa_e*.jsonl
