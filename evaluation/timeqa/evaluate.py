@@ -439,7 +439,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=list(SYSTEMS),
     )
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--concurrency", type=int, default=100)
     parser.add_argument("--no-judge", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(

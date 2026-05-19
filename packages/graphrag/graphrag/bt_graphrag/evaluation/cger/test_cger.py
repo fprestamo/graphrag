@@ -424,13 +424,12 @@ async def run_scenario_7_score_breakdown() -> None:
             "description_embedding": None, "relation_types": [rel_b],
         }
         score, breakdown = compute_entity_composite_score(e_a, e_b, CONFIG)
-        type_block = " [TYPE BLOCKED]" if breakdown.get("type_mismatch") else ""
         print(
             f"  {title_a:25s}  {title_b:25s}  "
             f"{breakdown.get('bm25_name', 0):6.3f}  "
             f"{breakdown.get('jaccard_name', 0):6.3f}  "
             f"{breakdown.get('temporal_overlap', 0):6.3f}  "
-            f"{score:9.4f}  {label}{type_block}"
+            f"{score:9.4f}  {label}"
         )
 
 

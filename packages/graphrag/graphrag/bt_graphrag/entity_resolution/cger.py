@@ -33,6 +33,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_type(t: Any) -> str:
+    """Normalize an entity-type string for case-insensitive comparison."""
+    if t is None:
+        return ""
+    return str(t).strip().lower()
+
+
+def _types_match(a: Any, b: Any) -> bool:
+    """Whether two entities share the same entity type.
+
+    Empty/unknown type on either side is treated as a non-match: CGER never
+    merges across types, so an entity with no declared type cannot be safely
+    paired with anything.
+    """
+    na = _normalize_type(a)
+    nb = _normalize_type(b)
+    if not na or not nb:
+        return False
+    return na == nb
+
+
 # ---------------------------------------------------------------------------
 # LLM Verification for Hard Cases
 # ---------------------------------------------------------------------------
@@ -169,25 +190,37 @@ async def resolve_entities(
             best_match: dict[str, Any] | None = None
 
             entity_title = str(new_entity.get("title", "?"))
+            new_type = new_entity.get("type")
 
             # --- Select candidates for this entity ---
+            # Hard type-gate: CGER only compares entities of the same type
+            # (e.g. Person vs Person, never Person vs Organization).
             if candidate_map and entity_title in candidate_map:
-                # Pre-fetched from Neo4j vector index — already top-K
-                candidates = candidate_map[entity_title]
+                # Pre-fetched from Neo4j vector index — filter to same-type only
+                candidates = [
+                    c for c in candidate_map[entity_title]
+                    if _types_match(new_type, c.get("type"))
+                ]
             else:
-                # Fallback: in-memory top-K by description embedding cosine
+                # Fallback: in-memory top-K by description embedding cosine,
+                # restricted to same-type existing entities so the top-K slots
+                # are spent on viable candidates.
+                same_type_existing = [
+                    e for e in existing_records
+                    if _types_match(new_type, e.get("type"))
+                ]
                 new_emb = new_entity.get("description_embedding") or []
                 if new_emb:
                     scored_candidates: list[tuple[float, dict[str, Any]]] = []
-                    for existing in existing_records:
+                    for existing in same_type_existing:
                         ex_emb = existing.get("description_embedding") or []
                         cos = cosine_similarity(new_emb, ex_emb) if ex_emb else 0.0
                         scored_candidates.append((cos, existing))
                     scored_candidates.sort(key=lambda x: x[0], reverse=True)
                     candidates = [rec for _, rec in scored_candidates[:top_k]]
                 else:
-                    # No embedding available — fall back to all existing records
-                    candidates = existing_records
+                    # No embedding available — score against all same-type records
+                    candidates = same_type_existing
 
             # --- Full composite scoring on the narrowed candidate set ---
             for existing in candidates:
@@ -281,7 +314,11 @@ async def resolve_entities(
             best_breakdown: dict[str, float] = {}
             best_match: dict[str, Any] | None = None
 
+            entity_type = entity.get("type")
             for seen in seen_entities:
+                # Hard type-gate: only compare entities of the same type
+                if not _types_match(entity_type, seen.get("type")):
+                    continue
                 score, breakdown = entity_scorer(entity, seen, config)
                 if score > best_score:
                     best_score = score

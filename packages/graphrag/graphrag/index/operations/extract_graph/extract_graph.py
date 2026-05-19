@@ -34,9 +34,17 @@ async def extract_graph(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Extract a graph from a piece of text using a language model."""
     num_started = 0
+    num_done = 0
+    total_units = len(text_units)
 
     async def run_strategy(row):
-        nonlocal num_started
+        nonlocal num_started, num_done
+        num_started += 1
+        msg_start = (
+            f"  [Stage 1] Started {num_started}/{total_units} text units (in-flight)"
+        )
+        print(msg_start, flush=True)
+        logger.info(msg_start)
         text = row[text_column]
         id = row[id_column]
         result = await _run_extract_graph(
@@ -47,7 +55,10 @@ async def extract_graph(
             prompt=prompt,
             max_gleanings=max_gleanings,
         )
-        num_started += 1
+        num_done += 1
+        msg_done = f"  [Stage 1] Extracted {num_done}/{total_units} text units"
+        print(msg_done, flush=True)
+        logger.info(msg_done)
         return result
 
     results = await derive_from_rows(

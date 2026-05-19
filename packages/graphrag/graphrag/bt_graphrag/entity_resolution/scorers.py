@@ -234,43 +234,6 @@ def endpoint_match_score(
 # ---------------------------------------------------------------------------
 
 
-def _entity_type_compatible(type_a: str, type_b: str) -> bool:
-    """Check whether two entity types are compatible for merging.
-
-    Entities of fundamentally different types (e.g., person vs organization)
-    should never be merged. Returns True if types are compatible.
-    """
-    if not type_a or not type_b:
-        return True  # unknown types → don't block
-
-    a = type_a.strip().lower()
-    b = type_b.strip().lower()
-
-    if a == b:
-        return True
-
-    # Define incompatible type groups — types within the same group
-    # can potentially merge, but types across groups cannot.
-    type_groups: dict[str, int] = {
-        "person": 0,
-        "organization": 1,
-        "geo": 2,
-        "location": 2,
-        "event": 3,
-        "concept": 4,
-        "product": 5,
-    }
-
-    group_a = type_groups.get(a)
-    group_b = type_groups.get(b)
-
-    # If both types are known and in different groups → incompatible
-    if group_a is not None and group_b is not None and group_a != group_b:
-        return False
-
-    return True
-
-
 def compute_entity_composite_score(
     new_entity: dict[str, Any],
     existing_entity: dict[str, Any],
@@ -290,37 +253,14 @@ def compute_entity_composite_score(
         composite = w2*BM25(name) + w3*Jaccard(name)
                     + w4*TemporalOverlap + w5*RelationContext
 
-    An entity type guard prevents merging entities of incompatible types
-    (e.g., person vs organization) by returning 0.0 immediately.
+    Entity-type filtering is the caller's responsibility (see CGER's
+    ``_types_match``). This scorer assumes the input pair already shares
+    a compatible type.
 
     Returns (composite_score, signal_breakdown_dict).
     """
     name_new = new_entity.get("title", "")
     name_existing = existing_entity.get("title", "")
-    type_new = str(new_entity.get("type", ""))
-    type_existing = str(existing_entity.get("type", ""))
-
-    # Entity type guard: incompatible types → score 0, never merge
-    types_compatible = _entity_type_compatible(type_new, type_existing)
-    if not types_compatible:
-        breakdown = {
-            "cosine_emb": 0.0,
-            "bm25_name": 0.0,
-            "jaccard_name": 0.0,
-            "temporal_overlap": 0.0,
-            "relation_ctx": 0.0,
-            "type_mismatch": True,
-            "discarded_by_cosine": False,
-            "normalized": False,
-            "w_bm25": 0.0,
-            "w_jaccard": 0.0,
-            "w_temporal": 0.0,
-            "w_relation": 0.0,
-        }
-        if verbose:
-            print(f"      Score breakdown: '{name_new}' vs '{name_existing}'"
-                  f" [TYPE MISMATCH: {type_new} vs {type_existing} → 0.0]")
-        return 0.0, breakdown
 
     # ------------------------------------------------------------------
     # Stage 1: Description cosine similarity pre-filter
@@ -337,7 +277,6 @@ def compute_entity_composite_score(
             "jaccard_name": 0.0,
             "temporal_overlap": 0.0,
             "relation_ctx": 0.0,
-            "type_mismatch": False,
             "discarded_by_cosine": True,
             "normalized": False,
             "w_bm25": 0.0,
@@ -399,7 +338,6 @@ def compute_entity_composite_score(
         "jaccard_name": s3,
         "temporal_overlap": s4,
         "relation_ctx": s5,
-        "type_mismatch": False,
         "discarded_by_cosine": False,
         "normalized": True,
         "w_bm25": config.cger_bm25_weight * s2,
@@ -435,15 +373,13 @@ def embedding_only_entity_scorer(
 
     This is the simplest possible semantic scorer — a single signal with no
     lexical or temporal fallbacks.  It returns 0.0 whenever either entity
-    lacks a ``description_embedding`` or when entity types are incompatible.
+    lacks a ``description_embedding``.
+
+    Entity-type filtering is the caller's responsibility (see CGER's
+    ``_types_match``).
 
     score = cosine(new.description_embedding, existing.description_embedding)
     """
-    type_new = str(new_entity.get("type", ""))
-    type_existing = str(existing_entity.get("type", ""))
-    if not _entity_type_compatible(type_new, type_existing):
-        return 0.0, {"cosine_emb": 0.0, "embedding_available": False, "type_mismatch": True}
-
     emb_new = new_entity.get("description_embedding") or []
     emb_existing = existing_entity.get("description_embedding") or []
     score = cosine_similarity(emb_new, emb_existing)
@@ -451,7 +387,6 @@ def embedding_only_entity_scorer(
     breakdown = {
         "cosine_emb": score,
         "embedding_available": bool(emb_new) and bool(emb_existing),
-        "type_mismatch": False,
     }
     return score, breakdown
 
@@ -484,8 +419,8 @@ def citation_and_description_entity_scorer(
     * Only S2         → score = S2  (citation context only).
     * Neither         → score = 0.0.
 
-    An entity type guard prevents merging entities of incompatible types
-    (e.g., person vs organization) by returning 0.0 immediately.
+    Entity-type filtering is the caller's responsibility (see CGER's
+    ``_types_match``).
 
     Parameters
     ----------
@@ -494,15 +429,6 @@ def citation_and_description_entity_scorer(
     w_cite:
         Weight for citation/text-unit embedding cosine similarity (default 0.5).
     """
-    type_new = str(new_entity.get("type", ""))
-    type_existing = str(existing_entity.get("type", ""))
-    if not _entity_type_compatible(type_new, type_existing):
-        return 0.0, {
-            "cosine_desc": 0.0, "cosine_cite": 0.0,
-            "has_desc_emb": False, "has_cite_emb": False,
-            "w_desc": 0.0, "w_cite": 0.0, "type_mismatch": True,
-        }
-
     emb_desc_new = new_entity.get("description_embedding") or []
     emb_desc_ex = existing_entity.get("description_embedding") or []
     emb_cite_new = new_entity.get("text_unit_embedding") or []
@@ -531,7 +457,6 @@ def citation_and_description_entity_scorer(
         "has_cite_emb": has_cite,
         "w_desc": w_desc * s1 if has_desc else 0.0,
         "w_cite": w_cite * s2 if has_cite else 0.0,
-        "type_mismatch": False,
     }
     return score, breakdown
 

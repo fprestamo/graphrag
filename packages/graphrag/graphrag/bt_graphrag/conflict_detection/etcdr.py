@@ -375,19 +375,30 @@ async def run_subject_any_type_query(
     candidate_relation_type: str,
     t_event: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Cross-type subject-side query: all active edges from subject, any relation type.
+    """Cross-type subject-side query: subject's active edges of any *subject-exclusive* type.
 
     Used for SUBJECT_EXCLUSIVE and BOTH_EXCLUSIVE to surface edges whose
     relation type differs from the candidate's but may still semantically
     conflict (e.g. existing IS_CEO_OF vs candidate LEADS — same subject,
     different type names, potentially contradictory meaning).
 
+    Only edges whose own cardinality claims subject-side exclusivity
+    (SUBJECT_EXCLUSIVE or BOTH_EXCLUSIVE) are returned: a NON_EXCLUSIVE
+    existing edge by definition coexists and cannot contest the candidate's
+    exclusive slot, so including it would only feed false positives to the
+    router.
+
     The candidate's own relation type is excluded to avoid self-comparison.
     """
+    exclusive_cardinalities = [
+        RelationCardinality.SUBJECT_EXCLUSIVE.value,
+        RelationCardinality.BOTH_EXCLUSIVE.value,
+    ]
     if t_event is not None:
         query = """
         MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity)
         WHERE e.relation_type <> $candidate_relation_type
+          AND e.cardinality IN $exclusive_cardinalities
           AND e.t_valid_start <= $t_event
           AND e.t_valid_end > $t_event
           AND e.t_tx_end = $infinity
@@ -397,6 +408,7 @@ async def run_subject_any_type_query(
             query,
             subject=subject,
             candidate_relation_type=candidate_relation_type,
+            exclusive_cardinalities=exclusive_cardinalities,
             infinity=INFINITY_ISO,
             t_event=t_event.isoformat(),
         )
@@ -404,6 +416,7 @@ async def run_subject_any_type_query(
         query = """
         MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity)
         WHERE e.relation_type <> $candidate_relation_type
+          AND e.cardinality IN $exclusive_cardinalities
           AND e.t_tx_end = $infinity
           AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, o.title AS object_title
@@ -412,6 +425,7 @@ async def run_subject_any_type_query(
             query,
             subject=subject,
             candidate_relation_type=candidate_relation_type,
+            exclusive_cardinalities=exclusive_cardinalities,
             infinity=INFINITY_ISO,
         )
 
@@ -430,19 +444,30 @@ async def run_object_any_type_query(
     candidate_relation_type: str,
     t_event: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Cross-type object-side query: all active edges to obj from other subjects, any type.
+    """Cross-type object-side query: object's incoming active edges of any *object-exclusive* type.
 
     Used for OBJECT_EXCLUSIVE and BOTH_EXCLUSIVE to surface edges whose
     relation type differs from the candidate's but may still semantically
     conflict (e.g. existing IS_PRESIDENT_OF vs candidate GOVERNS — different
     names, potentially same exclusive role).
 
+    Only edges whose own cardinality claims object-side exclusivity
+    (OBJECT_EXCLUSIVE or BOTH_EXCLUSIVE) are returned: a NON_EXCLUSIVE
+    existing edge by definition coexists and cannot contest the candidate's
+    exclusive slot on the object, so including it would only feed false
+    positives to the router.
+
     The candidate's own relation type and the candidate's subject are excluded.
     """
+    exclusive_cardinalities = [
+        RelationCardinality.OBJECT_EXCLUSIVE.value,
+        RelationCardinality.BOTH_EXCLUSIVE.value,
+    ]
     if t_event is not None:
         query = """
         MATCH (s:Entity)-[e:RELATIONSHIP]->(o:Entity {title: $obj})
         WHERE e.relation_type <> $candidate_relation_type
+          AND e.cardinality IN $exclusive_cardinalities
           AND s.title <> $subject
           AND e.t_valid_start <= $t_event
           AND e.t_valid_end > $t_event
@@ -454,6 +479,7 @@ async def run_object_any_type_query(
             obj=obj,
             subject=subject,
             candidate_relation_type=candidate_relation_type,
+            exclusive_cardinalities=exclusive_cardinalities,
             infinity=INFINITY_ISO,
             t_event=t_event.isoformat(),
         )
@@ -461,6 +487,7 @@ async def run_object_any_type_query(
         query = """
         MATCH (s:Entity)-[e:RELATIONSHIP]->(o:Entity {title: $obj})
         WHERE e.relation_type <> $candidate_relation_type
+          AND e.cardinality IN $exclusive_cardinalities
           AND s.title <> $subject
           AND e.t_tx_end = $infinity
           AND e.t_valid_end = $infinity
@@ -471,6 +498,7 @@ async def run_object_any_type_query(
             obj=obj,
             subject=subject,
             candidate_relation_type=candidate_relation_type,
+            exclusive_cardinalities=exclusive_cardinalities,
             infinity=INFINITY_ISO,
         )
 
@@ -670,15 +698,21 @@ def find_intra_batch_subject_any_type_conflicts(
     """Cross-type subject-side intra-batch detection.
 
     Mirrors run_subject_any_type_query. Finds batch members where the same
-    subject holds any relation type other than the candidate's — used for
-    SUBJECT_EXCLUSIVE and BOTH_EXCLUSIVE to catch semantically conflicting
-    edges with different type names (e.g. IS_CEO_OF vs LEADS).
+    subject holds any relation type other than the candidate's, restricted
+    to edges that themselves carry subject-side exclusivity
+    (SUBJECT_EXCLUSIVE or BOTH_EXCLUSIVE). NON_EXCLUSIVE batch edges cannot
+    contest the candidate's exclusive slot and are skipped.
     """
+    subject_exclusive_cardinalities = {
+        RelationCardinality.SUBJECT_EXCLUSIVE,
+        RelationCardinality.BOTH_EXCLUSIVE,
+    }
     conflicts = []
     for rel in accepted_batch:
         if (
             rel.source == candidate.source
             and rel.relation_type != candidate.relation_type
+            and rel.cardinality in subject_exclusive_cardinalities
             and rel.id != candidate.id
             and _is_temporally_active(rel, t_event)
         ):
@@ -695,14 +729,22 @@ def find_intra_batch_object_any_type_conflicts(
 
     Mirrors run_object_any_type_query. Finds batch members where a different
     subject points to the same target with any relation type other than the
-    candidate's — used for OBJECT_EXCLUSIVE and BOTH_EXCLUSIVE.
+    candidate's, restricted to edges that themselves carry object-side
+    exclusivity (OBJECT_EXCLUSIVE or BOTH_EXCLUSIVE). NON_EXCLUSIVE batch
+    edges cannot contest the candidate's exclusive slot on the object and
+    are skipped.
     """
+    object_exclusive_cardinalities = {
+        RelationCardinality.OBJECT_EXCLUSIVE,
+        RelationCardinality.BOTH_EXCLUSIVE,
+    }
     conflicts = []
     for rel in accepted_batch:
         if (
             rel.target == candidate.target
             and rel.source != candidate.source
             and rel.relation_type != candidate.relation_type
+            and rel.cardinality in object_exclusive_cardinalities
             and rel.id != candidate.id
             and _is_temporally_active(rel, t_event)
         ):
