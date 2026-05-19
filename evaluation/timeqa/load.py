@@ -112,10 +112,6 @@ def _build_records(
         idx = str(raw.get("idx") or raw.get("id") or "")
         if not idx:
             continue
-        question = (raw.get("question") or "").strip()
-        targets = _flatten_targets(raw.get("targets"))
-        if not question or not targets:
-            continue
 
         entity_id = _entity_id(idx)
         if max_entities is not None and entity_id not in kept_entities:
@@ -123,6 +119,9 @@ def _build_records(
                 continue
             kept_entities.add(entity_id)
 
+        # Corpus: write the page once per unique entity, regardless of whether
+        # any of its questions are answerable. Unanswerable-only pages still
+        # belong in the open-domain retrieval pool as distractors.
         filename = seen.get(entity_id)
         if filename is None:
             filename = _filename_for(entity_id)
@@ -130,6 +129,12 @@ def _build_records(
             if text:
                 (corpus_dir / filename).write_text(text, encoding="utf-8")
             seen[entity_id] = filename
+
+        # Records: only answerable items (targets != [""] after flattening).
+        question = (raw.get("question") or "").strip()
+        targets = _flatten_targets(raw.get("targets"))
+        if not question or not targets:
+            continue
 
         records.append(
             EvalRecord(
