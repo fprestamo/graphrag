@@ -1,4 +1,4 @@
-"""SQuAD-style and TimeQA-native metrics + truthfulness aggregation."""
+"""SQuAD-style and TimeQA-native metrics + accuracy aggregation."""
 
 from __future__ import annotations
 
@@ -74,30 +74,16 @@ def timeqa_native(pred: str, golds: Any) -> dict[str, float]:
 def truthfulness(labels: Iterable[str]) -> dict[str, float]:
     total = 0
     correct = 0
-    incorrect = 0
-    missing = 0
     for lab in labels:
         total += 1
         if lab == "correct":
             correct += 1
-        elif lab == "missing":
-            missing += 1
-        else:
-            incorrect += 1
     if total == 0:
-        return {
-            "total": 0,
-            "accuracy": 0.0,
-            "hallucination_rate": 0.0,
-            "missing_rate": 0.0,
-            "truthfulness_score": 0.0,
-        }
+        return {"total": 0, "accuracy": 0.0}
     return {
         "total": total,
         "accuracy": correct / total,
-        "hallucination_rate": incorrect / total,
-        "missing_rate": missing / total,
-        "truthfulness_score": (correct - incorrect) / total,
+        "incorrect_rate": (total - correct) / total,
     }
 
 

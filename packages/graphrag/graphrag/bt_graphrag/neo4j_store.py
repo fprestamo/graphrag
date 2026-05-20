@@ -271,6 +271,173 @@ async def insert_relationships_batch(
 # ---------------------------------------------------------------------------
 
 
+async def find_entities_by_titles(
+    session: "AsyncSession",
+    titles: list[str],
+) -> list[dict[str, Any]]:
+    """Resolve a list of free-form entity names to graph entities.
+
+    Strategy (cheap → expensive):
+      1. Exact (case-sensitive) title match.
+      2. Case-insensitive normalized match.
+      3. Substring containment (either direction).
+
+    Returns one record per resolved entity with: title, type, description,
+    active_start, active_end, and ``_query_term`` (the original input name).
+    Duplicates are removed by title; first hit wins.
+    """
+    if not titles:
+        return []
+
+    # Build normalized variants once
+    norm_pairs = [(t, t.strip()) for t in titles if t and t.strip()]
+    if not norm_pairs:
+        return []
+
+    raw_titles = [t for t, _ in norm_pairs]
+    norm_titles = [n for _, n in norm_pairs]
+    lower_titles = [n.lower() for n in norm_titles]
+
+    query = """
+    UNWIND range(0, size($raw) - 1) AS i
+    WITH i, $raw[i] AS query_term, $norm[i] AS norm_term, $lower[i] AS lower_term
+    OPTIONAL MATCH (e:Entity)
+    WHERE e.title = norm_term
+       OR toLower(e.title) = lower_term
+       OR toLower(e.title) CONTAINS lower_term
+       OR lower_term CONTAINS toLower(e.title)
+    WITH query_term, e
+    WHERE e IS NOT NULL
+    RETURN query_term, properties(e) AS props
+    """
+    result = await session.run(
+        query, raw=raw_titles, norm=norm_titles, lower=lower_titles
+    )
+    seen_titles: set[str] = set()
+    records: list[dict[str, Any]] = []
+    async for record in result:
+        entity = dict(record["props"])
+        title = entity.get("title")
+        if not title or title in seen_titles:
+            continue
+        seen_titles.add(title)
+        entity["_query_term"] = record["query_term"]
+        records.append(entity)
+    return records
+
+
+async def get_subgraph_around_entities(
+    session: "AsyncSession",
+    entity_titles: list[str],
+    k_hop: int = 1,
+    valid_at: datetime | None = None,
+    valid_range: tuple[datetime, datetime] | None = None,
+    tx_at: datetime | None = None,
+    include_disputed: bool = True,
+    relation_types: list[str] | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Retrieve a temporally-filtered k-hop subgraph around seed entities.
+
+    Bitemporal filtering:
+      - ``valid_at``: edge must satisfy ``t_valid_start <= valid_at < t_valid_end``.
+      - ``valid_range = (start, end)``: edge valid period must OVERLAP ``[start, end)``.
+      - ``tx_at``: edge must satisfy ``t_tx_start <= tx_at < t_tx_end``.
+        Defaults to "currently believed" (``t_tx_end = INFINITY``) when not given.
+
+    Returns ``{"edges": [...], "entities": [...], "seed_titles": [...]}``.
+    """
+    if not entity_titles:
+        return {"edges": [], "entities": [], "seed_titles": []}
+
+    # K-hop neighbourhood via the variable-length pattern.  We expand both
+    # directions because RAG-style retrieval needs neighbours regardless of
+    # edge direction.
+    k_hop = max(1, min(k_hop, 3))
+
+    params: dict[str, Any] = {
+        "seeds": entity_titles,
+        "infinity": INFINITY_ISO,
+        "limit": int(limit),
+    }
+    conditions: list[str] = []
+
+    if tx_at is not None:
+        conditions.append("r.t_tx_start <= $tx_at AND r.t_tx_end > $tx_at")
+        params["tx_at"] = tx_at.isoformat()
+    else:
+        conditions.append("r.t_tx_end = $infinity")
+
+    if valid_at is not None:
+        conditions.append(
+            "r.t_valid_start <= $valid_at AND r.t_valid_end > $valid_at"
+        )
+        params["valid_at"] = valid_at.isoformat()
+    elif valid_range is not None:
+        # Edge valid period overlaps [range_start, range_end)
+        range_start, range_end = valid_range
+        conditions.append(
+            "r.t_valid_start < $valid_end AND r.t_valid_end > $valid_start"
+        )
+        params["valid_start"] = range_start.isoformat()
+        params["valid_end"] = range_end.isoformat()
+
+    if not include_disputed:
+        conditions.append("r.status <> 'disputed'")
+
+    if relation_types:
+        conditions.append("r.relation_type IN $relation_types")
+        params["relation_types"] = relation_types
+
+    where_clause = " AND ".join(conditions) if conditions else "true"
+
+    # Two-step query: first find candidate edges within k_hop of seeds, then
+    # return them along with the participating entities.  We use APOC-style
+    # variable-length patterns and rely on the seed list to anchor the path.
+    cypher = f"""
+    MATCH (seed:Entity)
+    WHERE seed.title IN $seeds
+    CALL {{
+        WITH seed
+        MATCH path = (seed)-[:RELATIONSHIP*1..{k_hop}]-(:Entity)
+        UNWIND relationships(path) AS r
+        WITH DISTINCT r
+        RETURN r
+    }}
+    WITH r
+    MATCH (s:Entity)-[r]->(t:Entity)
+    WHERE {where_clause}
+    WITH DISTINCT r, s, t
+    RETURN s.title AS source, t.title AS target,
+           properties(r) AS edge_props,
+           properties(s) AS source_props,
+           properties(t) AS target_props
+    LIMIT $limit
+    """
+
+    result = await session.run(cypher, **params)
+
+    edges: list[dict[str, Any]] = []
+    entities_seen: dict[str, dict[str, Any]] = {}
+    async for record in result:
+        edge = dict(record["edge_props"])
+        edge["source"] = record["source"]
+        edge["target"] = record["target"]
+        edges.append(edge)
+        for ent_props_key, title in (
+            ("source_props", record["source"]),
+            ("target_props", record["target"]),
+        ):
+            if title and title not in entities_seen:
+                entities_seen[title] = dict(record[ent_props_key])
+
+    return {
+        "edges": edges,
+        "entities": list(entities_seen.values()),
+        "seed_titles": list(entity_titles),
+    }
+
+
 async def get_active_edges(
     session: "AsyncSession",
     subject: str | None = None,
@@ -715,3 +882,209 @@ async def create_neo4j_driver(
     from neo4j import AsyncGraphDatabase
 
     return AsyncGraphDatabase.driver(uri, auth=(user, password))
+
+
+# ---------------------------------------------------------------------------
+# CGER Phase B: temporary database for intra-batch candidate retrieval
+# ---------------------------------------------------------------------------
+
+
+class CGERBatchDB:
+    """Scratch Neo4j database scoping CGER Phase B candidate retrieval.
+
+    Uses a pre-existing, user-created Neo4j database as an isolated
+    workspace.  The database must already exist
+    (``CREATE DATABASE <name>`` run manually); this helper only wipes its
+    contents at entry and exit and (re)creates the indexes it needs.
+
+    For each incoming entity, ``find_candidates`` returns the union of
+    (a) entities sharing the same case-insensitive name and
+    (b) the top-K most similar entities by description-embedding cosine.
+
+    Use as an async context manager — the workspace is cleaned on exit
+    even if an exception fires.
+    """
+
+    def __init__(
+        self,
+        driver: "AsyncDriver",
+        db_name: str,
+        vector_dimensions: int,
+        label: str = "CGERBatchEntity",
+    ) -> None:
+        self.driver = driver
+        self.db_name = db_name
+        self.dimensions = vector_dimensions
+        self.label = label
+        self.index_name = "cger_batch_desc_embedding"
+
+    async def __aenter__(self) -> "CGERBatchDB":
+        await self._wipe_workspace()
+        await self._create_indexes()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        try:
+            await self._wipe_workspace()
+        except Exception as wipe_err:
+            logger.warning(
+                "CGERBatchDB: failed to wipe scratch database '%s': %s",
+                self.db_name, wipe_err,
+            )
+
+    async def _wipe_workspace(self) -> None:
+        """Delete all nodes/indexes the helper owns in the scratch DB.
+
+        Drops both the vector index and any nodes carrying our label so a
+        re-run starts from a clean state.  Other databases are untouched.
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            # Drop vector index first so node deletion does not churn it.
+            try:
+                await session.run(f"DROP INDEX {self.index_name} IF EXISTS")
+            except Exception:
+                logger.debug("CGERBatchDB: drop index '%s' no-op", self.index_name)
+            # Detach-delete all nodes carrying our label (in batches to
+            # avoid heap pressure on very large prior runs).
+            await session.run(f"MATCH (n:{self.label}) DETACH DELETE n")
+        logger.info("CGERBatchDB: wiped scratch workspace in '%s'", self.db_name)
+
+    async def _create_indexes(self) -> None:
+        vec_cypher = f"""
+        CREATE VECTOR INDEX {self.index_name} IF NOT EXISTS
+        FOR (n:{self.label}) ON (n.description_embedding)
+        OPTIONS {{
+          indexConfig: {{
+            `vector.dimensions`: {self.dimensions},
+            `vector.similarity_function`: 'cosine'
+          }}
+        }}
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            await session.run(
+                f"CREATE INDEX IF NOT EXISTS FOR (n:{self.label}) ON (n.title)"
+            )
+            await session.run(
+                f"CREATE INDEX IF NOT EXISTS FOR (n:{self.label}) ON (n.name_lower)"
+            )
+            await session.run(vec_cypher)
+
+    async def bulk_load(self, entities: list[dict[str, Any]]) -> None:
+        """Insert all entities into the temp DB in a single batched query."""
+        rows: list[dict[str, Any]] = []
+        for ent in entities:
+            title = ent.get("title")
+            emb = ent.get("description_embedding")
+            if not title or not emb:
+                continue
+            rows.append({
+                "title": str(title),
+                "name_lower": str(title).strip().lower(),
+                "type": str(ent.get("type") or ""),
+                "description_embedding": list(emb),
+            })
+        if not rows:
+            return
+        cypher = f"""
+        UNWIND $rows AS row
+        MERGE (n:{self.label} {{title: row.title}})
+        SET n.name_lower = row.name_lower,
+            n.type = row.type,
+            n.description_embedding = row.description_embedding
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            await session.run(cypher, rows=rows)
+            # Wait for the vector index to come online before any query.
+            try:
+                await session.run(
+                    "CALL db.awaitIndex($name, $timeout)",
+                    name=self.index_name, timeout=60,
+                )
+            except Exception:
+                # awaitIndex unavailable; vector queries may briefly return
+                # stale results. Index population is typically instant for
+                # batch sizes <10k.
+                logger.debug("CGERBatchDB: db.awaitIndex not available")
+
+    async def find_candidates(
+        self,
+        embedding: list[float],
+        name_lower: str,
+        entity_type: str | None,
+        top_k: int,
+        exclude_title: str,
+        allowed_titles: set[str],
+    ) -> list[dict[str, Any]]:
+        """Return candidates for one Phase B entity.
+
+        Result is the union of (a) entities in *allowed_titles* with the
+        same ``name_lower`` and (b) the top-K most similar by description
+        embedding (also restricted to *allowed_titles*).  The new entity
+        itself is excluded via ``exclude_title``.
+        """
+        if not allowed_titles:
+            return []
+
+        allowed = list(allowed_titles)
+        # Over-fetch from the vector index so post-filter survivors >= top_k
+        # in the common case.  Bounded above to keep query cheap.
+        index_fetch = min(max(top_k * 4, top_k + 5), 200)
+
+        vector_cypher = f"""
+        CALL db.index.vector.queryNodes($index_name, $fetch, $embedding)
+        YIELD node, score
+        WHERE node.title IN $allowed AND node.title <> $exclude
+        RETURN node.title AS title, node.type AS type, score
+        LIMIT $top_k
+        """
+        name_cypher = f"""
+        MATCH (n:{self.label})
+        WHERE n.name_lower = $name_lower
+          AND n.title IN $allowed
+          AND n.title <> $exclude
+        RETURN n.title AS title, n.type AS type
+        """
+        titles: dict[str, dict[str, Any]] = {}
+        async with self.driver.session(database=self.db_name) as session:
+            vec_result = await session.run(
+                vector_cypher,
+                index_name=self.index_name,
+                fetch=index_fetch,
+                embedding=embedding,
+                allowed=allowed,
+                exclude=exclude_title,
+                top_k=top_k,
+            )
+            async for rec in vec_result:
+                titles[rec["title"]] = {
+                    "title": rec["title"],
+                    "type": rec["type"],
+                    "_vector_score": rec["score"],
+                    "_match_reason": "embedding_top_k",
+                }
+            name_result = await session.run(
+                name_cypher,
+                name_lower=name_lower,
+                allowed=allowed,
+                exclude=exclude_title,
+            )
+            async for rec in name_result:
+                t = rec["title"]
+                if t in titles:
+                    titles[t]["_match_reason"] = "embedding_top_k+same_name"
+                else:
+                    titles[t] = {
+                        "title": t,
+                        "type": rec["type"],
+                        "_vector_score": None,
+                        "_match_reason": "same_name",
+                    }
+
+        if entity_type:
+            etype_norm = str(entity_type).strip().lower()
+            titles = {
+                t: meta for t, meta in titles.items()
+                if str(meta.get("type") or "").strip().lower() == etype_norm
+            }
+
+        return list(titles.values())

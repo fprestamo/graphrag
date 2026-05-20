@@ -29,6 +29,7 @@ from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 
 if TYPE_CHECKING:
     from graphrag_llm.completion import LLMCompletion
+    from neo4j import AsyncDriver
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,26 @@ def _types_match(a: Any, b: Any) -> bool:
 # LLM Verification for Hard Cases
 # ---------------------------------------------------------------------------
 
-CGER_VERIFICATION_PROMPT = """You are an entity resolution expert. Determine whether the following two entities refer to the same real-world entity.
+CGER_VERIFICATION_PROMPT = """You are a strict entity-resolution expert. Decide whether the two entities below refer to the **exact same real-world entity**.
+
+Your default answer is DIFFERENT. Only answer SAME when the evidence is unambiguous (abbreviation/alias of the same thing, alternate spelling, transliteration, punctuation/casing variant, or the same proper noun across languages — e.g. CATALUNYA = CATALONIA, BYU = BRIGHAM YOUNG UNIVERSITY, SOEHARTO = SUHARTO, "WHEN HARRY MET SALLY..." = "WHEN HARRY MET SALLY").
+
+ALWAYS answer DIFFERENT in these cases (do NOT merge):
+1. **Generic vs specific.** A bare common noun (e.g. "HIGH SCHOOL", "CORPORATION", "PUBLISHING COMPANY", "ELECTION CAMPAIGN", "FOOD WRITER", "MULTINATIONAL INSURANCE COMPANY") is NEVER the same as a named specific entity (e.g. "SOUTHWEST HIGH SCHOOL", "COLCHESTER CORPORATION", "SÍMBOL EDITORS", "APRIL 2019 GENERAL ELECTION", "AXA"). The generic term may describe many real-world things; the specific term names exactly one.
+2. **Different years / time periods.** Events, seasons, terms, or editions that name distinct years or date ranges are different events even when the rest of the name is identical (e.g. "2003-04 THAI LEAGUE T1 SEASON" ≠ "2002-03 THAI LEAGUE T1 SEASON", "1996 NFL SEASON" ≠ "1997 NFL SEASON"). Check the Active Period and any year tokens in the names.
+3. **Shared tokens, different organizations.** Football/sports clubs named after a sponsor are NOT the sponsor itself, and government bodies sharing words with a club are not the club (e.g. "KRUNG THAI BANK F.C." ≠ "KRUNG THAI BANK", "PORT AUTHORITY OF THAILAND" ≠ "THAI PORT FC"). Different leagues that share words are different leagues (e.g. "NATIONAL FOOTBALL LEAGUE" / NFL ≠ "THAI LEAGUE T1").
+4. **Country vs nationality/language/demonym.** A country and its language or demonym are different entities (e.g. "ENGLAND" ≠ "ENGLISH", "FRANCE" ≠ "FRENCH", "SPAIN" ≠ "SPANISH").
+5. **Different scope / qualifier.** A qualified role/award/degree is not the unqualified one when the qualifier changes the referent (e.g. "DOCTORATE UNPAD" ≠ "DOCTORATE WITH CUM LAUDE" — different doctorates; "MINISTER OF CULTURE, SPORTS AND TOURISM" ≠ "MINISTER OF CULTURE" — different ministries).
+6. **Different entity types.** If Type A and Type B disagree, answer DIFFERENT.
+
+It IS safe to answer SAME when:
+- One name is an abbreviation/acronym of the other (e.g. "BYU" / "BRIGHAM YOUNG UNIVERSITY", "ERC" / "REPUBLICAN LEFT OF CATALONIA", "OC" / "ÒMNIUM CULTURAL").
+- One is a short form of a full proper name and descriptions corroborate (e.g. "TAHER" / "MOESLIM TAHER", "TORRA" / "QUIM TORRA").
+- They differ only in punctuation, casing, accents, apostrophe style, or whitespace ("WHEN HARRY MET SALLY..." / "WHEN HARRY MET SALLY", "ST ANDREWS EPISCOPAL SCHOOL" / "ST. ANDREWS EPISCOPAL SCHOOL").
+- They are the same proper noun rendered in different languages or transliterations and descriptions agree.
+- They are a club's official name and a well-attested nickname/club-form ("MAGPIES" / "NEWCASTLE UNITED", "THAI PORT" / "THAI PORT FC", "MUANGTHONG UNITED F.C." / "MUANGTHONG UNITED").
+
+If the description, active period, or known relations do not corroborate the match — or if the evidence only weakly supports SAME — answer UNCERTAIN.
 
 Entity A:
 - Name: {name_a}
@@ -74,10 +94,10 @@ Entity B:
 - Active Period: {period_b}
 - Known Relations: {relations_b}
 
-Are these the same entity? Answer ONLY with one of:
-- SAME: They are the same real-world entity
-- DIFFERENT: They are different entities
-- UNCERTAIN: Cannot determine with available information
+Answer with ONE word and nothing else:
+- SAME
+- DIFFERENT
+- UNCERTAIN
 
 Answer:"""
 
@@ -117,10 +137,18 @@ async def llm_verify_entity_match(
     response = await model.completion_async(messages=messages)
     answer = response.content.strip().upper()
 
-    if "SAME" in answer:
-        return "SAME"
-    if "DIFFERENT" in answer:
+    # Look at the first verdict-like token only — guards against the LLM
+    # wrapping its answer ("These are NOT the SAME entity") which the prior
+    # substring check would have wrongly classified as SAME.
+    first_verdict = next(
+        (tok for tok in answer.replace(":", " ").split()
+         if tok in {"SAME", "DIFFERENT", "UNCERTAIN"}),
+        "",
+    )
+    if first_verdict == "DIFFERENT":
         return "DIFFERENT"
+    if first_verdict == "SAME":
+        return "SAME"
     return "UNCERTAIN"
 
 
@@ -136,6 +164,8 @@ async def resolve_entities(
     model: "LLMCompletion | None" = None,
     entity_scorer: EntityScorer = embedding_only_entity_scorer,
     candidate_map: dict[str, list[dict[str, Any]]] | None = None,
+    driver: "AsyncDriver | None" = None,
+    phase_b_top_k: int = 10,
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve new entities against the existing graph.
 
@@ -294,112 +324,224 @@ async def resolve_entities(
     intra_rejections = 0
 
     if len(unmerged) > 1:
-        print(f"\n    [CGER] Phase B: Intra-batch resolution ({len(unmerged)} unmerged entities)")
+        # Candidate selection strategy for Phase B.
+        # Preferred path: load all unmerged entities into a temporary Neo4j
+        # database; per entity, retrieve the union of same-name
+        # (case-insensitive) candidates and the top-K nearest by description
+        # embedding from the temp DB's vector index.  This is what avoids the
+        # O(N^2) seen_entities scan.  When no driver is supplied we fall
+        # back to a same-name + in-memory cosine top-K filter over
+        # ``seen_entities`` so behaviour stays consistent.
+        unmerged_records = [dict(r) for _, r in unmerged.iterrows()]
+        use_temp_db = driver is not None and bool(config.cger_phase_b_temp_db)
+        batch_db: Any = None
+        if use_temp_db:
+            from graphrag.bt_graphrag.neo4j_store import CGERBatchDB
+            batch_db = CGERBatchDB(
+                driver=driver,  # type: ignore[arg-type]
+                db_name=config.cger_phase_b_temp_db,
+                vector_dimensions=config.neo4j_vector_dimensions,
+            )
+
+        print(f"\n    [CGER] Phase B: Intra-batch resolution "
+              f"({len(unmerged)} unmerged entities, top_k={phase_b_top_k}, "
+              f"backend={'neo4j_temp_db' if use_temp_db else 'in_memory'})")
+
         intra_merge_map: dict[str, str] = {}
         seen_entities: list[dict[str, Any]] = []
+        seen_by_title: dict[str, dict[str, Any]] = {}
+        kept_titles: set[str] = set()
 
-        for _, row in unmerged.iterrows():
-            entity = dict(row)
-            entity_title = str(entity.get("title", ""))
-
-            # Skip if already resolved in Phase A (guards against chain-merge edge cases)
-            if entity_title in merge_map:
-                continue
-
-            if not seen_entities:
-                seen_entities.append(entity)
-                continue
-
-            best_score = 0.0
-            best_breakdown: dict[str, float] = {}
-            best_match: dict[str, Any] | None = None
-
+        async def _pick_candidates(
+            entity: dict[str, Any], entity_title: str,
+        ) -> list[dict[str, Any]]:
+            """Return same-name + top-K-embedding candidates for one entity."""
             entity_type = entity.get("type")
-            for seen in seen_entities:
-                # Hard type-gate: only compare entities of the same type
-                if not _types_match(entity_type, seen.get("type")):
-                    continue
-                score, breakdown = entity_scorer(entity, seen, config)
-                if score > best_score:
-                    best_score = score
-                    best_breakdown = breakdown
-                    best_match = seen
+            name_lower = entity_title.strip().lower()
+            emb = entity.get("description_embedding") or []
 
-            match_title = str(best_match.get("title", "?")) if best_match else ""
-
-            if best_match is not None and best_score >= config.cger_merge_threshold:
-                intra_merge_map[entity_title] = match_title
-                intra_auto_merges += 1
-                phase_b_log.append({
-                    "phase": "B_intra_batch",
-                    "entity": entity_title,
-                    "type": str(entity.get("type", "?")),
-                    "best_match": match_title,
-                    "best_score": round(best_score, 4),
-                    "decision": "AUTO_MERGE",
-                    "top_comparisons": [],
-                })
-                print(f"    [INTRA] AUTO-MERGE: '{entity_title[:30]}' -> '{match_title[:30]}'  "
-                      f"score={best_score:.4f}")
-                print(f"           cosine={best_breakdown.get('cosine_emb', 0):.3f}  "
-                      f"bm25={best_breakdown.get('bm25_name', 0):.3f}  "
-                      f"jaccard={best_breakdown.get('jaccard_name', 0):.3f}  "
-                      f"temporal={best_breakdown.get('temporal_overlap', 0):.3f}  "
-                      f"relation={best_breakdown.get('relation_ctx', 0):.3f}")
-                logger.info(
-                    "CGER: Intra-batch merge '%s' -> '%s' (score=%.3f)",
-                    entity_title, match_title, best_score,
+            if batch_db is not None and emb:
+                cand_refs = await batch_db.find_candidates(
+                    embedding=list(emb),
+                    name_lower=name_lower,
+                    entity_type=entity_type,
+                    top_k=phase_b_top_k,
+                    exclude_title=entity_title,
+                    allowed_titles=kept_titles,
                 )
-            elif (best_match is not None
-                  and best_score >= config.cger_llm_threshold_low
-                  and model is not None):
-                print(f"    [INTRA] LLM-ZONE: '{entity_title[:30]}' vs '{match_title[:30]}'  "
-                      f"score={best_score:.4f}")
-                verdict = await llm_verify_entity_match(entity, best_match, model)
-                if verdict == "SAME":
+                return [
+                    seen_by_title[c["title"]]
+                    for c in cand_refs
+                    if c["title"] in seen_by_title
+                ]
+
+            # In-memory fallback: same-name (case-insensitive) ∪ top-K cosine
+            same_type_seen = [
+                s for s in seen_entities
+                if _types_match(entity_type, s.get("type"))
+            ]
+            same_name = [
+                s for s in same_type_seen
+                if str(s.get("title", "")).strip().lower() == name_lower
+            ]
+            if emb:
+                scored: list[tuple[float, dict[str, Any]]] = []
+                for s in same_type_seen:
+                    s_emb = s.get("description_embedding") or []
+                    if not s_emb:
+                        continue
+                    scored.append((cosine_similarity(list(emb), list(s_emb)), s))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                topk = [rec for _, rec in scored[:phase_b_top_k]]
+            else:
+                topk = []
+            # Union by title
+            pool: dict[str, dict[str, Any]] = {}
+            for s in same_name + topk:
+                pool[str(s.get("title", ""))] = s
+            return list(pool.values())
+
+        async def _phase_b_loop() -> None:
+            nonlocal intra_auto_merges, intra_llm_merges, intra_rejections
+            for entity in unmerged_records:
+                entity_title = str(entity.get("title", ""))
+
+                # Skip if already resolved in Phase A (chain-merge guard)
+                if entity_title in merge_map:
+                    continue
+
+                if not seen_entities:
+                    seen_entities.append(entity)
+                    seen_by_title[entity_title] = entity
+                    kept_titles.add(entity_title)
+                    continue
+
+                best_score = 0.0
+                best_breakdown: dict[str, float] = {}
+                best_match: dict[str, Any] | None = None
+
+                entity_type = entity.get("type")
+                candidate_pool = await _pick_candidates(entity, entity_title)
+
+                for seen in candidate_pool:
+                    # Hard type-gate: only compare entities of the same type
+                    if not _types_match(entity_type, seen.get("type")):
+                        continue
+                    score, breakdown = entity_scorer(entity, seen, config)
+                    if score > best_score:
+                        best_score = score
+                        best_breakdown = breakdown
+                        best_match = seen
+
+                match_title = str(best_match.get("title", "?")) if best_match else ""
+
+                if best_match is not None and best_score >= config.cger_merge_threshold:
                     intra_merge_map[entity_title] = match_title
-                    intra_llm_merges += 1
+                    intra_auto_merges += 1
                     phase_b_log.append({
                         "phase": "B_intra_batch",
                         "entity": entity_title,
                         "type": str(entity.get("type", "?")),
                         "best_match": match_title,
                         "best_score": round(best_score, 4),
-                        "decision": "LLM_MERGE",
+                        "decision": "AUTO_MERGE",
+                        "candidate_pool_size": len(candidate_pool),
                         "top_comparisons": [],
                     })
-                    print(f"           LLM verdict: SAME -> MERGED")
+                    print(f"    [INTRA] AUTO-MERGE: '{entity_title[:30]}' -> '{match_title[:30]}'  "
+                          f"score={best_score:.4f}  (pool={len(candidate_pool)})")
+                    print(f"           cosine={best_breakdown.get('cosine_emb', 0):.3f}  "
+                          f"bm25={best_breakdown.get('bm25_name', 0):.3f}  "
+                          f"jaccard={best_breakdown.get('jaccard_name', 0):.3f}  "
+                          f"temporal={best_breakdown.get('temporal_overlap', 0):.3f}  "
+                          f"relation={best_breakdown.get('relation_ctx', 0):.3f}")
                     logger.info(
-                        "CGER: Intra-batch LLM merge '%s' -> '%s' (score=%.3f)",
+                        "CGER: Intra-batch merge '%s' -> '%s' (score=%.3f)",
                         entity_title, match_title, best_score,
                     )
+                elif (best_match is not None
+                      and best_score >= config.cger_llm_threshold_low
+                      and model is not None):
+                    print(f"    [INTRA] LLM-ZONE: '{entity_title[:30]}' vs '{match_title[:30]}'  "
+                          f"score={best_score:.4f}  (pool={len(candidate_pool)})")
+                    verdict = await llm_verify_entity_match(entity, best_match, model)
+                    if verdict == "SAME":
+                        intra_merge_map[entity_title] = match_title
+                        intra_llm_merges += 1
+                        phase_b_log.append({
+                            "phase": "B_intra_batch",
+                            "entity": entity_title,
+                            "type": str(entity.get("type", "?")),
+                            "best_match": match_title,
+                            "best_score": round(best_score, 4),
+                            "decision": "LLM_MERGE",
+                            "candidate_pool_size": len(candidate_pool),
+                            "top_comparisons": [],
+                        })
+                        print(f"           LLM verdict: SAME -> MERGED")
+                        logger.info(
+                            "CGER: Intra-batch LLM merge '%s' -> '%s' (score=%.3f)",
+                            entity_title, match_title, best_score,
+                        )
+                    else:
+                        intra_rejections += 1
+                        phase_b_log.append({
+                            "phase": "B_intra_batch",
+                            "entity": entity_title,
+                            "type": str(entity.get("type", "?")),
+                            "best_match": match_title,
+                            "best_score": round(best_score, 4),
+                            "decision": "LLM_ZONE_REJECTED",
+                            "candidate_pool_size": len(candidate_pool),
+                            "top_comparisons": [],
+                        })
+                        print(f"           LLM verdict: {verdict} -> KEPT SEPARATE")
+                        seen_entities.append(entity)
+                        seen_by_title[entity_title] = entity
+                        kept_titles.add(entity_title)
                 else:
-                    intra_rejections += 1
-                    phase_b_log.append({
-                        "phase": "B_intra_batch",
-                        "entity": entity_title,
-                        "type": str(entity.get("type", "?")),
-                        "best_match": match_title,
-                        "best_score": round(best_score, 4),
-                        "decision": "LLM_ZONE_REJECTED",
-                        "top_comparisons": [],
-                    })
-                    print(f"           LLM verdict: {verdict} -> KEPT SEPARATE")
+                    if best_score > 0.3:
+                        phase_b_log.append({
+                            "phase": "B_intra_batch",
+                            "entity": entity_title,
+                            "type": str(entity.get("type", "?")),
+                            "best_match": match_title,
+                            "best_score": round(best_score, 4),
+                            "decision": "BELOW_THRESHOLD",
+                            "candidate_pool_size": len(candidate_pool),
+                            "top_comparisons": [],
+                        })
+                        print(f"    [INTRA] BELOW: '{entity_title[:30]}' best='{match_title[:30]}'  "
+                              f"score={best_score:.4f}  (pool={len(candidate_pool)})")
                     seen_entities.append(entity)
-            else:
-                if best_score > 0.3:
-                    phase_b_log.append({
-                        "phase": "B_intra_batch",
-                        "entity": entity_title,
-                        "type": str(entity.get("type", "?")),
-                        "best_match": match_title,
-                        "best_score": round(best_score, 4),
-                        "decision": "BELOW_THRESHOLD",
-                        "top_comparisons": [],
-                    })
-                    print(f"    [INTRA] BELOW: '{entity_title[:30]}' best='{match_title[:30]}'  "
-                          f"score={best_score:.4f}")
-                seen_entities.append(entity)
+                    seen_by_title[entity_title] = entity
+                    kept_titles.add(entity_title)
+
+        if batch_db is not None:
+            try:
+                async with batch_db:
+                    await batch_db.bulk_load(unmerged_records)
+                    print(f"    [CGER] Phase B: temp Neo4j DB '{batch_db.db_name}' "
+                          f"loaded with {len(unmerged_records)} entities")
+                    await _phase_b_loop()
+            except Exception as temp_err:
+                logger.warning(
+                    "CGER Phase B: temp Neo4j DB failed (%s); "
+                    "falling back to in-memory candidate selection",
+                    temp_err,
+                )
+                print(f"    [CGER] Phase B: temp DB unavailable ({temp_err}); "
+                      f"falling back to in-memory")
+                # Reset accumulators and re-run with in-memory backend
+                batch_db = None
+                intra_merge_map.clear()
+                seen_entities.clear()
+                seen_by_title.clear()
+                kept_titles.clear()
+                intra_auto_merges = intra_llm_merges = intra_rejections = 0
+                await _phase_b_loop()
+        else:
+            await _phase_b_loop()
 
         if intra_merge_map:
             new_entities = new_entities.copy()

@@ -12,17 +12,6 @@ from evaluation.core.metrics import exact_match, token_f1
 
 logger = logging.getLogger(__name__)
 
-_REFUSAL_PATTERNS = (
-    "i don't know",
-    "i do not know",
-    "no information",
-    "insufficient",
-    "cannot determine",
-    "can't determine",
-    "unable to answer",
-    "n/a",
-)
-
 _JUDGE_PROMPT = """You are a strict evaluator of question-answering systems.
 
 Question: {question}
@@ -31,17 +20,16 @@ Candidate answer: {prediction}
 
 Decide whether the candidate answer is:
   - "correct": semantically matches the reference (paraphrases, alias names, equivalent dates).
-  - "missing": refuses or says it does not know / has no information.
-  - "incorrect": says something concrete that contradicts the reference or is unrelated.
+  - "incorrect": anything else — wrong, unrelated, empty, or a refusal / "I don't know".
 
 Reply with EXACTLY one line of JSON:
-{{"label": "correct|incorrect|missing", "reason": "<=30 words"}}
+{{"label": "correct|incorrect", "reason": "<=30 words"}}
 """
 
 
 @dataclass
 class JudgeResult:
-    label: str  # "correct" | "incorrect" | "missing"
+    label: str  # "correct" | "incorrect"
     reason: str
     raw: str = ""
 
@@ -49,10 +37,7 @@ class JudgeResult:
 def _heuristic(question: str, gold: str, prediction: str) -> JudgeResult:
     pred = (prediction or "").strip()
     if not pred:
-        return JudgeResult("missing", "empty prediction")
-    low = pred.lower()
-    if any(pat in low for pat in _REFUSAL_PATTERNS):
-        return JudgeResult("missing", "refusal pattern")
+        return JudgeResult("incorrect", "empty prediction")
     em = exact_match(pred, [gold])
     f1 = token_f1(pred, [gold])
     if em >= 1.0 or f1 >= 0.6:
@@ -77,7 +62,7 @@ def _parse_label(raw: str) -> JudgeResult | None:
         except (json.JSONDecodeError, TypeError):
             continue
         label = str(data.get("label", "")).strip().lower()
-        if label in {"correct", "incorrect", "missing"}:
+        if label in {"correct", "incorrect"}:
             reason = str(data.get("reason", "")).strip()
             return JudgeResult(label, reason, raw=raw)
     return None

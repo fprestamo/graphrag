@@ -35,9 +35,12 @@ async def _embed_in_batches(
 ) -> list[list[float]]:
     """Embed a list of texts, splitting into multiple API calls when needed.
 
-    OpenAI rejects embedding requests whose total tokens exceed ~300k or whose
-    item count exceeds 2048. This helper groups inputs into batches that stay
-    under both caps and concatenates the resulting embeddings in input order.
+    OpenAI rejects embedding requests whose total tokens exceed ~300k, whose
+    item count exceeds 2048, or that contain *any* empty-string input. This
+    helper groups non-empty inputs into batches that stay under both size
+    caps, embeds them, and returns results aligned to the original input
+    order — empty inputs receive an empty list ``[]`` instead of being sent
+    to the API.
 
     Individual texts longer than the per-input cap are truncated using the
     embedding model's tokenizer.
@@ -47,25 +50,32 @@ async def _embed_in_batches(
 
     tokenizer = embedding_model.tokenizer
 
-    # Truncate any oversized inputs so they fit the per-input cap.
-    prepared: list[str] = []
-    for t in texts:
+    # Truncate oversized inputs and record the indices of non-empty inputs.
+    # Empty inputs are skipped entirely — OpenAI 400s the whole request if
+    # any single input is an empty string.
+    nonempty_indices: list[int] = []
+    nonempty_texts: list[str] = []
+    for idx, t in enumerate(texts):
         if not t:
-            prepared.append(t)
             continue
         n = tokenizer.num_tokens(t)
         if n <= _PER_INPUT_TOKEN_CAP:
-            prepared.append(t)
+            nonempty_texts.append(t)
         else:
             ids = tokenizer.encode(t)[:_PER_INPUT_TOKEN_CAP]
-            prepared.append(tokenizer.decode(ids))
+            nonempty_texts.append(tokenizer.decode(ids))
+        nonempty_indices.append(idx)
+
+    out: list[list[float]] = [[] for _ in texts]
+    if not nonempty_texts:
+        return out
 
     # Build batches under the per-request token + item caps.
     batches: list[list[str]] = []
     current: list[str] = []
     current_tokens = 0
-    for t in prepared:
-        n = tokenizer.num_tokens(t) if t else 0
+    for t in nonempty_texts:
+        n = tokenizer.num_tokens(t)
         if current and (
             current_tokens + n > _PER_REQUEST_TOKEN_CAP
             or len(current) >= _PER_REQUEST_ITEM_CAP
@@ -81,7 +91,11 @@ async def _embed_in_batches(
     responses = await asyncio.gather(
         *(embedding_model.embedding_async(input=b) for b in batches)
     )
-    return [emb for resp in responses for emb in resp.embeddings]
+    flat = [emb for resp in responses for emb in resp.embeddings]
+
+    for pos, emb in zip(nonempty_indices, flat):
+        out[pos] = emb
+    return out
 
 
 def normalize_relation_type_text(relation_type: str) -> str:

@@ -43,7 +43,12 @@ ENTITY EXTRACTION RULES:
 1. De-duplicate: If the same entity is mentioned by different names or aliases (e.g., "the company" referring to "Acme Corp"), extract it only once under its canonical name.
 2. One type per entity: Never create the same entity under two different types.
 3. Be inclusive: Extract entities even if they appear only once, as long as they participate in a relationship.
-4. Named entities only: Do not extract generic concepts ("the economy", "technology") unless they are a named, specific thing (e.g., "THE INFLATION REDUCTION ACT", "BITCOIN").
+4. Named entities only — NEVER extract bare generic terms. Do NOT extract common nouns like "HIGH SCHOOL", "CORPORATION", "PUBLISHING COMPANY", "ELECTION CAMPAIGN", "MULTINATIONAL INSURANCE COMPANY", "FOOD WRITER", "THE ECONOMY", or "TECHNOLOGY" on their own. Extract only the specific named instance (e.g. "SOUTHWEST HIGH SCHOOL", "COLCHESTER CORPORATION", "AXA"). If the text only refers to the entity by a generic noun and never names it, do not extract it.
+5. Disambiguate look-alikes with different referents — when two names share words but refer to different real-world things, keep them as separate entities and reflect the distinction in the name and description. Examples that MUST stay separate:
+   - A sports club named after a sponsor vs the sponsor itself (e.g. "KRUNG THAI BANK F.C." [club] vs "KRUNG THAI BANK" [bank]).
+   - A government body that shares words with a club (e.g. "PORT AUTHORITY OF THAILAND" vs "THAI PORT FC").
+   - A country vs its language/demonym (e.g. "ENGLAND" vs "ENGLISH", "FRANCE" vs "FRENCH").
+6. Include year/edition in event names — for seasons, terms, elections, tournaments, and other recurring events, ALWAYS keep the year or edition qualifier as part of the entity_name (e.g. "2003-04 THAI LEAGUE T1 SEASON", "1996 NFL SEASON", "1989 HOLIDAY BOWL"). Different editions are different entities and must not collapse into the bare event name.
 
 ##############################################
 STEP 2: RELATIONSHIP EXTRACTION
@@ -492,49 +497,132 @@ Format as JSON:
 # Stage 7: Temporal Query Decomposition
 # ---------------------------------------------------------------------------
 
-TEMPORAL_QUERY_DECOMPOSITION_PROMPT = """You are a temporal reasoning expert. Given a complex query that involves temporal aspects, decompose it into simpler sub-queries that each target a specific time point or interval.
+TEMPORAL_QUERY_ANALYSIS_PROMPT = """You are a temporal reasoning expert. Your task is to analyse a question against a bitemporal knowledge graph and prepare it for retrieval.
 
 Original Query: {query}
 Current Date: {current_date}
 
-For each sub-query, specify:
-1. The sub-query text
-2. The temporal constraint (a specific date, date range, or "current")
-3. The query type: POINT_IN_TIME, RANGE, EVOLUTION, or COMPARISON
+Do TWO things and return a single JSON object:
 
-Format as JSON array:
-[
-    {{
-        "sub_query": "<sub-query text>",
-        "temporal_constraint": "<date or date range>",
-        "query_type": "<POINT_IN_TIME|RANGE|EVOLUTION|COMPARISON>"
-    }}
-]
+1. ENTITY EXTRACTION
+   List every named entity the question is asking ABOUT or that must be located in the graph to answer it (people, organisations, places, events, products, laws, etc.). Use the entity's most recognisable surface form (e.g. "Attaphol Buspakom", "Apple", "Nairobi Climate Summit"). Do NOT include relation types, dates, or generic nouns.
 
-If the query has no temporal aspect, return a single sub-query with temporal_constraint="current" and query_type="POINT_IN_TIME".
+2. TEMPORAL DECOMPOSITION
+   Decompose the question into one or more sub-queries that each carry an explicit temporal constraint. Most questions only need ONE sub-query — only emit multiple when the question references DIFFERENT independent time points or periods (e.g. "who led X when it merged with Y" → one sub-query about the merger date, one about leadership at that date).
+
+   For each sub-query, give:
+   - "sub_query": natural-language sub-question
+   - "entities": entities relevant to THIS sub-query (subset of the global list)
+   - "query_type": one of
+       * POINT_IN_TIME — about a single instant ("in 1992", "in March 2014", "when X resigned")
+       * RANGE         — about an interval ("between Apr 1987 and Nov 1988", "during the 1990s")
+       * EVOLUTION     — about a sequence of changes over time ("how did X evolve", "list every CEO of X")
+       * COMPARISON    — contrasts two different time points ("compare X in 2010 vs 2020")
+   - "t_start": ISO date (YYYY-MM-DD) for the start of the constraint, or "CURRENT" if the question is about now, or "UNKNOWN" if no temporal anchor is present.
+   - "t_end": ISO date (YYYY-MM-DD) for the end, or "CURRENT", or same as t_start for POINT_IN_TIME, or "UNKNOWN".
+
+OUTPUT FORMAT (strict JSON, no markdown, no commentary):
+{{
+    "entities": ["<entity 1>", "<entity 2>"],
+    "sub_queries": [
+        {{
+            "sub_query": "<sub-query text>",
+            "entities": ["<entity 1>"],
+            "query_type": "POINT_IN_TIME|RANGE|EVOLUTION|COMPARISON",
+            "t_start": "YYYY-MM-DD|CURRENT|UNKNOWN",
+            "t_end":   "YYYY-MM-DD|CURRENT|UNKNOWN"
+        }}
+    ]
+}}
+
+## Examples
+
+Q: "Which team did Attaphol Buspakom play for between Apr 1987 and Nov 1988?"
+A:
+{{
+    "entities": ["Attaphol Buspakom"],
+    "sub_queries": [
+        {{
+            "sub_query": "Which team did Attaphol Buspakom play for between Apr 1987 and Nov 1988?",
+            "entities": ["Attaphol Buspakom"],
+            "query_type": "RANGE",
+            "t_start": "1987-04-01",
+            "t_end":   "1988-11-30"
+        }}
+    ]
+}}
+
+Q: "Who was the CEO of Apple when Steve Jobs returned in 1997?"
+A:
+{{
+    "entities": ["Apple", "Steve Jobs"],
+    "sub_queries": [
+        {{
+            "sub_query": "Who was the CEO of Apple in 1997?",
+            "entities": ["Apple"],
+            "query_type": "POINT_IN_TIME",
+            "t_start": "1997-01-01",
+            "t_end":   "1997-12-31"
+        }}
+    ]
+}}
+
+Q: "List every chairman of Microsoft."
+A:
+{{
+    "entities": ["Microsoft"],
+    "sub_queries": [
+        {{
+            "sub_query": "List every chairman of Microsoft throughout its history.",
+            "entities": ["Microsoft"],
+            "query_type": "EVOLUTION",
+            "t_start": "UNKNOWN",
+            "t_end":   "CURRENT"
+        }}
+    ]
+}}
+
+Now analyse the question above and return the JSON object.
 """
+
+# Backward-compat alias — older code paths may still import the old name.
+TEMPORAL_QUERY_DECOMPOSITION_PROMPT = TEMPORAL_QUERY_ANALYSIS_PROMPT
 
 
 # ---------------------------------------------------------------------------
 # Stage 7: Temporal Answer Synthesis
 # ---------------------------------------------------------------------------
 
-TEMPORAL_ANSWER_SYNTHESIS_PROMPT = """You are a temporal knowledge synthesis expert. Given sub-query results from different time periods, synthesize a coherent answer to the original question.
+TEMPORAL_ANSWER_SYNTHESIS_PROMPT = """You are a temporal knowledge synthesis expert. Answer the user's question using ONLY the bitemporal graph edges provided as context.
+
+Each edge is shown as:
+  (SOURCE) -[RELATION]-> (TARGET) [valid_start → valid_end] {{status, support_count, confidence}}: description
+
+Where:
+- valid_start / valid_end mark when the fact held in the world. An "infinity" or "ONGOING" end means the fact is still ongoing.
+- "status" is one of: active, disputed, retracted.
+- "support_count" counts how many independent sources corroborate the edge.
+- Higher confidence and higher support_count make an edge more reliable.
 
 Original Question: {query}
 
-Sub-query Results:
+Retrieved temporal context:
 {sub_results}
 
-Instructions:
-- Integrate information across time periods into a coherent narrative
-- Highlight temporal changes and transitions explicitly
-- When information conflicts across time periods, explain the evolution
-- Note any disputed or uncertain facts
-- Use specific dates and time periods in your answer
-- If some sub-queries returned no results, note what information is missing
+INSTRUCTIONS
+1. Answer the user's question directly and concisely. Lead with the answer.
+2. Use ONLY information present in the retrieved context. Do not invent facts.
+3. Respect the temporal scope of the question:
+   - For a SPECIFIC time (POINT_IN_TIME), pick the edge whose [valid_start, valid_end) covers that time.
+   - For a RANGE, prefer edges whose validity overlaps that range; if several overlap, list them with their periods.
+   - For EVOLUTION questions, present the edges in chronological order.
+   - For COMPARISON questions, contrast the two time points explicitly.
+4. For DISPUTED edges, briefly acknowledge the conflict and prefer the claim with the highest support_count x confidence; use the most recent t_tx_start as a tiebreaker.
+5. If no edge in the context satisfies the temporal constraint, say so explicitly. Do not guess.
+6. Quote dates exactly as they appear in the context (no rounding, no rephrasing).
+7. Keep the answer short — one short sentence or phrase when the question has a single factual answer.
 
-Provide a comprehensive answer:
+ANSWER:
 """
 
 
@@ -542,17 +630,27 @@ Provide a comprehensive answer:
 # Stage 7: Dispute Resolution
 # ---------------------------------------------------------------------------
 
-DISPUTE_RESOLUTION_PROMPT = """The following relationships in the knowledge graph are marked as disputed — multiple sources provide conflicting information:
+DISPUTE_RESOLUTION_PROMPT = """The following relationships in the knowledge graph are marked as `disputed` — the indexing pipeline (ETCDR) could not commit to a single resolution, so multiple competing versions co-exist:
 
 {disputed_edges}
 
-For each dispute, evaluate:
-1. The temporal context — which claim is more recent?
-2. Source reliability — which source has a higher trust score?
-3. Corroboration — does either claim have more supporting evidence?
-4. Consistency — which claim is more consistent with other known facts?
+Each edge carries:
+- a valid period [t_valid_start, t_valid_end),
+- a transaction timestamp t_tx_start (when the system came to believe it),
+- a confidence value in [0, 1],
+- a support_count (how many sources corroborate it).
 
 Query context: {query}
 
-Provide an analysis of each dispute and your assessment of which claim is most likely correct, along with your confidence level (0-1).
+For each dispute, decide which claim is most likely correct by weighting:
+  score = confidence * log(1 + support_count) * recency(t_tx_start)
+The most recent transaction breaks ties.
+
+Output, for each dispute group, JSON of the form:
+{{
+    "winner_edge_id": "<id>",
+    "loser_edge_ids": ["<id>", ...],
+    "rationale": "<one sentence>",
+    "confidence": <float in [0,1]>
+}}
 """

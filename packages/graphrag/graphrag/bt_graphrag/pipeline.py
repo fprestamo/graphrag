@@ -33,6 +33,7 @@ from graphrag.bt_graphrag.models.temporal_types import (
     INFINITY_ISO,
     MINUS_INFINITY_ISO,
     ProvenanceRecord,
+    RelationCardinality,
     TemporalEntity,
     TemporalRelationship,
     TemporalStateQuad,
@@ -487,6 +488,19 @@ def _enrich_relationships_temporal(
     """Add temporal columns to relationships if not already present."""
     relationships_df = relationships_df.copy()
 
+    # Assign a canonical edge id up front so the same UUID flows through
+    # ETCDR (candidate.id), Neo4j (insert_relationship), and parquet
+    # (finalize_relationships). Otherwise each stage generates its own
+    # uuid4 and the three stores diverge.
+    if "id" not in relationships_df.columns:
+        relationships_df["id"] = [str(uuid4()) for _ in range(len(relationships_df))]
+    else:
+        mask = relationships_df["id"].isna() | (relationships_df["id"].astype(str).str.len() == 0)
+        if mask.any():
+            relationships_df.loc[mask, "id"] = [
+                str(uuid4()) for _ in range(int(mask.sum()))
+            ]
+
     if "t_valid_start" not in relationships_df.columns:
         relationships_df["t_valid_start"] = MINUS_INFINITY_ISO
 
@@ -757,7 +771,9 @@ async def _run_cger(
 
     print(f"  CGER scorer: {scorer_name}")
 
-    # resolve_entities handles Phase A (new vs existing) and Phase B (intra-batch)
+    # resolve_entities handles Phase A (new vs existing) and Phase B (intra-batch).
+    # Pass the driver so Phase B can spin up a temporary Neo4j database for
+    # same-name + top-10 description-embedding candidate retrieval.
     resolved_entities, merge_map, phase_b_log = await resolve_entities(
         new_entities=entities_df,
         existing_entities=existing_entities_df,
@@ -765,6 +781,8 @@ async def _run_cger(
         model=model,
         entity_scorer=entity_scorer,
         candidate_map=candidate_map if candidate_map else None,
+        driver=driver,
+        phase_b_top_k=top_k,
     )
 
     # Apply full merge map to relationships
@@ -1265,14 +1283,25 @@ async def _run_etcdr(
             if not rel_type:
                 rel_type = _normalize_relation_type(row.get("description", "RELATED_TO"))
 
+            row_id = row.get("id")
+            edge_id = str(row_id) if row_id else str(uuid4())
+
+            row_card = row.get("cardinality")
+            card_enum = (
+                RelationCardinality(str(row_card))
+                if row_card and str(row_card) in RelationCardinality.__members__
+                else RelationCardinality(config.get_cardinality(rel_type))
+            )
+
             candidate = TemporalRelationship(
-                id=str(uuid4()),
+                id=edge_id,
                 source=str(row.get("source", "")),
                 target=str(row.get("target", "")),
                 relation_type=rel_type,
                 description=str(row.get("description", "")),
                 weight=float(row.get("weight", 1.0)),
                 confidence=float(row.get("confidence", 1.0)),
+                cardinality=card_enum,
                 temporal_quad=TemporalStateQuad(
                     t_valid_start=t_valid_start,
                     t_valid_end=t_valid_end,
@@ -1626,14 +1655,23 @@ async def _write_to_neo4j(
 
             _desc_emb = row.get("description_embedding")
             _type_emb = row.get("relation_type_embedding")
+
+            row_card = row.get("cardinality")
+            card_enum = (
+                RelationCardinality(str(row_card))
+                if row_card and str(row_card) in RelationCardinality.__members__
+                else RelationCardinality(config.get_cardinality(rel_type))
+            )
+
             rel = TemporalRelationship(
-                id=str(row.get("id", str(uuid4()))),
+                id=str(row.get("id") or uuid4()),
                 source=str(row.get("source", "")),
                 target=str(row.get("target", "")),
                 relation_type=rel_type,
                 description=str(row.get("description", "")),
                 weight=float(row.get("weight", 1.0)),
                 confidence=float(row.get("confidence", 1.0)),
+                cardinality=card_enum,
                 temporal_quad=quad,
                 status=str(row.get("status", "active")),
                 support_count=int(row.get("support_count", 1)),

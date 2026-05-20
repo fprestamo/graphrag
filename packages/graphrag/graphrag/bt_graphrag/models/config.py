@@ -104,6 +104,12 @@ class BTGraphRAGConfig:
     """Number of top-K candidates to retrieve via Neo4j vector search
     (or in-memory cosine fallback) per new entity."""
 
+    cger_phase_b_temp_db: str = "cgerbatch"
+    """Name of a pre-existing Neo4j database used by CGER Phase B as a
+    scratch area for intra-batch candidate retrieval.  The database must
+    be created manually (CREATE DATABASE <name>); the pipeline only wipes
+    its contents before and after each Phase B run."""
+
     neo4j_vector_dimensions: int = 3072
     """Dimensionality of description_embedding vectors stored in Neo4j.
     Must match the embedding model output (e.g. 1536 for text-embedding-3-small,

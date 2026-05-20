@@ -74,7 +74,6 @@ def _default_scorer(
     }
     if judge_label is not None:
         metrics["judge_correct"] = 1.0 if judge_label == "correct" else 0.0
-        metrics["judge_missing"] = 1.0 if judge_label == "missing" else 0.0
         metrics["judge_incorrect"] = 1.0 if judge_label == "incorrect" else 0.0
     return metrics
 
@@ -125,7 +124,7 @@ async def _eval_one(
 # ---------------------------------------------------------------------------
 
 
-_REPORT_METRIC_KEYS = {"judge_correct", "judge_missing", "judge_incorrect"}
+_REPORT_METRIC_KEYS = {"judge_correct", "judge_incorrect"}
 
 
 def _judge_only(metrics: dict[str, float]) -> dict[str, float]:
@@ -191,7 +190,7 @@ def _build_report(
     return report
 
 
-_JUDGE_GLYPH = {"correct": "✓", "incorrect": "✗", "missing": "∅"}
+_JUDGE_GLYPH = {"correct": "✓", "incorrect": "✗"}
 
 
 def _log_prediction(idx: int, total: int, system: str, p: EvalPrediction) -> None:
@@ -224,11 +223,10 @@ def _log_summary(system: str, report: dict[str, Any]) -> None:
     )
     if truth:
         logger.info(
-            "  Judge — correct=%.0f%% missing=%.0f%% incorrect=%.0f%%  truthfulness=%.3f",
-            100 * truth.get("correct_rate", 0.0),
-            100 * truth.get("missing_rate", 0.0),
+            "  Judge — accuracy=%.3f  (correct=%.0f%%, incorrect=%.0f%%)",
+            truth.get("accuracy", 0.0),
+            100 * truth.get("accuracy", 0.0),
             100 * truth.get("incorrect_rate", 0.0),
-            truth.get("truthfulness", 0.0),
         )
     logger.info("-" * 72)
 
@@ -303,7 +301,6 @@ _COMPARE_METRICS = (
     ("em_native", "EM (native)"),
     ("f1_native", "F1 (native)"),
     ("judge_correct", "Judge correct"),
-    ("judge_missing", "Judge missing"),
     ("judge_incorrect", "Judge incorrect"),
 )
 
@@ -492,13 +489,38 @@ async def _amain(args: argparse.Namespace) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     tag = (args.tag or "").strip()
 
-    reports: dict[str, dict[str, Any]] = {}
-    for system in args.systems:
-        reports[system] = await _run_system(
-            system, records, args.out, args.dataset, opts, tag
-        )
-    if len(args.systems) >= 2:
-        _write_comparison(args.out, reports, tag)
+    # Share a single Neo4j driver across all BT-GraphRAG calls. Each driver
+    # owns its own connection pool, so creating one per question at
+    # concurrency=100 spawns 100 simultaneous pools and Neo4j drops
+    # connections ("Failed to read from defunct connection").
+    shared_bt_driver = None
+    if "btgraphrag" in args.systems and not args.dry_run:
+        try:
+            from neo4j import AsyncGraphDatabase
+
+            shared_bt_driver = AsyncGraphDatabase.driver(
+                bt_cfg.neo4j_uri,
+                auth=(bt_cfg.neo4j_user, bt_cfg.neo4j_password),
+                max_connection_pool_size=max(50, opts.concurrency),
+            )
+            bt_cfg.driver = shared_bt_driver
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not create shared Neo4j driver: %s", exc)
+
+    try:
+        reports: dict[str, dict[str, Any]] = {}
+        for system in args.systems:
+            reports[system] = await _run_system(
+                system, records, args.out, args.dataset, opts, tag
+            )
+        if len(args.systems) >= 2:
+            _write_comparison(args.out, reports, tag)
+    finally:
+        if shared_bt_driver is not None:
+            try:
+                await shared_bt_driver.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     return 0
 

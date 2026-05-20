@@ -38,6 +38,12 @@ class BTConfig:
     model_id: str | None = field(default_factory=lambda: os.getenv("BTG_MODEL_ID"))
     max_edges: int = 50
     dry_run: bool = False
+    # Optional shared Neo4j driver. When provided, bt_answer reuses its
+    # single connection pool instead of creating a new driver per call —
+    # critical for high-concurrency evaluation (a per-call driver at
+    # concurrency=100 opens 100 separate pools and the server starts
+    # killing connections).
+    driver: Any = None
 
 
 def _format_edges(edges: list[dict[str, Any]], limit: int) -> str:
@@ -88,8 +94,7 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
         from neo4j import AsyncGraphDatabase
 
         from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
-        from graphrag.bt_graphrag.prompts import TEMPORAL_ANSWER_SYNTHESIS_PROMPT
-        from graphrag.bt_graphrag.temporal_query import local_temporal_search
+        from graphrag.bt_graphrag.temporal_query import temporal_query_pipeline
     except ImportError as exc:
         logger.warning("BT-GraphRAG dependencies missing: %s", exc)
         return {"answer": "", "raw": {"error": f"import: {exc}"}}
@@ -102,70 +107,73 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
     )
 
     llm = _build_bt_llm(cfg.model_id)
-    driver = AsyncGraphDatabase.driver(
-        cfg.neo4j_uri, auth=(cfg.neo4j_user, cfg.neo4j_password)
-    )
+    shared_driver = cfg.driver
+    if shared_driver is not None:
+        driver = shared_driver
+        owns_driver = False
+    else:
+        driver = AsyncGraphDatabase.driver(
+            cfg.neo4j_uri, auth=(cfg.neo4j_user, cfg.neo4j_password)
+        )
+        owns_driver = True
+
+    result: dict[str, Any] | None = None
+    error: str | None = None
     try:
-        search = await local_temporal_search(
+        result = await temporal_query_pipeline(
             query=question,
-            query_time=None,
             config=bt_cfg,
             driver=driver,
             model=llm,
+            max_edges_per_sub=cfg.max_edges,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("local_temporal_search failed: %s", exc)
-        try:
-            await driver.close()
-        except Exception:  # noqa: BLE001
-            pass
-        return {"answer": "", "raw": {"error": f"search: {exc}"}}
-
-    edges = search.get("edges", []) or []
-    context_text = _format_edges(edges, cfg.max_edges)
-
-    if llm is None:
-        await driver.close()
-        return {
-            "answer": "",
-            "raw": {
-                "error": "no LLM (set BTG_MODEL_ID)",
-                "edges_found": len(edges),
-                "context": context_text,
-            },
-        }
-
-    try:
-        from graphrag_llm.utils import CompletionMessagesBuilder
-
-        prompt = TEMPORAL_ANSWER_SYNTHESIS_PROMPT.format(
-            query=question,
-            sub_results=context_text,
-        )
-        messages = CompletionMessagesBuilder().add_user_message(prompt).build()
-        response = await llm.completion_async(messages=messages)
-        answer = (getattr(response, "content", "") or "").strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Answer synthesis failed: %s", exc)
-        answer = ""
-        raw_extra = {"synthesis_error": str(exc)}
-    else:
-        raw_extra = {}
+        logger.warning("temporal_query_pipeline failed: %s", exc)
+        error = f"search: {exc}"
     finally:
-        try:
-            await driver.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if owns_driver:
+            try:
+                await driver.close()
+            except Exception:  # noqa: BLE001
+                pass
 
-    return {
-        "answer": answer,
-        "raw": {
-            "edges_found": len(edges),
-            "edges_used": min(len(edges), cfg.max_edges),
-            "query_time": search.get("query_time"),
-            **raw_extra,
-        },
+    if error is not None or result is None:
+        return {"answer": "", "raw": {"error": error or "search: no result"}}
+
+    answer = result.get("answer", "")
+    sub_results = result.get("sub_queries", []) or []
+    edges_used = result.get("edges_used", 0)
+
+    raw: dict[str, Any] = {
+        "edges_used": edges_used,
+        "query_time": result.get("query_time"),
+        "num_sub_queries": len(sub_results),
     }
+    analysis = result.get("analysis") or {}
+    if analysis:
+        raw["entities_extracted"] = analysis.get("entities", [])
+        # Drop the heavy ``edges`` payload from each sub-query before
+        # serialising — keep only the structured fields the LLM saw.
+        raw["sub_queries"] = [
+            {
+                **(s.get("sub_query") or {}),
+                "edges_matched": len(s.get("edges", [])),
+                "seeds_resolved": [
+                    {"title": e.get("title"), "type": e.get("type")}
+                    for e in (s.get("seeds") or [])
+                ],
+            }
+            for s in sub_results
+        ]
+    if llm is None:
+        raw["error"] = "no LLM (set BTG_MODEL_ID)"
+        # Surface the retrieved context for inspection.
+        context_blocks = []
+        for sub in sub_results:
+            context_blocks.append(_format_edges(sub.get("edges", []), cfg.max_edges))
+        raw["context"] = "\n\n".join(context_blocks) if context_blocks else ""
+
+    return {"answer": answer, "raw": raw}
 
 
 # ---------------------------------------------------------------------------

@@ -50,7 +50,11 @@ async def finalize_relationships(
         seen.add(key)
         row["combined_degree"] = degree_map.get(key[0], 0) + degree_map.get(key[1], 0)
         row["human_readable_id"] = human_readable_id
-        row["id"] = str(uuid4())
+        # Honor a pre-assigned id (BT-GraphRAG sets one in
+        # _enrich_relationships_temporal so the same UUID lands in Neo4j
+        # and parquet). Generate only when no upstream id exists.
+        if not row.get("id"):
+            row["id"] = str(uuid4())
         human_readable_id += 1
 
         # Detect BT columns on first row and use extended column list
