@@ -87,26 +87,14 @@ class BTGraphRAGConfig:
     cgrr_enabled: bool = True
     """Enable Cross-Graph Relationship Resolution."""
 
-    cgrr_scorer: str = "embedding_only"
-    """Scorer to use for relationship comparison.
-    Options: 'embedding_only' (semantic similarity), 'bm25_only' (lexical),
-    'type_and_endpoint' (type + entity-pair match), 'composite' (all signals).
-    Default 'embedding_only': pure semantic similarity, no LLM calls needed."""
-
-    cgrr_bm25_weight: float = 0.35
-    """Weight w1 for BM25 lexical matching of relation type strings."""
-
-    cgrr_semantic_weight: float = 0.40
-    """Weight w2 for semantic (description embedding) similarity."""
-
-    cgrr_endpoint_weight: float = 0.25
-    """Weight w3 for endpoint (same subject+object pair) match signal."""
-
-    cgrr_merge_threshold: float = 0.95
-    """Score above which relation types are automatically normalized."""
-
-    cgrr_llm_threshold_low: float = 0.2694
-    """Score between this and merge_threshold triggers LLM verification."""
+    cgrr_cosine_threshold: float = 0.85
+    """Description-embedding cosine similarity at or above which CGRR
+    defers the merge decision to the LLM. Pairs with cosine below this
+    value are never normalised; the LLM is the only component that ever
+    triggers a normalisation, and it answers SAME or DIFFERENT using
+    the two relation types' names, descriptions and a sample endpoint
+    pair (no temporal context — relation types have no active period
+    of their own)."""
 
     cgrr_candidate_top_k: int = 10
     """Number of top-K existing relation types to compare per candidate,

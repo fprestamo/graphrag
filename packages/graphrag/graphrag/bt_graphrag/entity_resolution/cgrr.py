@@ -3,20 +3,37 @@
 
 """Cross-Graph Relationship Resolution (CGRR).
 
-Resolves newly extracted relationship types against the canonical relation
-types already present in the graph, preventing Relationship Aliasing — the
-counterpart to Entity Aliasing that CGER addresses.
+Resolves newly extracted relationship types against the canonical
+relation types already present in the graph, preventing Relationship
+Aliasing — the counterpart to Entity Aliasing that CGER addresses.
 
-Without CGRR, ETCDR's conflict queries filter on `relation_type` and will
-miss conflicts across alias boundaries (e.g., "IS_CEO_OF" vs "LEADS").
+The procedure mirrors the simplified CGER design:
 
-Section 2.5.1 of the BT-GraphRAG design document.
+1. **Cosine pre-filter.** For each unique relation type in the incoming
+   batch, the top-K existing relation types by description-embedding
+   cosine similarity are retrieved (Neo4j vector index or in-memory
+   fallback). The best-scoring candidate whose cosine exceeds
+   ``cgrr_cosine_threshold`` triggers the next step.
+2. **LLM verification.** The LLM receives both relation types' names,
+   descriptions and a sample ``(source) -> (target)`` endpoint pair,
+   and must answer one of:
+
+   * ``SAME`` — the two strings denote the same predicate; normalise
+     the candidate to the existing canonical form.
+   * ``DIFFERENT`` — they denote different predicates; keep them apart.
+
+   Relation types have no active period of their own, so the temporal
+   verdict that CGER uses does not apply here: the LLM only decides
+   whether the two labels refer to the same predicate.
+
+Without CGRR, ETCDR's conflict queries filter on ``relation_type`` and
+will miss conflicts across alias boundaries (e.g. ``IS_CEO_OF`` vs
+``LEADS``).
 """
 
 from __future__ import annotations
 
 import logging
-import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -24,7 +41,7 @@ import pandas as pd
 
 from graphrag.bt_graphrag.entity_resolution.scorers import (
     RelationshipScorer,
-    compute_relationship_composite_score as compute_relationship_score,
+    description_cosine_relationship_scorer,
 )
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 
@@ -56,7 +73,7 @@ def _top_k_by_embedding(
     existing_types: list[dict[str, Any]],
     top_k: int,
 ) -> list[dict[str, Any]]:
-    """Return the top-K existing relation types by description embedding cosine similarity.
+    """Return the top-K existing relation types by description-embedding cosine.
 
     Falls back to all existing types if the query embedding is missing.
     """
@@ -77,10 +94,12 @@ def _top_k_by_embedding(
 
 
 # ---------------------------------------------------------------------------
-# LLM Verification for Hard Cases
+# LLM verification
 # ---------------------------------------------------------------------------
 
-CGRR_VERIFICATION_PROMPT = """You are a knowledge graph expert. Determine whether the following two relationship types refer to the same real-world predicate (the same kind of relationship between entities).
+CGRR_VERIFICATION_PROMPT = """You are a knowledge-graph expert. Two candidate relationship types are presented below, each with a short description and a sample endpoint pair. Decide whether they denote the **same predicate**.
+
+Your default answer is DIFFERENT. Only answer SAME when both strings clearly describe the same kind of relationship between the same kinds of entities (e.g. "IS_CEO_OF" and "LEADS" when used between a person and a company; "WORKS_FOR" and "EMPLOYED_BY"; "BORN_IN" and "PLACE_OF_BIRTH"). When the predicates differ in scope, direction, or the kind of entities they connect, answer DIFFERENT.
 
 Relationship A:
 - Relation Type: {type_a}
@@ -92,10 +111,9 @@ Relationship B:
 - Description: {desc_b}
 - Example: ({source_b}) -> ({target_b})
 
-Do these two relation types represent the same predicate? Answer ONLY with one of:
-- SAME: They describe the same kind of relationship (e.g., "leads" and "is CEO of")
-- DIFFERENT: They describe fundamentally different relationships (e.g., "works for" and "works with")
-- UNCERTAIN: Cannot determine with available information
+Answer with EXACTLY ONE of the following tokens and nothing else:
+- SAME
+- DIFFERENT
 
 Answer:"""
 
@@ -105,19 +123,21 @@ async def llm_verify_relationship_match(
     existing: dict[str, str],
     model: "LLMCompletion",
 ) -> str:
-    """Use LLM to verify whether two relation types are the same predicate.
+    """Use the LLM to decide whether two relation types denote the same predicate.
 
-    Returns "SAME", "DIFFERENT", or "UNCERTAIN".
+    Returns ``"SAME"`` or ``"DIFFERENT"``. Any unrecognised response is
+    treated as ``"DIFFERENT"`` (conservative default — never normalise
+    on ambiguous evidence).
     """
     from graphrag_llm.utils import CompletionMessagesBuilder
 
     prompt = CGRR_VERIFICATION_PROMPT.format(
         type_a=candidate.get("relation_type", ""),
-        desc_a=candidate.get("description", "")[:500],
+        desc_a=(candidate.get("description", "") or "")[:500],
         source_a=candidate.get("source", ""),
         target_a=candidate.get("target", ""),
         type_b=existing.get("relation_type", ""),
-        desc_b=existing.get("description", "")[:500],
+        desc_b=(existing.get("description", "") or "")[:500],
         source_b=existing.get("source", ""),
         target_b=existing.get("target", ""),
     )
@@ -126,11 +146,13 @@ async def llm_verify_relationship_match(
     response = await model.completion_async(messages=messages)
     answer = response.content.strip().upper()
 
-    if "SAME" in answer:
-        return "SAME"
-    if "DIFFERENT" in answer:
-        return "DIFFERENT"
-    return "UNCERTAIN"
+    valid = {"SAME", "DIFFERENT"}
+    first_verdict = next(
+        (tok for tok in answer.replace(":", " ").replace(",", " ").split()
+         if tok in valid),
+        "",
+    )
+    return first_verdict if first_verdict in valid else "DIFFERENT"
 
 
 # ---------------------------------------------------------------------------
@@ -180,10 +202,6 @@ async def get_existing_relations_for_entities(
     Only returns relation types where at least one endpoint (source or target)
     is in entity_titles.  Each result includes the entity sets so that
     per-candidate-type overlap can be checked in Python.
-
-    Returns a list of dicts with keys:
-        relation_type, description, source, target (sample edge),
-        all_sources, all_targets (for overlap checking), edge_count.
     """
     if not entity_titles:
         return []
@@ -231,14 +249,16 @@ async def resolve_relationships(
     config: BTGraphRAGConfig,
     session: "AsyncSession",
     model: "LLMCompletion | None" = None,
-    relationship_scorer: RelationshipScorer = compute_relationship_score,
+    relationship_scorer: RelationshipScorer = description_cosine_relationship_scorer,
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve candidate relationship types against existing graph predicates.
 
-    For each unique relation_type in the incoming batch, scores it against
-    all existing relation types in Neo4j. Types scoring above the merge
-    threshold are normalized to the canonical form. Hard cases are sent
-    to LLM verification.
+    For each unique relation_type in the incoming batch, ranks existing
+    relation types by description-embedding cosine similarity, picks
+    the best same-endpoint-sharing candidate, and — if its cosine
+    exceeds ``config.cgrr_cosine_threshold`` — defers the merge
+    decision to the LLM. The LLM answers ``SAME`` (normalise to the
+    canonical type) or ``DIFFERENT`` (keep separate).
 
     Returns:
         relationships_df: Updated DataFrame with normalized relation_types
@@ -252,12 +272,10 @@ async def resolve_relationships(
         print("    [CGRR] Skipping — no relationships to resolve")
         return relationships_df, normalize_map, phase_b_log
 
-    # Ensure relation_type column exists
     if "relation_type" not in relationships_df.columns:
         print("    [CGRR] Skipping — no 'relation_type' column present")
         return relationships_df, normalize_map, phase_b_log
 
-    auto_merges = 0
     llm_merges = 0
     llm_rejections = 0
     below_threshold = 0
@@ -271,18 +289,15 @@ async def resolve_relationships(
         + relationships_df["target"].dropna().unique().tolist()
     ))
 
-    # Fetch existing relation types WITH description embeddings for top-K pre-filter
     from graphrag.bt_graphrag.neo4j_store import get_existing_relation_types_with_embeddings
 
     existing_types = await get_existing_relation_types_with_embeddings(
         session, entity_titles=batch_entities,
     )
 
-    # Get unique candidate relation types from the batch
     candidate_types = relationships_df["relation_type"].unique().tolist()
     cand_type_counts = relationships_df["relation_type"].value_counts().to_dict()
 
-    # Top-K setting for embedding pre-filter
     cgrr_top_k = getattr(config, "cgrr_candidate_top_k", 10)
 
     if not existing_types:
@@ -291,11 +306,7 @@ async def resolve_relationships(
     else:
         print(f"\n    [CGRR] Phase A: Resolving {len(candidate_types)} candidate relation types "
               f"against {len(existing_types)} existing types (top-K={cgrr_top_k})")
-        print(f"    [CGRR] Thresholds: auto_merge >= {config.cgrr_merge_threshold}, "
-              f"LLM_zone = [{config.cgrr_llm_threshold_low}, {config.cgrr_merge_threshold})")
-        print(f"    [CGRR] Weights: bm25={config.cgrr_bm25_weight}, "
-              f"semantic={config.cgrr_semantic_weight}, "
-              f"endpoint={config.cgrr_endpoint_weight}")
+        print(f"    [CGRR] LLM trigger: cosine >= {config.cgrr_cosine_threshold}")
 
         # Show existing canonical types in graph
         print(f"\n    [CGRR] Existing canonical relation types in graph:")
@@ -320,7 +331,6 @@ async def resolve_relationships(
         print(f"    {'-' * 65}")
 
         for cand_idx, cand_type in enumerate(candidate_types):
-            # Check if this type already exists exactly in the graph
             exact_exists = any(et["relation_type"] == cand_type for et in existing_types)
             if exact_exists:
                 exact_match_skip += 1
@@ -333,8 +343,10 @@ async def resolve_relationships(
             cand_target = str(cand_sample.get("target", ""))
             cand_edge_count = cand_type_counts.get(cand_type, 0)
 
-            # Get candidate embedding for top-K pre-filter
-            cand_emb = cand_sample.get("description_embedding") if "description_embedding" in cand_sample.index else None
+            cand_emb = (
+                cand_sample.get("description_embedding")
+                if "description_embedding" in cand_sample.index else None
+            )
 
             cand_rows = relationships_df[relationships_df["relation_type"] == cand_type]
             cand_entities = set(
@@ -357,13 +369,11 @@ async def resolve_relationships(
                 except Exception:
                     vec_results = []
                 if vec_results:
-                    # Group by relation_type — vector search returns edges, we need types
                     seen_types: set[str] = set()
                     for vr in vec_results:
                         rt = vr.get("relation_type", "")
                         if rt and rt not in seen_types:
                             seen_types.add(rt)
-                            # Find the matching existing_types record for metadata
                             match_rec = next(
                                 (et for et in existing_types if et["relation_type"] == rt),
                                 None,
@@ -384,12 +394,19 @@ async def resolve_relationships(
                     print(f"         Neo4j vector search: {len(narrowed)} types from top-{cgrr_top_k} edges")
 
             if not narrowed:
-                # Fallback: in-memory cosine on existing_types
                 narrowed = _top_k_by_embedding(cand_emb, existing_types, cgrr_top_k)
                 if len(narrowed) < len(existing_types):
                     print(f"         In-memory top-K: {len(existing_types)} -> {len(narrowed)} candidates (k={cgrr_top_k})")
 
-            scored_matches: list[tuple[float, dict[str, float], dict[str, str]]] = []
+            cand_record = {
+                "relation_type": cand_type,
+                "description": cand_desc,
+                "source": cand_source,
+                "target": cand_target,
+                "description_embedding": cand_emb,
+            }
+
+            scored_matches: list[tuple[float, dict[str, float], dict[str, Any]]] = []
             skipped_no_overlap = 0
 
             for existing in narrowed:
@@ -402,50 +419,28 @@ async def resolve_relationships(
                 if not cand_entities.intersection(existing_entities_set):
                     skipped_no_overlap += 1
                     continue
-                score, breakdown = relationship_scorer(
-                    cand_type, cand_desc, cand_source, cand_target,
-                    existing["relation_type"], existing["description"],
-                    existing["source"], existing["target"],
-                    config,
-                )
+                score, breakdown = relationship_scorer(cand_record, existing, config)
                 scored_matches.append((score, breakdown, existing))
 
             scored_matches.sort(key=lambda x: x[0], reverse=True)
 
             if skipped_no_overlap > 0:
                 print(f"         Skipped {skipped_no_overlap} existing types (no shared entities)")
-            print(f"         Top comparisons ({len(scored_matches)} with entity overlap):")
-            for rank, (score, breakdown, match) in enumerate(scored_matches[:5]):
-                zone = ""
-                if score >= config.cgrr_merge_threshold:
-                    zone = " << AUTO-MERGE"
-                elif score >= config.cgrr_llm_threshold_low:
-                    zone = " << LLM-ZONE"
-                print(f"           #{rank+1} score={score:.4f}  '{match['relation_type'][:30]:30s}' "
-                      f"bm25={breakdown['bm25_type']:.3f} sem={breakdown['semantic_desc']:.3f} "
-                      f"endpt={breakdown['endpoint_match']:.3f}{zone}")
+            print(f"         Top candidates ({len(scored_matches)} with entity overlap):")
+            for rank, (score, _bd, match) in enumerate(scored_matches[:5]):
+                zone = " << LLM" if score >= config.cgrr_cosine_threshold else ""
+                print(f"           #{rank+1} cosine={score:.4f}  "
+                      f"'{match['relation_type'][:30]:30s}'{zone}")
 
             if not scored_matches:
                 print(f"           (no comparisons available)")
                 continue
 
-            best_score, best_breakdown, best_match_record = scored_matches[0]
+            best_score, _best_bd, best_match_record = scored_matches[0]
             match_type = best_match_record["relation_type"]
 
-            if best_score >= config.cgrr_merge_threshold:
-                normalize_map[cand_type] = match_type
-                auto_merges += 1
-                print(f"         DECISION: AUTO-NORMALIZE -> '{match_type[:35]}'")
-                print(f"           Signals: bm25={best_breakdown.get('bm25_type', best_breakdown.get('w_bm25', 0.0)):.3f} "
-                      f"sem={best_breakdown.get('semantic_desc', best_breakdown.get('w_semantic', 0.0)):.3f} "
-                      f"endpt={best_breakdown.get('endpoint_match', best_breakdown.get('w_endpoint', 0.0)):.3f}")
-                logger.info(
-                    "CGRR: Auto-normalizing '%s' -> '%s' (score=%.3f)",
-                    cand_type, match_type, best_score,
-                )
-            elif best_score >= config.cgrr_llm_threshold_low and model is not None:
-                print(f"         DECISION: LLM VERIFICATION needed (score={best_score:.4f})")
-                print(f"           Comparing: '{cand_type[:30]}' vs '{match_type[:30]}'")
+            if best_score >= config.cgrr_cosine_threshold and model is not None:
+                print(f"         LLM: '{cand_type[:30]}' vs '{match_type[:30]}'  cosine={best_score:.4f}")
                 verdict = await llm_verify_relationship_match(
                     candidate={
                         "relation_type": cand_type,
@@ -466,21 +461,20 @@ async def resolve_relationships(
                     llm_merges += 1
                     print(f"           LLM verdict: SAME -> NORMALIZED to '{match_type[:30]}'")
                     logger.info(
-                        "CGRR: LLM-confirmed '%s' -> '%s' (score=%.3f)",
+                        "CGRR: LLM-confirmed '%s' -> '%s' (cosine=%.3f)",
                         cand_type, match_type, best_score,
                     )
                 else:
                     llm_rejections += 1
-                    print(f"           LLM verdict: {verdict} -> KEPT SEPARATE")
+                    print(f"           LLM verdict: DIFFERENT -> KEPT SEPARATE")
                     logger.info(
-                        "CGRR: LLM rejected '%s' vs '%s' (score=%.3f, verdict=%s)",
-                        cand_type, match_type, best_score, verdict,
+                        "CGRR: LLM rejected '%s' vs '%s' (cosine=%.3f)",
+                        cand_type, match_type, best_score,
                     )
             else:
                 below_threshold += 1
-                print(f"         DECISION: BELOW THRESHOLD (best score={best_score:.4f} < "
-                      f"{config.cgrr_llm_threshold_low})")
-                print(f"           Keeping '{cand_type[:35]}' as separate type")
+                print(f"         BELOW THRESHOLD: best cosine={best_score:.4f} < "
+                      f"{config.cgrr_cosine_threshold} — keeping '{cand_type[:35]}' separate")
 
     # Apply Phase A normalization map
     original_types = relationships_df["relation_type"].copy()
@@ -491,20 +485,18 @@ async def resolve_relationships(
         )
 
     # --- Phase B: Intra-batch relation type resolution (new vs new) ---
-    # Only process types not already normalized to an existing canonical type.
     remaining_types = [
         rt for rt in relationships_df["relation_type"].unique()
         if rt not in normalize_map.values()
     ]
 
-    intra_auto_normalizes = 0
     intra_llm_normalizes = 0
     intra_rejections_b = 0
 
     if len(remaining_types) > 1:
         print(f"\n    [CGRR] Phase B: Intra-batch resolution ({len(remaining_types)} remaining types)")
         intra_normalize: dict[str, str] = {}
-        canonical_types: list[dict[str, str]] = []
+        canonical_types: list[dict[str, Any]] = []
 
         # Pre-compute entity sets per relation type for overlap checking
         _type_entities: dict[str, set[str]] = {}
@@ -521,66 +513,55 @@ async def resolve_relationships(
             cand_src = str(sample.get("source", ""))
             cand_tgt = str(sample.get("target", ""))
             cand_entities = _type_entities[rt]
+            cand_emb = (
+                sample.get("description_embedding")
+                if "description_embedding" in sample.index else None
+            )
 
             if not canonical_types:
                 canonical_types.append({
-                    "relation_type": rt, "description": cand_desc,
-                    "source": cand_src, "target": cand_tgt,
+                    "relation_type": rt,
+                    "description": cand_desc,
+                    "source": cand_src,
+                    "target": cand_tgt,
+                    "description_embedding": cand_emb,
                 })
                 continue
 
+            cand_record = {
+                "relation_type": rt,
+                "description": cand_desc,
+                "source": cand_src,
+                "target": cand_tgt,
+                "description_embedding": cand_emb,
+            }
+
             best_score = 0.0
-            best_breakdown: dict[str, float] = {}
-            best_canon: dict[str, str] | None = None
+            best_canon: dict[str, Any] | None = None
 
             for canon in canonical_types:
-                # Entity overlap check: skip if no shared entities
                 canon_entities = _type_entities.get(canon["relation_type"], set())
                 if not cand_entities.intersection(canon_entities):
                     continue
-                score, breakdown = relationship_scorer(
-                    rt, cand_desc, cand_src, cand_tgt,
-                    canon["relation_type"], canon["description"],
-                    canon["source"], canon["target"],
-                    config,
-                )
+                score, _ = relationship_scorer(cand_record, canon, config)
                 if score > best_score:
                     best_score = score
-                    best_breakdown = breakdown
                     best_canon = canon
 
             match_type = best_canon["relation_type"] if best_canon else ""
 
-            if best_canon is not None and best_score >= config.cgrr_merge_threshold:
-                intra_normalize[rt] = match_type
-                intra_auto_normalizes += 1
-                phase_b_log.append({
-                    "phase": "B_intra_batch",
-                    "relation_type": rt,
-                    "edge_count": cand_type_counts.get(rt, 0),
-                    "best_match": match_type,
-                    "best_score": round(best_score, 4),
-                    "decision": "AUTO_NORMALIZE",
-                    "top_comparisons": [],
-                })
-                print(f"    [INTRA] AUTO-NORMALIZE: '{rt[:30]}' -> '{match_type[:30]}'  "
-                      f"score={best_score:.4f}  "
-                      f"bm25={best_breakdown.get('bm25_type', 0):.3f}  "
-                      f"sem={best_breakdown.get('semantic_desc', 0):.3f}  "
-                      f"endpt={best_breakdown.get('endpoint_match', 0):.3f}")
-                logger.info(
-                    "CGRR: Intra-batch normalize '%s' -> '%s' (score=%.3f)",
-                    rt, match_type, best_score,
-                )
-            elif (best_canon is not None
-                  and best_score >= config.cgrr_llm_threshold_low
-                  and model is not None):
-                print(f"    [INTRA] LLM-ZONE: '{rt[:30]}' vs '{match_type[:30]}'  "
-                      f"score={best_score:.4f}")
+            if (best_canon is not None
+                    and best_score >= config.cgrr_cosine_threshold
+                    and model is not None):
+                print(f"    [INTRA] LLM: '{rt[:30]}' vs '{match_type[:30]}'  "
+                      f"cosine={best_score:.4f}")
                 verdict = await llm_verify_relationship_match(
                     candidate={"relation_type": rt, "description": cand_desc,
                                "source": cand_src, "target": cand_tgt},
-                    existing=best_canon,
+                    existing={"relation_type": match_type,
+                              "description": best_canon.get("description", ""),
+                              "source": best_canon.get("source", ""),
+                              "target": best_canon.get("target", "")},
                     model=model,
                 )
                 if verdict == "SAME":
@@ -597,7 +578,7 @@ async def resolve_relationships(
                     })
                     print(f"           LLM verdict: SAME -> NORMALIZED")
                     logger.info(
-                        "CGRR: Intra-batch LLM normalize '%s' -> '%s' (score=%.3f)",
+                        "CGRR: Intra-batch LLM normalize '%s' -> '%s' (cosine=%.3f)",
                         rt, match_type, best_score,
                     )
                 else:
@@ -608,13 +589,16 @@ async def resolve_relationships(
                         "edge_count": cand_type_counts.get(rt, 0),
                         "best_match": match_type,
                         "best_score": round(best_score, 4),
-                        "decision": "LLM_ZONE_REJECTED",
+                        "decision": "LLM_DIFFERENT",
                         "top_comparisons": [],
                     })
-                    print(f"           LLM verdict: {verdict} -> KEPT SEPARATE")
+                    print(f"           LLM verdict: DIFFERENT -> KEPT SEPARATE")
                     canonical_types.append({
-                        "relation_type": rt, "description": cand_desc,
-                        "source": cand_src, "target": cand_tgt,
+                        "relation_type": rt,
+                        "description": cand_desc,
+                        "source": cand_src,
+                        "target": cand_tgt,
+                        "description_embedding": cand_emb,
                     })
             else:
                 if best_score > 0.3:
@@ -628,10 +612,13 @@ async def resolve_relationships(
                         "top_comparisons": [],
                     })
                     print(f"    [INTRA] BELOW: '{rt[:30]}' best='{match_type[:30]}'  "
-                          f"score={best_score:.4f}")
+                          f"cosine={best_score:.4f}")
                 canonical_types.append({
-                    "relation_type": rt, "description": cand_desc,
-                    "source": cand_src, "target": cand_tgt,
+                    "relation_type": rt,
+                    "description": cand_desc,
+                    "source": cand_src,
+                    "target": cand_tgt,
+                    "description_embedding": cand_emb,
                 })
 
         if intra_normalize:
@@ -657,13 +644,12 @@ async def resolve_relationships(
     print(f"    Candidate relation types:        {len(candidate_types)}")
     print(f"    Existing types in graph:         {len(existing_types)}")
     print(f"    Exact match (already canonical): {exact_match_skip}")
-    print(f"    Phase A auto-normalized:         {auto_merges}")
-    print(f"    Phase A LLM-confirmed:           {llm_merges}")
-    print(f"    Phase A LLM-rejected:            {llm_rejections}")
+    print(f"    Cosine LLM trigger:              {config.cgrr_cosine_threshold}")
+    print(f"    Phase A LLM merges (SAME):       {llm_merges}")
+    print(f"    Phase A LLM rejects (DIFFERENT): {llm_rejections}")
     print(f"    Phase A below threshold:         {below_threshold}")
-    print(f"    Phase B intra auto-normalized:   {intra_auto_normalizes}")
-    print(f"    Phase B intra LLM-confirmed:     {intra_llm_normalizes}")
-    print(f"    Phase B intra LLM-rejected:      {intra_rejections_b}")
+    print(f"    Phase B intra LLM merges:        {intra_llm_normalizes}")
+    print(f"    Phase B intra LLM rejects:       {intra_rejections_b}")
     print(f"    Total normalizations (A+B):      {len(normalize_map)}")
     print(f"    Total edges affected:            {edges_affected}")
 
@@ -683,7 +669,6 @@ async def resolve_relationships(
             else:
                 print(f"      SAME:    '{orig[:25]}' {orig_card} == '{canon[:25]}' {canon_card}")
 
-    # Before/After relation type table
     final_types_list = sorted(relationships_df["relation_type"].unique())
     original_types_list = sorted(original_types.unique())
     print(f"\n    Before/After Relation Types:")
@@ -719,7 +704,6 @@ def apply_normalize_map_to_cardinality(
         return relationships_df
 
     relationships_df = relationships_df.copy()
-    # Re-derive cardinality from the (now-normalized) relation_type
     relationships_df["cardinality"] = relationships_df["relation_type"].apply(
         lambda rt: config.get_cardinality(rt)
     )

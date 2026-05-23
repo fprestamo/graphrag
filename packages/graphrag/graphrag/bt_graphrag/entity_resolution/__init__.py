@@ -15,15 +15,15 @@ from graphrag.bt_graphrag.entity_resolution.cgrr import (
 from graphrag.bt_graphrag.entity_resolution.scorers import (
     EntityScorer,
     RelationshipScorer,
-    compute_relationship_composite_score,
     description_cosine_entity_scorer,
+    description_cosine_relationship_scorer,
 )
 
 __all__ = [
     "apply_merge_map_to_relationships",
     "apply_normalize_map_to_cardinality",
-    "compute_relationship_composite_score",
     "description_cosine_entity_scorer",
+    "description_cosine_relationship_scorer",
     "EntityScorer",
     "get_existing_relations_for_entities",
     "RelationshipScorer",

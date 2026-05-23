@@ -349,6 +349,8 @@ class BTGraphRAGDefaults:
     late_arrival_threshold_days: int = 30
     cger_enabled: bool = True
     cger_cosine_threshold: float = 0.85
+    cgrr_enabled: bool = True
+    cgrr_cosine_threshold: float = 0.85
     etcdr_enabled: bool = True
     etcdr_confidence_threshold: float = 0.7
     community_update_k_hop: int = 2

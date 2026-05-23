@@ -814,8 +814,7 @@ async def _run_cgrr(
     print("-" * 70)
     print(f"  Relationships to resolve:  {len(relationships_df)}")
     print(f"  LLM available:             {model is not None}")
-    print(f"  CGRR merge threshold:      {config.cgrr_merge_threshold}")
-    print(f"  CGRR LLM threshold:        {config.cgrr_llm_threshold_low}")
+    print(f"  CGRR cosine threshold:     {config.cgrr_cosine_threshold}")
 
     if "relation_type" not in relationships_df.columns:
         print("  Computing relation_type from descriptions (column not present)...")
@@ -849,8 +848,10 @@ async def _run_cgrr(
     print(f"\n  Phase A: New vs Existing (Neo4j)")
 
     from graphrag.bt_graphrag.entity_resolution.cgrr import (
-        compute_relationship_score,
         _top_k_by_embedding,
+    )
+    from graphrag.bt_graphrag.entity_resolution.scorers import (
+        description_cosine_relationship_scorer,
     )
     from graphrag.bt_graphrag.neo4j_store import get_existing_relation_types_with_embeddings
 
@@ -927,6 +928,13 @@ async def _run_cgrr(
         narrowed = _top_k_by_embedding(cand_emb, existing_types_for_log, cgrr_top_k)
 
         all_comparisons: list[dict[str, Any]] = []
+        cand_record = {
+            "relation_type": cand_type,
+            "description": cand_desc,
+            "source": cand_src,
+            "target": cand_tgt,
+            "description_embedding": cand_emb,
+        }
         for existing in narrowed:
             if cand_type == existing["relation_type"]:
                 continue
@@ -937,23 +945,13 @@ async def _run_cgrr(
             )
             if not cand_entities.intersection(existing_entities):
                 continue
-            score, breakdown = compute_relationship_score(
-                candidate_rel_type=cand_type,
-                candidate_description=cand_desc,
-                candidate_source=cand_src,
-                candidate_target=cand_tgt,
-                existing_rel_type=existing["relation_type"],
-                existing_description=existing["description"],
-                existing_source=existing["source"],
-                existing_target=existing["target"],
-                config=config,
+            score, _bd = description_cosine_relationship_scorer(
+                cand_record, existing, config,
             )
             all_comparisons.append({
                 "existing_type": existing["relation_type"],
                 "score": round(score, 4),
-                "bm25_type": round(breakdown.get("bm25_type", 0), 4),
-                "semantic_desc": round(breakdown.get("semantic_desc", 0), 4),
-                "endpoint_match": round(breakdown.get("endpoint_match", 0), 4),
+                "cosine_emb": round(score, 4),
             })
 
         all_comparisons.sort(key=lambda c: c["score"], reverse=True)
@@ -966,37 +964,13 @@ async def _run_cgrr(
             "best_match": best.get("existing_type", ""),
             "best_score": best_score_val,
             "decision": (
-                "AUTO_NORMALIZE" if best_score_val >= config.cgrr_merge_threshold
-                else "LLM_ZONE" if best_score_val >= config.cgrr_llm_threshold_low
+                "LLM_CHECK" if best_score_val >= config.cgrr_cosine_threshold
                 else "BELOW_THRESHOLD"
             ),
             "top_comparisons": all_comparisons[:10],
         })
 
-    # Select relationship scorer based on config
-    cgrr_scorer_name = getattr(config, "cgrr_scorer", "embedding_only")
-    if cgrr_scorer_name == "bm25_only":
-        from graphrag.bt_graphrag.entity_resolution.scorers import (
-            bm25_only_relationship_scorer,
-        )
-        relationship_scorer = bm25_only_relationship_scorer
-    elif cgrr_scorer_name == "type_and_endpoint":
-        from graphrag.bt_graphrag.entity_resolution.scorers import (
-            type_and_endpoint_relationship_scorer,
-        )
-        relationship_scorer = type_and_endpoint_relationship_scorer
-    elif cgrr_scorer_name == "composite":
-        from graphrag.bt_graphrag.entity_resolution.cgrr import (
-            compute_relationship_score,
-        )
-        relationship_scorer = compute_relationship_score
-    else:  # "embedding_only" (default)
-        from graphrag.bt_graphrag.entity_resolution.scorers import (
-            semantic_only_relationship_scorer,
-        )
-        relationship_scorer = semantic_only_relationship_scorer
-
-    print(f"  CGRR scorer: {cgrr_scorer_name}")
+    print(f"  CGRR scorer: description_cosine (LLM trigger at cosine >= {config.cgrr_cosine_threshold})")
 
     # resolve_relationships handles Phase A (new vs existing) and Phase B (intra-batch)
     async with driver.session(database=config.neo4j_database) as session:
@@ -1005,7 +979,7 @@ async def _run_cgrr(
             config=config,
             session=session,
             model=model,
-            relationship_scorer=relationship_scorer,
+            relationship_scorer=description_cosine_relationship_scorer,
         )
 
     # Update cardinality column after normalization
