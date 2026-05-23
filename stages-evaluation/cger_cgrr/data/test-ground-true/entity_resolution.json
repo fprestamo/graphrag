@@ -11,9 +11,14 @@
   },
   "clusters": [
     {
-      "canonical": "GEOFFREY HINTON",
-      "type": "person",
-      "aliases": ["GEOFFREY HINTON", "PROF. HINTON", "HINTON"]
+      "canonical": "META PLATFORMS",
+      "type": "organization",
+      "aliases": ["META PLATFORMS", "META"]
+    },
+    {
+      "canonical": "ALPHABET INC.",
+      "type": "organization",
+      "aliases": ["ALPHABET INC.", "ALPHABET"]
     }
   ]
 }

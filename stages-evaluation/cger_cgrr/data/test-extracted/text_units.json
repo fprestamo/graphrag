@@ -1,0 +1,20 @@
+[
+  {
+    "id": "f945a375-dc16-45d1-bddc-b725c5217e32",
+    "document": "doc1_tech_leaders.txt",
+    "chunk_index": 0,
+    "text": "Tech Leadership in 2024\n\nGeoffrey Hinton, often called the \"Godfather of Deep Learning,\" was a long-time researcher at Google. In May 2023, Prof. Hinton resigned from Google in order to speak freely about the risks of AI. Hinton previously held a faculty position at the University of Toronto.\n\nYann LeCun is the Chief AI Scientist at Meta, the company that owns Facebook, Instagram, and WhatsApp. LeCun has led AI research at Meta since 2013, when the company was still known as Facebook. Y. LeCun is also a professor at New York University (NYU).\n\nSundar Pichai is the CEO of Alphabet, the parent company of Google. He was appointed CEO of Google in 2015 and additionally became chief executive of Alphabet in 2019. Mr. Pichai joined Google in 2004 and previously oversaw Chrome and Android.\n\nDemis Hassabis leads Google DeepMind, a research lab that resulted from the 2023 merger of Google Brain and DeepMind. Hassabis co-founded DeepMind in 2010, and the lab was acquired by Google in 2014.\n"
+  },
+  {
+    "id": "367ed8d2-0008-4a60-ad63-89a703defaf9",
+    "document": "doc2_ai_labs.txt",
+    "chunk_index": 0,
+    "text": "AI Labs and Their People\n\nOpenAI is an AI research organization founded in 2015 by Sam Altman, Elon Musk, and others. Mr. Altman currently serves as CEO of OpenAI, while E. Musk left the OpenAI board in 2018.\n\nAnthropic was founded in 2021 by Dario Amodei and Daniela Amodei, both former employees of OpenAI. Dario Amodei is the chief executive officer of Anthropic. The company is headquartered in San Francisco.\n\nGoogle DeepMind, also referred to simply as DeepMind, employs Demis Hassabis as its chief executive. The lab is based in London and is a subsidiary of Alphabet Inc. Alphabet Inc. is the holding company that owns Google.\n\nMeta Platforms, formerly known as Facebook, Inc., runs an AI research division called FAIR (Fundamental AI Research). Yann LeCun, the head of FAIR, joined Facebook in 2013 to start the lab. Meta is led by Mark Zuckerberg, who founded the company in 2004 under its original name \"Facebook\".\n"
+  },
+  {
+    "id": "56c84174-1daa-401d-8055-436302aadddd",
+    "document": "doc3_university_affiliations.txt",
+    "chunk_index": 0,
+    "text": "University Affiliations of AI Researchers\n\nGeoffrey Hinton was a professor at the University of Toronto for many years before joining Google. He is widely regarded as the originator of modern deep learning. Hinton continues to be affiliated with the U. of Toronto as professor emeritus.\n\nYoshua Bengio is a full professor at Université de Montréal and the scientific director of the Montreal Institute for Learning Algorithms (MILA). Bengio earned the 2018 Turing Award alongside Hinton and LeCun for their contributions to deep learning.\n\nAndrew Ng co-founded Google Brain in 2011 and later joined Baidu as chief scientist in 2014. Ng departed from Baidu in 2017 and founded the company Landing AI. A. Ng is also an adjunct professor at Stanford University.\n\nFei-Fei Li is a professor of computer science at Stanford. Prof. Li served as Chief Scientist of AI/ML at Google Cloud from 2017 to 2018. She co-founded the Stanford Institute for Human-Centered AI (HAI) in 2019.\n"
+  }
+]

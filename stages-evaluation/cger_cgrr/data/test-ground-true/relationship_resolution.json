@@ -11,7 +11,15 @@
   "clusters": [
     {
       "canonical": "IS_CEO_OF",
-      "aliases": ["IS_CEO_OF", "LEADS", "CHIEF_EXECUTIVE_OF"]
+      "aliases": ["IS_CEO_OF", "LEADS", "IS_PRESIDENT_OF"]
+    },
+    {
+      "canonical": "FOUNDED",
+      "aliases": ["FOUNDED", "CO_FOUNDED"]
+    },
+    {
+      "canonical": "OWNS",
+      "aliases": ["OWNS", "OWNED"]
     }
   ]
 }

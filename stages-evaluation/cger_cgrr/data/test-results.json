@@ -1,0 +1,79 @@
+{
+  "config": {
+    "cger_cosine_threshold": 0.592,
+    "cger_candidate_top_k": 10,
+    "cger_phase_b_top_k": 5,
+    "cgrr_cosine_threshold": 0.1,
+    "cgrr_candidate_top_k": 5,
+    "neo4j_vector_dimensions": 3072,
+    "completion_model": "gpt-4.1-mini"
+  },
+  "test_data": {
+    "entities": 49,
+    "relationships": 66,
+    "entity_truth_pairs": 2,
+    "relation_truth_pairs": 5
+  },
+  "cger": {
+    "scores": {
+      "true_positives": [
+        [
+          "META",
+          "META PLATFORMS"
+        ]
+      ],
+      "false_positives": [],
+      "false_negatives": [
+        [
+          "ALPHABET",
+          "ALPHABET INC."
+        ]
+      ],
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.6666666666666666
+    },
+    "merge_map": {
+      "META PLATFORMS": "META"
+    }
+  },
+  "cgrr": {
+    "scores": {
+      "true_positives": [],
+      "false_positives": [
+        [
+          "OWNED",
+          "PARENT_OF"
+        ]
+      ],
+      "false_negatives": [
+        [
+          "CO_FOUNDED",
+          "FOUNDED"
+        ],
+        [
+          "IS_CEO_OF",
+          "IS_PRESIDENT_OF"
+        ],
+        [
+          "IS_CEO_OF",
+          "LEADS"
+        ],
+        [
+          "IS_PRESIDENT_OF",
+          "LEADS"
+        ],
+        [
+          "OWNED",
+          "OWNS"
+        ]
+      ],
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    "normalize_map": {
+      "PARENT_OF": "OWNED"
+    }
+  }
+}

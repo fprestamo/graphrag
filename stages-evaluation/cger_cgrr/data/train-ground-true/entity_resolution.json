@@ -1,0 +1,44 @@
+{
+  "_description": "Manual ground truth for CGER. Each cluster lists the alias titles the extractor is likely to produce (UPPERCASE, as the extractor emits) that should all collapse to the same canonical entity. The 'canonical' field is the title CGER's merge_map should resolve every alias to. Aliases that appear only once in the extracted output (no duplicates) should NOT be listed here — they are not entity-resolution targets.",
+  "_format": {
+    "clusters": [
+      {
+        "canonical": "<UPPERCASE_CANONICAL_TITLE>",
+        "type": "<entity_type, e.g. person|organization|geo>",
+        "aliases": ["<UPPERCASE_ALIAS_1>", "<UPPERCASE_ALIAS_2>", "..."]
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "canonical": "ADVANCED MICRO DEVICES, INC.",
+      "type": "organization",
+      "aliases": ["ADVANCED MICRO DEVICES, INC.", "ADVANCED MICRO DEVICES"]
+    },
+    {
+      "canonical": "MICROSOFT CORPORATION",
+      "type": "organization",
+      "aliases": ["MICROSOFT CORPORATION", "MICROSOFT"]
+    },
+    {
+      "canonical": "GOOGLE LLC",
+      "type": "organization",
+      "aliases": ["GOOGLE LLC", "GOOGLE"]
+    },
+    {
+      "canonical": "ALPHABET INC.",
+      "type": "organization",
+      "aliases": ["ALPHABET INC.", "ALPHABET"]
+    },
+    {
+      "canonical": "ORACLE CORPORATION",
+      "type": "organization",
+      "aliases": ["ORACLE CORPORATION", "ORACLE"]
+    },
+    {
+      "canonical": "INTERNATIONAL BUSINESS MACHINES",
+      "type": "organization",
+      "aliases": ["INTERNATIONAL BUSINESS MACHINES", "IBM"]
+    }
+  ]
+}

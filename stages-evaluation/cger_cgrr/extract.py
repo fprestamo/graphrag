@@ -3,21 +3,24 @@
 
 """Stage 1 of the CGER/CGRR evaluation: corpus -> text units -> entities + relationships.
 
-Reads every *.txt file in ``data/corpus/``, splits each document into
-token-based text units, runs the temporal graph extractor (with
-embeddings) on each unit, and writes the consolidated output to
-``data/extracted/`` as JSON:
+Reads every *.txt file in ``data/<split>-corpus/`` (split = train|test),
+splits each document into token-based text units, runs the temporal
+graph extractor (with embeddings) on each unit, and writes the
+consolidated output to ``data/<split>-extracted/`` as JSON:
 
-    data/extracted/text_units.json
-    data/extracted/entities.json
-    data/extracted/relationships.json
+    data/<split>-extracted/text_units.json
+    data/<split>-extracted/entities.json
+    data/<split>-extracted/relationships.json
 
-The downstream ``evaluate.py`` script consumes these JSON files together
-with the manually authored ground truth in ``data/ground_truth/`` to
-score CGER and CGRR.
+The downstream ``evaluate.py`` script consumes the ``test-extracted``
+JSON files together with the manually authored ground truth in
+``data/test-ground-true/`` to score CGER and CGRR.  ``train.py``
+consumes the ``train-extracted`` / ``train-ground-true`` siblings to
+search for the best cosine thresholds.
 
 Usage:
-    python stages-evaluation/cger_cgrr/extract.py
+    python stages-evaluation/cger_cgrr/extract.py --split test
+    python stages-evaluation/cger_cgrr/extract.py --split train
 
 Requirements:
     - ``GRAPHRAG_API_KEY`` (or ``OPENAI_API_KEY``) defined either in the
@@ -29,6 +32,7 @@ Requirements:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -57,9 +61,9 @@ from graphrag_llm.embedding import create_embedding
 
 HERE = Path(__file__).parent
 PROJECT_ROOT = HERE.parent.parent
-CORPUS_DIR = HERE / "data" / "corpus"
-OUT_DIR = HERE / "data" / "extracted"
+DATA_DIR = HERE / "data"
 ENV_PATH = PROJECT_ROOT / ".env"
+VALID_SPLITS = ("train", "test")
 
 # Same defaults the .ragtest settings.yaml uses, so the eval mirrors prod.
 COMPLETION_MODEL = "gpt-4.1-mini"
@@ -138,15 +142,17 @@ def _chunker(embedding_model) -> TokenChunker:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-async def extract() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+async def extract(split: str) -> None:
+    corpus_dir = DATA_DIR / f"{split}-corpus"
+    out_dir = DATA_DIR / f"{split}-extracted"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    docs = sorted(CORPUS_DIR.glob("*.txt"))
+    docs = sorted(p for p in corpus_dir.glob("*.txt") if p.name != ".gitkeep")
     if not docs:
-        print(f"[ERROR] No .txt files found in {CORPUS_DIR}", file=sys.stderr)
+        print(f"[ERROR] No .txt files found in {corpus_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[EXTRACT] {len(docs)} document(s) in corpus")
+    print(f"[EXTRACT] split={split}: {len(docs)} document(s) in {corpus_dir}")
 
     completion = _completion()
     embedding = _embedding()
@@ -224,21 +230,33 @@ async def extract() -> None:
         entities_df, relationships_df, embedding,
     )
 
-    (OUT_DIR / "text_units.json").write_text(
+    (out_dir / "text_units.json").write_text(
         json.dumps(text_units, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     entities_df.to_json(
-        OUT_DIR / "entities.json", orient="records", indent=2, force_ascii=False,
+        out_dir / "entities.json", orient="records", indent=2, force_ascii=False,
     )
     relationships_df.to_json(
-        OUT_DIR / "relationships.json", orient="records", indent=2, force_ascii=False,
+        out_dir / "relationships.json", orient="records", indent=2, force_ascii=False,
     )
 
     print()
     print(f"[EXTRACT] Wrote {len(text_units)} text units, "
-          f"{len(entities_df)} entities, {len(relationships_df)} relationships to {OUT_DIR}")
+          f"{len(entities_df)} entities, {len(relationships_df)} relationships to {out_dir}")
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Extract entities and relationships from a corpus split.")
+    p.add_argument(
+        "--split",
+        choices=VALID_SPLITS,
+        default="test",
+        help="Which split to process: read data/<split>-corpus/, write data/<split>-extracted/ (default: test).",
+    )
+    return p.parse_args()
 
 
 if __name__ == "__main__":
-    asyncio.run(extract())
+    args = _parse_args()
+    asyncio.run(extract(args.split))

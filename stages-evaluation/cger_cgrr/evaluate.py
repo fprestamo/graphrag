@@ -3,15 +3,15 @@
 
 """Stage 2 of the CGER/CGRR evaluation: run resolution and score against ground truth.
 
-Loads the JSON files written by ``extract.py``:
+Loads the JSON files written by ``extract.py --split test``:
 
-    data/extracted/entities.json
-    data/extracted/relationships.json
+    data/test-extracted/entities.json
+    data/test-extracted/relationships.json
 
-…together with the manually authored ground truth:
+…together with the manually authored test ground truth:
 
-    data/ground_truth/entity_resolution.json
-    data/ground_truth/relationship_resolution.json
+    data/test-ground-true/entity_resolution.json
+    data/test-ground-true/relationship_resolution.json
 
 Then:
   1. Runs ``cger.resolve_entities`` on the extracted entities, using a
@@ -65,8 +65,9 @@ from graphrag_llm.config.types import LLMProviderType
 
 HERE = Path(__file__).parent
 PROJECT_ROOT = HERE.parent.parent
-EXTRACTED_DIR = HERE / "data" / "extracted"
-GROUND_TRUTH_DIR = HERE / "data" / "ground_truth"
+EXTRACTED_DIR = HERE / "data" / "test-extracted"
+GROUND_TRUTH_DIR = HERE / "data" / "test-ground-true"
+RESULTS_PATH = HERE / "data" / "test-results.json"
 ENV_PATH = PROJECT_ROOT / ".env"
 
 NEO4J_URI = "neo4j://127.0.0.1:7687"
@@ -78,7 +79,7 @@ CGER_TEMP_DB = "cgerbatch"
 COMPLETION_MODEL = "gpt-4.1-mini"
 
 # --- CGER tunables (mirror BTGraphRAGConfig defaults; tweak to study effect) ---
-CGER_COSINE_THRESHOLD = 0.85
+CGER_COSINE_THRESHOLD = 0.592
 """Cosine ≥ this triggers the LLM SAME/DIFFERENT_ENTITY/DIFFERENT_TEMPORAL verdict.
 Below this, CGER never merges. Lower → more LLM calls, more recall, more risk of FPs."""
 
@@ -90,7 +91,7 @@ CGER_PHASE_B_TOP_K = 5
 """Per entity in Phase B, this many already-seen batch entities are scored by cosine."""
 
 # --- CGRR tunables ---
-CGRR_COSINE_THRESHOLD = 0.85
+CGRR_COSINE_THRESHOLD = 0.1
 """Cosine ≥ this triggers the LLM SAME/DIFFERENT verdict for two relation-type strings."""
 
 CGRR_CANDIDATE_TOP_K = 5
@@ -327,6 +328,35 @@ async def main() -> None:
     print(f"  CGRR:  P={cgrr_scores['precision']:.3f}  "
           f"R={cgrr_scores['recall']:.3f}  F1={cgrr_scores['f1']:.3f}")
     print("=" * 70)
+
+    results = {
+        "config": {
+            "cger_cosine_threshold": CGER_COSINE_THRESHOLD,
+            "cger_candidate_top_k": CGER_CANDIDATE_TOP_K,
+            "cger_phase_b_top_k": CGER_PHASE_B_TOP_K,
+            "cgrr_cosine_threshold": CGRR_COSINE_THRESHOLD,
+            "cgrr_candidate_top_k": CGRR_CANDIDATE_TOP_K,
+            "neo4j_vector_dimensions": NEO4J_VECTOR_DIMENSIONS,
+            "completion_model": COMPLETION_MODEL,
+        },
+        "test_data": {
+            "entities": len(entities_df),
+            "relationships": len(rels_df),
+            "entity_truth_pairs": len(truth_entity_pairs),
+            "relation_truth_pairs": len(truth_rel_pairs),
+        },
+        "cger": {
+            "scores": cger_scores,
+            "merge_map": cger_merge_map,
+        },
+        "cgrr": {
+            "scores": cgrr_scores,
+            "normalize_map": cgrr_normalize_map,
+        },
+    }
+    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RESULTS_PATH.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"\n[SAVE] results -> {RESULTS_PATH}")
 
 
 if __name__ == "__main__":

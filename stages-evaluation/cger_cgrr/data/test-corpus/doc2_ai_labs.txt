@@ -1,0 +1,9 @@
+AI Labs and Their People
+
+OpenAI is an AI research organization founded in 2015 by Sam Altman, Elon Musk, and others. Mr. Altman currently serves as CEO of OpenAI, while E. Musk left the OpenAI board in 2018.
+
+Anthropic was founded in 2021 by Dario Amodei and Daniela Amodei, both former employees of OpenAI. Dario Amodei is the chief executive officer of Anthropic. The company is headquartered in San Francisco.
+
+Google DeepMind, also referred to simply as DeepMind, employs Demis Hassabis as its chief executive. The lab is based in London and is a subsidiary of Alphabet Inc. Alphabet Inc. is the holding company that owns Google.
+
+Meta Platforms, formerly known as Facebook, Inc., runs an AI research division called FAIR (Fundamental AI Research). Yann LeCun, the head of FAIR, joined Facebook in 2013 to start the lab. Meta is led by Mark Zuckerberg, who founded the company in 2004 under its original name "Facebook".

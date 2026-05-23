@@ -1,0 +1,9 @@
+Cloud Computing Providers and Their Executives
+
+Amazon Web Services, commonly abbreviated AWS, is the cloud-computing subsidiary of Amazon.com, Inc. AWS was launched in 2006 and is currently led by Matt Garman, who was appointed CEO of Amazon Web Services in June 2024. Mr. Garman succeeded Adam Selipsky, who had headed AWS since 2021. Amazon.com is run by Andy Jassy, who himself previously led AWS from 2016 to 2021 before becoming chief executive of Amazon.
+
+Microsoft Azure, often called simply Azure, is the cloud platform of Microsoft Corporation. Satya Nadella is the chairman and CEO of Microsoft and has led the company since 2014. Mr. Nadella previously ran Microsoft's cloud and enterprise group, where he was instrumental in launching Azure in 2010. Microsoft Corp. acquired GitHub in 2018 and purchased LinkedIn in 2016.
+
+Google Cloud Platform, also known as GCP, is the cloud arm of Google LLC, a subsidiary of Alphabet Inc. Thomas Kurian has been the chief executive of Google Cloud since 2019. T. Kurian joined Google Cloud after a long career at Oracle Corporation, where he was president of product development. Oracle Corp. itself was co-founded by Larry Ellison in 1977.
+
+IBM Cloud is the public-cloud business of International Business Machines, more commonly known as IBM. Arvind Krishna is the chairman and chief executive officer of IBM. Mr. Krishna led IBM's acquisition of Red Hat for $34 billion in 2019; Red Hat continues to operate as a subsidiary of International Business Machines Corporation.
