@@ -61,44 +61,12 @@ class BTGraphRAGConfig:
     cger_enabled: bool = True
     """Enable Cross-Graph Entity Resolution."""
 
-    cger_scorer: str = "citation_and_description"
-    """Scorer to use for entity comparison.
-    Options: 'embedding_only', 'citation_and_description', 'composite'.
-    Default 'citation_and_description': F1=1.0, LLM call rate=0.3% (objective=0.9994 at lambda=0.2)."""
-
-    cger_cosine_discard_threshold: float = 0.3
-    """Description cosine similarity below this value discards the pair
-    immediately (composite scorer pre-filter). Set to 0.0 to disable."""
-
-    cger_embedding_weight: float = 0.3
-    """Weight w1 for cosine embedding similarity (composite scorer)."""
-
-    cger_bm25_weight: float = 0.25
-    """Weight w2 for BM25 name matching (composite scorer)."""
-
-    cger_jaccard_weight: float = 0.15
-    """Weight w3 for Jaccard character-level name similarity (composite scorer)."""
-
-    cger_temporal_overlap_weight: float = 0.15
-    """Weight w4 for temporal overlap score (composite scorer)."""
-
-    cger_relation_context_weight: float = 0.15
-    """Weight w5 for relation-context embedding similarity (composite scorer)."""
-
-    cger_desc_weight: float = 0.9244
-    """Weight for description embedding similarity (citation_and_description scorer)."""
-
-    cger_cite_weight: float = 0.0756
-    """Weight for citation/text-unit embedding similarity (citation_and_description scorer)."""
-
-    cger_merge_threshold: float = 0.95
-    """Score above which entities are automatically merged."""
-
-    cger_llm_threshold_low: float = 0.6724
-    """Score below which entities are kept separate."""
-
-    cger_llm_threshold_high: float = 0.65
-    """Score above which entities are automatically merged (before LLM check)."""
+    cger_cosine_threshold: float = 0.85
+    """Description-embedding cosine similarity at or above which CGER
+    defers the merge decision to the LLM. Pairs with cosine below this
+    value are never merged; the LLM is the only component that ever
+    triggers a merge, and it does so using both the descriptions and the
+    active periods of each entity."""
 
     cger_candidate_top_k: int = 10
     """Number of top-K candidates to retrieve via Neo4j vector search

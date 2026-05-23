@@ -684,10 +684,12 @@ async def _run_cger(
 
     cger_resolution_log: list[dict[str, Any]] = []
 
-    # --- Phase A pre-logging: score each new entity against its candidates ---
+    # --- Phase A pre-logging: cosine similarity per new entity vs its candidates ---
     print(f"\n  Phase A: New vs Existing (Neo4j)")
 
-    from graphrag.bt_graphrag.entity_resolution.cger import compute_composite_score
+    from graphrag.bt_graphrag.entity_resolution.scorers import (
+        description_cosine_entity_scorer,
+    )
 
     existing_records: list[dict[str, Any]] = (
         [{str(k): v for k, v in r.items()} for r in existing_entities_df.to_dict("records")]
@@ -698,38 +700,31 @@ async def _run_cger(
         new_entity: dict[str, Any] = {str(k): v for k, v in dict(new_row).items()}
         entity_title = str(new_entity.get("title", "?"))
 
-        # Use per-entity candidates from vector search if available,
-        # otherwise fall back to the full existing_records
         if candidate_map and entity_title in candidate_map:
             records_for_entity = candidate_map[entity_title]
         else:
             records_for_entity = existing_records
 
         best_score = 0.0
-        best_breakdown: dict[str, float] = {}
         best_match_title = ""
         all_comparisons: list[dict[str, Any]] = []
 
         for existing in records_for_entity:
-            score, breakdown = compute_composite_score(new_entity, existing, config)
+            score, breakdown = description_cosine_entity_scorer(
+                new_entity, existing, config
+            )
             ex_title = str(existing.get("title", "?"))
             comp = {
                 "existing_entity": ex_title,
                 "score": round(score, 4),
                 "cosine_emb": round(breakdown.get("cosine_emb", 0), 4),
-                "discarded_by_cosine": breakdown.get("discarded_by_cosine", False),
-                "bm25_name": round(breakdown.get("bm25_name", 0), 4),
-                "jaccard_name": round(breakdown.get("jaccard_name", 0), 4),
-                "temporal_overlap": round(breakdown.get("temporal_overlap", 0), 4),
-                "relation_ctx": round(breakdown.get("relation_ctx", 0), 4),
+                "embedding_available": bool(breakdown.get("embedding_available", False)),
             }
             all_comparisons.append(comp)
             if score > best_score:
                 best_score = score
-                best_breakdown = breakdown
                 best_match_title = ex_title
 
-        # Only keep top-10 comparisons per entity to avoid huge files
         all_comparisons.sort(key=lambda c: c["score"], reverse=True)
         cger_resolution_log.append({
             "phase": "A_cross_graph",
@@ -738,38 +733,14 @@ async def _run_cger(
             "best_match": best_match_title,
             "best_score": round(best_score, 4),
             "decision": (
-                "AUTO_MERGE" if best_score >= config.cger_merge_threshold
-                else "LLM_ZONE" if best_score >= config.cger_llm_threshold_low
+                "LLM_CHECK" if best_score >= config.cger_cosine_threshold
                 else "BELOW_THRESHOLD"
             ),
             "top_comparisons": all_comparisons[:10],
         })
 
-    # Select entity scorer based on config
-    scorer_name = getattr(config, "cger_scorer", "citation_and_description")
-    if scorer_name == "composite":
-        from graphrag.bt_graphrag.entity_resolution.scorers import (
-            compute_entity_composite_score,
-        )
-        entity_scorer = compute_entity_composite_score
-    elif scorer_name == "citation_and_description":
-        from functools import partial
-
-        from graphrag.bt_graphrag.entity_resolution.scorers import (
-            citation_and_description_entity_scorer,
-        )
-        w_desc = getattr(config, "cger_desc_weight", 0.4)
-        w_cite = getattr(config, "cger_cite_weight", 0.6)
-        entity_scorer = partial(
-            citation_and_description_entity_scorer, w_desc=w_desc, w_cite=w_cite
-        )
-    else:
-        from graphrag.bt_graphrag.entity_resolution.scorers import (
-            embedding_only_entity_scorer,
-        )
-        entity_scorer = embedding_only_entity_scorer
-
-    print(f"  CGER scorer: {scorer_name}")
+    entity_scorer = description_cosine_entity_scorer
+    print(f"  CGER scorer: description_cosine (LLM trigger at cosine >= {config.cger_cosine_threshold})")
 
     # resolve_entities handles Phase A (new vs existing) and Phase B (intra-batch).
     # Pass the driver so Phase B can spin up a temporary Neo4j database for

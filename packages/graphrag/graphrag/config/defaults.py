@@ -348,7 +348,7 @@ class BTGraphRAGDefaults:
     neo4j_database: str = "btgraphrag"
     late_arrival_threshold_days: int = 30
     cger_enabled: bool = True
-    cger_merge_threshold: float = 0.85
+    cger_cosine_threshold: float = 0.85
     etcdr_enabled: bool = True
     etcdr_confidence_threshold: float = 0.7
     community_update_k_hop: int = 2

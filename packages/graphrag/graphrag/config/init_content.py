@@ -158,12 +158,7 @@ bt_graphrag:
   late_arrival_threshold_days: 30
   # Stage 2: CGER (Cross-Graph Entity Resolution)
   cger_enabled: true
-  cger_scorer: citation_and_description  # [embedding_only, citation_and_description, composite]
-  cger_desc_weight: 0.9244           # description embedding weight
-  cger_cite_weight: 0.0756           # citation embedding weight
-  cger_merge_threshold: 0.95         # auto-merge zone (score >= this)
-  cger_llm_threshold_low: 0.6724     # LLM verification zone lower bound
-  cger_llm_threshold_high: 0.65      # LLM verification zone upper bound
+  cger_cosine_threshold: 0.85        # description-cosine at/above which LLM decides the merge
   cger_candidate_top_k: 10           # top-K candidates via Neo4j vector search
   neo4j_vector_dimensions: 3072      # embedding dimensions (must match model)
   # Stage 2b: CGRR (Cross-Graph Relationship Resolution)

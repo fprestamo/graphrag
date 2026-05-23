@@ -88,7 +88,7 @@ Los parámetros de BT-GRAPHRAG se centralizan en un único \texttt{dataclass}, \
 \textbf{Grupo} & \textbf{Parámetros principales} \\ \hline
 Conexión Neo4j & \texttt{neo4j\_uri}, \texttt{neo4j\_user}, \texttt{neo4j\_password}, \texttt{neo4j\_database}, \texttt{neo4j\_vector\_dimensions} \\
 Etapa 1 (extracción) & \texttt{late\_arrival\_threshold\_days}, \texttt{default\_valid\_time\_field}, \texttt{temporal\_extraction\_model\_id} \\
-Etapa 2 (CGER) & \texttt{cger\_enabled}, \texttt{cger\_scorer}, pesos $w_1,\ldots,w_5$, \texttt{cger\_merge\_threshold}, \texttt{cger\_llm\_threshold\_low/high}, \texttt{cger\_candidate\_top\_k} \\
+Etapa 2 (CGER) & \texttt{cger\_enabled}, \texttt{cger\_cosine\_threshold}, \texttt{cger\_candidate\_top\_k} \\
 Etapa 2b (CGRR) & \texttt{cgrr\_enabled}, \texttt{cgrr\_scorer}, pesos BM25/semántico/endpoint, umbrales \\
 Etapa 3 (ETCDR) & \texttt{etcdr\_enabled}, \texttt{etcdr\_confidence\_threshold}, \texttt{relation\_cardinality\_overrides} \\
 Actualización incremental & \texttt{community\_update\_k\_hop} \\
@@ -179,25 +179,15 @@ Relaciones & Proviene del LLM; si el modelo no produjo un intervalo, se usa la f
 
 \section{Etapas 2 y 2b: Resolución de entidades y de tipos de relación}\label{sec:impl-cger-cgrr}
 
-El módulo \texttt{entity\_resolution/scorers.py} implementa las cinco señales descritas en la sección~\ref{sec:bt-cger}, cada una expuesta como función pura para facilitar su prueba unitaria y su recombinación en distintos \emph{scorers}:
+El módulo \texttt{entity\_resolution/scorers.py} expone como funciones puras la similitud coseno entre vectores de descripción ---el único \emph{scorer} de entidades empleado por CGER--- y las señales complementarias que aún utiliza CGRR (BM25 sobre el nombre del tipo, similitud semántica de la descripción y coincidencia de extremos). Al concentrar el \emph{scoring} de entidades en una sola función (\texttt{description\_cosine\_entity\_scorer}), se elimina la necesidad de calibrar pesos heterogéneos y se traslada al LLM toda la responsabilidad sobre las decisiones cualitativas.
 
-\begin{itemize}
-  \item \textbf{Similitud coseno}: entre los vectores de descripción de las entidades.
-  \item \textbf{BM25}: sobre los nombres canónicos.
-  \item \textbf{Similitud de Jaccard}: a nivel de carácter.
-  \item \textbf{Solapamiento temporal}: entre los intervalos $[\,\texttt{active\_start},\,\texttt{active\_end}\,]$.
-  \item \textbf{Solapamiento de Jaccard}: entre los conjuntos de tipos de relación que cada entidad mantiene con sus vecinos en el grafo.
-\end{itemize}
-
-La función \texttt{compute\_entity\_composite\_score} agrega las cinco señales mediante una combinación lineal con pesos configurables. Antes de calcular el \emph{score}, un filtro previo de compatibilidad de tipos descarta, sin cómputo adicional, los pares manifiestamente incompatibles (por ejemplo, \texttt{PERSON} y \texttt{ORGANIZATION}). El parámetro \texttt{cger\_scorer} permite seleccionar variantes con un subconjunto de señales ---solo \emph{embedding}, o \emph{citation-and-description}---, lo que posibilita evaluar el aporte marginal de cada señal sin modificar el código.
-
-CGER se implementa en \texttt{entity\_resolution/cger.py}, cuya función principal es \texttt{resolve\_entities}. El proceso se estructura en tres fases, siguiendo el diseño expuesto en la sección~\ref{sec:bt-cger}.
+CGER se implementa en \texttt{entity\_resolution/cger.py}, cuya función principal es \texttt{resolve\_entities}. El proceso se estructura en dos fases, siguiendo el diseño expuesto en la sección~\ref{sec:bt-cger}.
 
 \paragraph{Fase 1 --- Prefiltrado por similitud vectorial.}
-Para cada entidad nueva se recuperan los \texttt{cger\_candidate\_top\_k} candidatos más similares mediante el índice vectorial de Neo4j. Si el controlador no está disponible o el grafo está vacío ---situación habitual en el primer procesamiento---, el sistema cae automáticamente a un respaldo en memoria que calcula la similitud coseno con \texttt{numpy} sobre todas las entidades del lote actual.
+Para cada entidad nueva se recuperan los \texttt{cger\_candidate\_top\_k} candidatos más similares mediante el índice vectorial de Neo4j. Si el controlador no está disponible o el grafo está vacío ---situación habitual en el primer procesamiento---, el sistema cae automáticamente a un respaldo en memoria que calcula la similitud coseno con \texttt{numpy} sobre todas las entidades del lote actual. Antes de evaluar el \emph{score}, un filtro de compatibilidad de tipos descarta los pares manifiestamente incompatibles (por ejemplo, \texttt{PERSON} y \texttt{ORGANIZATION}), de modo que el cálculo siguiente sólo opera sobre candidatos del mismo tipo.
 
-\paragraph{Fase 2 --- Scoring compuesto con política de tres umbrales.}
-Sobre el subconjunto reducido se evalúa el \emph{score} compuesto aplicando la siguiente lógica:
+\paragraph{Fase 2 --- Decisión: similitud coseno + verificación por LLM.}
+Sobre el subconjunto reducido se calcula, para cada candidato, la similitud coseno entre los \emph{embeddings} de descripción y se conserva la mejor coincidencia $c^\ast$ con \emph{score} $\sigma^\ast$. La regla de decisión es:
 
 \begin{table}[H]
 \centering
@@ -205,20 +195,24 @@ Sobre el subconjunto reducido se evalúa el \emph{score} compuesto aplicando la 
 \begin{tabular}{p{0.45\linewidth}p{0.45\linewidth}}
 \hline
 \textbf{Condición} & \textbf{Acción} \\ \hline
-\emph{score} $>$ \texttt{cger\_merge\_threshold} & Fusión automática \\
-\emph{score} $<$ \texttt{cger\_llm\_threshold\_low} & Separación preservada \\
-Zona de incertidumbre intermedia & Verificación por LLM \\ \hline
+$\sigma^\ast \geq$ \texttt{cger\_cosine\_threshold} & Verificación por LLM con contexto temporal \\
+$\sigma^\ast <$ \texttt{cger\_cosine\_threshold} & Separación preservada (sin llamada al LLM) \\ \hline
 \end{tabular}
-\caption{Política de tres umbrales para la decisión de fusión en CGER.}
+\caption{Regla de decisión de fusión en CGER tras la simplificación del \emph{scoring}.}
 \label{tab:impl-cger-thresholds}
 \end{table}
 
-\paragraph{Fase 3 --- Verificación por LLM.}
-El \emph{prompt} de verificación recibe, para cada par en la zona de incertidumbre, el nombre, el tipo, la descripción, el período activo y el conjunto de relaciones conocidas de ambas entidades. El modelo devuelve una de tres etiquetas (\texttt{SAME}, \texttt{DIFFERENT}, \texttt{UNCERTAIN}) acompañada de una justificación.
+El \emph{prompt} de verificación (constante \texttt{CGER\_VERIFICATION\_PROMPT}) entrega, para cada una de las dos entidades, su nombre, su tipo, su descripción y su período activo $[\,\texttt{active\_start}, \texttt{active\_end}\,]$. El modelo debe responder exactamente con uno de tres tokens:
 
-Las decisiones de fusión se acumulan en un \texttt{merge\_map} que, una vez completada la pasada, se aplica también a las relaciones, garantizando la consistencia referencial entre nodos y aristas.
+\begin{itemize}
+  \item \texttt{SAME}: las entidades se refieren al mismo referente y sus períodos activos no son temporalmente significativos como para impedir la fusión. Es el único veredicto que produce un \emph{merge}.
+  \item \texttt{DIFFERENT\_ENTITY}: las entidades se refieren a referentes distintos del mundo real. Se mantienen como nodos separados.
+  \item \texttt{DIFFERENT\_TEMPORAL}: las entidades describen al mismo referente pero la separación temporal entre sus períodos activos es lo bastante grande como para que la fusión destruya estados claramente distintos. Se mantienen como nodos separados.
+\end{itemize}
 
-CGRR, implementado en \texttt{entity\_resolution/cgrr.py}, aplica el mismo esquema de tres fases que CGER, pero orientado a los tipos de relación. Su \emph{score} combina tres señales complementarias:
+La función \texttt{llm\_verify\_entity\_match} normaliza la salida del modelo y, ante cualquier token no reconocido, devuelve \texttt{DIFFERENT\_ENTITY} como veredicto conservador por defecto: en presencia de evidencia ambigua, el sistema no fusiona. Las decisiones de fusión se acumulan en un \texttt{merge\_map} que, una vez completada la pasada, se aplica también a las relaciones para garantizar la consistencia referencial entre nodos y aristas. Los veredictos \texttt{DIFFERENT\_TEMPORAL} se registran en el \emph{log} de depuración (\texttt{stage2\_cger\_resolution\_log.json}) con la decisión \texttt{LLM\_DIFFERENT\_TEMPORAL}, lo que permite auditar a posteriori cuántas separaciones obedecen a una diferencia de referente y cuántas a una diferencia temporal entre estados del mismo referente.
+
+CGRR, implementado en \texttt{entity\_resolution/cgrr.py}, conserva el esquema compuesto original ---tres fases con \emph{scoring} agregado y verificación por LLM en la zona de incertidumbre---, ya que los tipos de relación no portan un período activo propio y no encajan en el esquema simplificado de CGER. Su \emph{score} combina tres señales complementarias:
 
 \begin{itemize}
   \item \textbf{BM25}: sobre el nombre del tipo de relación.
@@ -226,7 +220,7 @@ CGRR, implementado en \texttt{entity\_resolution/cgrr.py}, aplica el mismo esque
   \item \textbf{Coincidencia de extremos}: cuando los pares sujeto-objeto se solapan, la evidencia de equivalencia semántica se refuerza.
 \end{itemize}
 
-En la zona de incertidumbre el LLM es consultado siguiendo el mismo mecanismo que en CGER. El mapa de normalización resultante se propaga al campo \texttt{cardinality} de las aristas afectadas, garantizando que tanto la clasificación de cardinalidad como la detección de conflictos operen sobre un vocabulario canónico, libre de variantes léxicas.
+En la zona de incertidumbre el LLM es consultado siguiendo el mismo mecanismo de CGRR. El mapa de normalización resultante se propaga al campo \texttt{cardinality} de las aristas afectadas, garantizando que tanto la clasificación de cardinalidad como la detección de conflictos operen sobre un vocabulario canónico, libre de variantes léxicas.
 
 \section{Clasificación de cardinalidad}\label{sec:impl-cardinality}
 
