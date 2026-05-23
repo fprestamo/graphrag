@@ -14,8 +14,9 @@ Loads the JSON files written by ``extract.py``:
     data/ground_truth/relationship_resolution.json
 
 Then:
-  1. Runs ``cger.resolve_entities`` on the extracted entities (in-memory
-     intra-batch Phase B only; empty existing graph -> Phase A skipped).
+  1. Runs ``cger.resolve_entities`` on the extracted entities, using a
+     scratch Neo4j database ('cgerbatch') as Phase B's HNSW-backed top-K
+     candidate index. The existing graph is empty -> Phase A is skipped.
   2. Runs ``cgrr.resolve_relationships`` on the extracted relationships,
      pointing the required Neo4j session at an empty test database so
      Phase A is skipped and only the intra-batch Phase B runs.
@@ -31,8 +32,12 @@ Requirements:
     - ``GRAPHRAG_API_KEY`` (or ``OPENAI_API_KEY``) defined either in the
       current shell or in the project-root ``.env`` file — the script
       auto-loads ``.env`` before reading the variable.
-    - Neo4j running at neo4j://127.0.0.1:7687 with database 'cgrreval'
-      (CREATE DATABASE cgrreval;).  The script wipes its contents at start.
+    - Neo4j running at neo4j://127.0.0.1:7687 with two databases:
+        * 'cgrreval'  (CREATE DATABASE cgrreval;)  — empty workspace
+          for CGRR; wiped at start so Phase A is a no-op.
+        * 'cgerbatch' (CREATE DATABASE cgerbatch;) — scratch workspace
+          for CGER Phase B's HNSW-backed top-K retrieval.
+          ``CGERBatchDB`` wipes it on entry/exit automatically.
 """
 
 from __future__ import annotations
@@ -68,6 +73,7 @@ NEO4J_URI = "neo4j://127.0.0.1:7687"
 NEO4J_USER = "neo4j"
 NEO4J_PASSWORD = "12345678"
 TEST_DB = "cgrreval"
+CGER_TEMP_DB = "cgerbatch"
 
 COMPLETION_MODEL = "gpt-4.1-mini"
 
@@ -80,14 +86,14 @@ CGER_CANDIDATE_TOP_K = 10
 """Per new entity, this many same-type candidates are scored by cosine.
 Only matters for Phase A (existing graph); Phase B intra-batch uses its own knob."""
 
-CGER_PHASE_B_TOP_K = 10
+CGER_PHASE_B_TOP_K = 5
 """Per entity in Phase B, this many already-seen batch entities are scored by cosine."""
 
 # --- CGRR tunables ---
 CGRR_COSINE_THRESHOLD = 0.85
 """Cosine ≥ this triggers the LLM SAME/DIFFERENT verdict for two relation-type strings."""
 
-CGRR_CANDIDATE_TOP_K = 10
+CGRR_CANDIDATE_TOP_K = 5
 """Per candidate relation type, this many existing types are kept for scoring."""
 
 NEO4J_VECTOR_DIMENSIONS = 3072
@@ -259,6 +265,7 @@ async def main() -> None:
         cger_enabled=True,
         cger_cosine_threshold=CGER_COSINE_THRESHOLD,
         cger_candidate_top_k=CGER_CANDIDATE_TOP_K,
+        cger_phase_b_temp_db=CGER_TEMP_DB,
         # CGRR
         cgrr_enabled=True,
         cgrr_cosine_threshold=CGRR_COSINE_THRESHOLD,
@@ -274,25 +281,26 @@ async def main() -> None:
 
     model = _completion()
 
-    # --- CGER: in-memory intra-batch only (empty existing graph) ---
-    print(f"\n[CGER] Running with empty existing graph (Phase B intra-batch only)…")
-    _, cger_merge_map, _ = await resolve_entities(
-        new_entities=entities_df,
-        existing_entities=pd.DataFrame(),
-        config=config,
-        model=model,
-        driver=None,  # in-memory mode
-        phase_b_top_k=CGER_PHASE_B_TOP_K,
-    )
-    print(f"[CGER] merge_map: {len(cger_merge_map)} entries")
-    cger_pairs = _pairs_from_merge_map(cger_merge_map)
-    cger_scores = _score(cger_pairs, truth_entity_pairs)
-    _print_report("CGER evaluation (entity resolution)", cger_scores)
-
-    # --- CGRR: requires a session; point at an empty test DB ---
     from neo4j import AsyncGraphDatabase
     driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     try:
+        # --- CGER: scratch DB ('cgerbatch') backs Phase B top-K via HNSW ---
+        print(f"\n[CGER] Running with empty existing graph "
+              f"(Phase B intra-batch via scratch DB '{CGER_TEMP_DB}')…")
+        _, cger_merge_map, _ = await resolve_entities(
+            new_entities=entities_df,
+            existing_entities=pd.DataFrame(),
+            config=config,
+            model=model,
+            driver=driver,
+            phase_b_top_k=CGER_PHASE_B_TOP_K,
+        )
+        print(f"[CGER] merge_map: {len(cger_merge_map)} entries")
+        cger_pairs = _pairs_from_merge_map(cger_merge_map)
+        cger_scores = _score(cger_pairs, truth_entity_pairs)
+        _print_report("CGER evaluation (entity resolution)", cger_scores)
+
+        # --- CGRR: requires a session; point at an empty test DB ---
         async with driver.session(database=TEST_DB) as session:
             print(f"\n[CGRR] Wiping {TEST_DB} (so Phase A finds an empty graph)…")
             await session.run("MATCH (n) DETACH DELETE n")

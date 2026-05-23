@@ -87,6 +87,114 @@ Authoring rules:
 - The `canonical` field is the title/type the resolver should collapse
   every alias to. It must itself appear in `aliases`.
 
+### 2b. (Alternative) Generate ground truth with an agent
+
+If you'd rather have an LLM agent draft the ground-truth files for you,
+hand it the prompt below verbatim. It only needs read access to
+`data/extracted/` and write access to `data/ground_truth/`.
+
+```text
+You are authoring the manual ground truth for an entity-resolution and
+relation-type-resolution evaluation harness. Two JSON files already
+exist at:
+
+  stages-evaluation/cger_cgrr/data/extracted/entities.json
+  stages-evaluation/cger_cgrr/data/extracted/relationships.json
+
+You must produce two JSON files at:
+
+  stages-evaluation/cger_cgrr/data/ground_truth/entity_resolution.json
+  stages-evaluation/cger_cgrr/data/ground_truth/relationship_resolution.json
+
+== Schema for entity_resolution.json ==
+
+{
+  "_description": "<keep the existing description verbatim>",
+  "_format":      "<keep the existing format block verbatim>",
+  "clusters": [
+    {
+      "canonical": "<UPPERCASE_CANONICAL_TITLE>",
+      "type":      "<entity type, lowercased, e.g. person|organization|geo>",
+      "aliases":   ["<UPPERCASE_ALIAS_1>", "<UPPERCASE_ALIAS_2>", "..."]
+    }
+  ]
+}
+
+== Schema for relationship_resolution.json ==
+
+{
+  "_description": "<keep the existing description verbatim>",
+  "_format":      "<keep the existing format block verbatim>",
+  "clusters": [
+    {
+      "canonical": "<UPPER_SNAKE_CASE_CANONICAL_TYPE>",
+      "aliases":   ["<UPPER_SNAKE_CASE_ALIAS_1>", "<UPPER_SNAKE_CASE_ALIAS_2>", "..."]
+    }
+  ]
+}
+
+== Procedure ==
+
+1. Read entities.json. For each entity object you only need its
+   `title`, `type`, and `description` — IGNORE `description_embedding`
+   (it is a large float vector you must not load or inspect). Build a
+   list of (title, type, description) tuples.
+
+2. Cluster the entities. Two titles belong in the same cluster iff
+   they refer to the SAME real-world entity according to their
+   descriptions AND share the same `type`. Examples of valid groupings:
+     - "GEOFFREY HINTON" + "HINTON" + "PROF. HINTON"     (person)
+     - "OPENAI" + "OPEN AI"                              (organization)
+     - "UNIVERSITY OF TORONTO" + "U OF T" + "UTORONTO"   (organization)
+   Do NOT group entities that are merely related (e.g. an employee and
+   their employer) — only literal aliases of the same thing.
+
+3. Read relationships.json. For each row you only need `source`,
+   `target`, `description`, and `relation_type` — IGNORE both
+   embedding fields.
+
+4. Cluster relation types. Two `relation_type` strings belong in the
+   same cluster iff they denote the SAME predicate (verb/role)
+   regardless of which subject/object pair they were observed on.
+   Use the per-row `description` to disambiguate when the bare type
+   name is ambiguous. Examples:
+     - "IS_CEO_OF" + "LEADS" + "CHIEF_EXECUTIVE_OF"
+     - "EMPLOYED_AT" + "WORKS_AT" + "WORKED_FOR"
+     - "FOUNDED" + "ESTABLISHED" + "CO_FOUNDED"
+   Do NOT cluster relation types that share a topic but mean different
+   things (e.g. "FOUNDED" vs "ACQUIRED").
+
+== Authoring rules (HARD) ==
+
+- Strings inside `aliases` must appear VERBATIM in the source JSON —
+  same casing, same punctuation, same underscores. No invented or
+  normalised forms.
+- Drop clusters of size 1. A cluster with only its canonical and no
+  other alias is meaningless and must be omitted.
+- `canonical` must itself be one of the strings in its `aliases`
+  array. Pick the longest / most complete form as canonical when in
+  doubt (e.g. "GEOFFREY HINTON" over "HINTON").
+- A given alias string may appear in AT MOST ONE cluster across the
+  whole file. If two clusters would share an alias, merge them.
+- For the entity file, all aliases inside one cluster must share the
+  same `type`. Entities of different types are never in the same
+  cluster, even if their titles collide.
+- Preserve the existing top-level `_description` and `_format` keys
+  byte-for-byte (re-read the current ground-truth files to copy them).
+- Output must be valid JSON, UTF-8, two-space indentation, no
+  trailing commas.
+
+== Be conservative ==
+
+It is better to omit a borderline cluster than to invent one. The
+harness measures pairwise precision/recall against your file, so a
+wrong grouping costs more than a missing one. When the descriptions
+do not give you high confidence that two titles refer to the same
+thing, leave them apart.
+
+Write the two files. Do not modify anything else.
+```
+
 ### 3. Evaluate — run CGER and CGRR against the ground truth
 
     python stages-evaluation/cger_cgrr/evaluate.py
