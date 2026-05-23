@@ -1,0 +1,511 @@
+\chapter{Implementación Computacional}\label{chapter:implementation}
+
+Este capítulo describe la realización computacional de BT-GRAPHRAG, el sistema cuya arquitectura conceptual se presentó en el Capítulo~\ref{chapter:proposal}. Mientras dicho capítulo se centró en el modelo de datos, los algoritmos y la arquitectura del sistema, el presente detalla las decisiones de ingeniería que permitieron traducir esa propuesta en un sistema funcional: la organización del proyecto, las tecnologías empleadas, el desarrollo de cada una de las siete etapas del \emph{pipeline} y los mecanismos de trazabilidad que sustentan la evaluación posterior. La exposición sigue el orden establecido en la sección~\ref{sec:bt-pipeline}.
+
+\section{Estructura del proyecto}\label{sec:impl-project-structure}
+
+BT-GRAPHRAG se implementó en Python como una extensión del proyecto oficial de GraphRAG~\cite{edge2024local} de Microsoft. Esta decisión obedece a dos razones principales. Por un lado, GraphRAG se distribuye como un \emph{monorepo} de arquitectura modular en el que cada etapa del \emph{pipeline} se expone como un \emph{workflow} independiente, lo que facilita la incorporación de nuevas etapas sin afectar las existentes. Por otro lado, adoptar BT-GRAPHRAG como rama de extensión ---en lugar de una reimplementación autónoma--- permite que las búsquedas local y global de GraphRAG operen sin modificación sobre las salidas enriquecidas, en correspondencia con la decisión de diseño enunciada en la sección~\ref{sec:bt-overview} de preservar intacta la lógica interna del sistema base.
+
+El \emph{monorepo} está organizado mediante \texttt{uv workspace}~\cite{TODO_uv_workspace} y contiene ocho paquetes interdependientes:
+
+\begin{itemize}
+  \item \texttt{graphrag}: paquete principal, que integra el código de GraphRAG y el módulo BT-GRAPHRAG.
+  \item \texttt{graphrag-common}: utilidades compartidas (configuración, factorías y hashing).
+  \item \texttt{graphrag-llm}: capa de abstracción sobre proveedores de modelos de lenguaje, \emph{embeddings} y \emph{tokenizers}.
+  \item \texttt{graphrag-storage}: capa de almacenamiento con varios backends intercambiables (archivos locales, Azure Blob, Azure Cosmos y memoria) seleccionados mediante una factoría.
+  \item \texttt{graphrag-cache}: utilidades de caché para resultados intermedios, con implementaciones en memoria, en JSON y un modo \texttt{noop} para deshabilitar la caché.
+  \item \texttt{graphrag-vectors}: almacenes vectoriales para LanceDB y Azure (AI Search y Cosmos), usados para indexar y recuperar \emph{embeddings}.
+  \item \texttt{graphrag-chunking}: estrategias de segmentación de texto en bloques (por oraciones o por \emph{tokens}) configurables mediante factoría.
+  \item \texttt{graphrag-input}: lectores de documentos de entrada (CSV, JSON, JSONL, texto plano y MarkItDown) con mapeo configurable de propiedades.
+\end{itemize}
+
+Todo el código introducido por la propuesta reside en el subpaquete \texttt{graphrag.bt\_graphrag}, organizado por componente del diseño:
+
+\begin{itemize}
+  \item \texttt{models/}: tipos de datos y configuración del subsistema.
+  \item \texttt{temporal\_extraction/}: extracción de entidades y relaciones con metadatos temporales y normalización de fechas a partir de la salida del LLM.
+  \item \texttt{entity\_resolution/}: resolución contextual de entidades (CGER), de tipos de relación (CGRR) y los \emph{scorers} compartidos.
+  \item \texttt{conflict\_detection/}: detección y resolución temporal de conflictos (ETCDR) y \emph{Decision Router}.
+  \item \texttt{neo4j\_store.py}: almacén bitemporal sobre Neo4j; expone las primitivas de lectura y escritura sobre la cuádrupla de estado temporal.
+  \item \texttt{community\_update.py}: actualización incremental de comunidades (Leiden) restringida al vecindario $k$-hop de las entidades modificadas.
+  \item \texttt{temporal\_query.py}: consulta temporal sobre el grafo (descomposición, búsqueda local con atenuación temporal y resolución de disputas).
+  \item \texttt{knowledge\_maintenance.py}: operaciones de mantenimiento del conocimiento (eliminación compatible con GDPR, retractación de fuente y archivado de hechos antiguos).
+  \item \texttt{pipeline.py}: coordinador del \emph{pipeline} de BT-GRAPHRAG (en lo sucesivo, \emph{orquestador}).
+  \item \texttt{prompts.py}: plantillas de los \emph{prompts} utilizados en todas las etapas (extracción, clasificación de cardinalidad, resolución de conflictos, reportes y consultas).
+  \item \texttt{evaluation/}: infraestructura de evaluación, organizada por componente (CGER, CGRR, ETCDR e ICUS), con pruebas unitarias, validación sobre datos reales y búsqueda de hiperparámetros.
+\end{itemize}
+
+% TODO: figura fig:impl-monorepo-structure que represente, como diagrama de paquetes, la estructura del monorepo de BT-GRAPHRAG: los ocho paquetes del workspace y, dentro de \texttt{graphrag.bt\_graphrag}, los subdirectorios por componente (models, temporal\_extraction, entity\_resolution, conflict\_detection, etc.) con flechas de dependencia entre ellos.
+La integración con el \emph{pipeline} de GraphRAG se realiza mediante dos \emph{workflows} adicionales ubicados en \texttt{packages/graphrag/graphrag/index/workflows/}:
+
+\begin{itemize}
+  \item \texttt{bt\_extract\_graph.py}: sustituye al \emph{workflow} estándar de extracción y delega la ejecución en el orquestador de BT-GRAPHRAG.
+  \item \texttt{bt\_create\_community\_reports.py}: sustituye al \emph{workflow} de generación de reportes de comunidad.
+\end{itemize}
+
+El resto de los \emph{workflows} ---\emph{chunking}, particionamiento de Leiden, sumarización jerárquica y búsquedas local y global--- se conserva sin modificación.
+
+\section{Tecnologías y dependencias}\label{sec:impl-tech-stack}
+
+Las llamadas a modelos de lenguaje se realizan a través del paquete \texttt{graphrag\_llm}, que desacopla el sistema del proveedor concreto mediante tres interfaces bien definidas~\cite{TODO_llm_components}:
+
+\begin{itemize}
+  \item \texttt{LLMCompletion}: para tareas de generación de texto.
+  \item \texttt{LLMEmbedding}: para la obtención de vectores de \emph{embedding}.
+  \item \texttt{Tokenizer}: para el conteo de \emph{tokens}.
+\end{itemize}
+
+Esta capa de abstracción permite configurar de forma independiente cada componente que requiere un LLM ---extracción temporal, clasificación de cardinalidad, verificación de fusión de entidades y \emph{Decision Router}---, lo que posibilita emplear modelos distintos en cada subtarea. De este modo se puede ajustar el equilibrio entre el \textbf{costo} de cada llamada (medido en gasto monetario por \emph{token} y en latencia, que crecen con el tamaño del modelo) y la \textbf{calidad de las salidas} producidas por la subtarea correspondiente (precisión de la extracción, acierto en la clasificación o coherencia de las decisiones del \emph{Decision Router}). La dimensionalidad del vector de \emph{embedding} se controla mediante el parámetro \texttt{neo4j\_vector\_dimensions}, que se ajusta al modelo seleccionado.
+
+Como se anticipó en la sección~\ref{sec:bt-pipeline}, BT-GRAPHRAG mantiene el grafo en dos representaciones complementarias y sincronizadas:
+
+\begin{itemize}
+  \item \textbf{Representación tabular}: persistida como archivos Parquet~\cite{TODO_parquet} a través de la cadena de \emph{workflows} estándar de GraphRAG, lo que preserva la compatibilidad con sus \emph{artifacts}.
+  \item \textbf{Representación en grafo}: almacenada en una base de datos Neo4j~\cite{TODO_neo4j} (versión $\geq$ 6.1), elegida por dos razones: su soporte nativo de propiedades temporales sobre nodos y relaciones, y la disponibilidad de índices vectoriales que permiten ejecutar el prefiltrado por similitud de CGER directamente sobre la base de datos.
+\end{itemize}
+
+% TODO: figura fig:impl-dual-store que ilustre la sincronización entre las dos representaciones del grafo: la representación tabular (Parquet, consumida por los workflows de GraphRAG) y la representación en grafo (Neo4j, con cuádrupla bitemporal e índices vectoriales); flechas de escritura/lectura desde el orquestador de BT-GRAPHRAG hacia ambas representaciones, indicando qué módulos consumen cada una.
+El esquema bitemporal completo descrito en la Tabla~\ref{tab:bt-schema} se almacena como atributos sobre las relaciones de Neo4j. El lenguaje de consulta \emph{Cypher}~\cite{TODO_cypher} permite expresar tanto las consultas dirigidas por cardinalidad de la sección~\ref{sec:bt-etcdr} como las reconstrucciones \emph{as-of} de la sección~\ref{sec:bt-bitemporal} mediante predicados sobre las cuatro marcas temporales.
+
+El intercambio de datos entre las etapas del \emph{pipeline} se realiza mediante \texttt{pandas.DataFrame}, lo que unifica la interfaz con los \emph{workflows} originales de GraphRAG, que ya operan sobre Parquet. Las principales bibliotecas empleadas son:
+
+\begin{itemize}
+  \item \texttt{numpy} y \texttt{scipy}: para los cálculos vectoriales (similitud coseno y promedios de \emph{embeddings}).
+  \item \texttt{AsyncDriver}, controlador asíncrono de la biblioteca oficial \texttt{neo4j}~\cite{TODO_neo4j_async_driver}: gestiona todas las interacciones con la base de datos en grafo.
+\end{itemize}
+
+La asincronía de extremo a extremo ---\emph{workflows}, \emph{Decision Router} y consultas a Neo4j--- permite paralelizar las llamadas a LLM y las consultas al grafo, factor indispensable para la escalabilidad del \emph{pipeline} sobre corpus de tamaño medio o grande.
+
+\section{Configuración del sistema}\label{sec:impl-config}
+
+Los parámetros de BT-GRAPHRAG se centralizan en un único \texttt{dataclass}, \texttt{BTGraphRAGConfig}, definido en \texttt{models/config.py}. Esta clase se incorpora como campo adicional al objeto raíz de la configuración de GraphRAG (\texttt{GraphRagConfig}), lo que permite que los archivos YAML~\cite{TODO_yaml} existentes admitan el bloque BT-GRAPHRAG sin modificar el esquema previo. La Tabla~\ref{tab:impl-config} resume los grupos de parámetros más relevantes y su correspondencia con los componentes del diseño.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.28\linewidth}p{0.62\linewidth}}
+\hline
+\textbf{Grupo} & \textbf{Parámetros principales} \\ \hline
+Conexión Neo4j & \texttt{neo4j\_uri}, \texttt{neo4j\_user}, \texttt{neo4j\_password}, \texttt{neo4j\_database}, \texttt{neo4j\_vector\_dimensions} \\
+Etapa 1 (extracción) & \texttt{late\_arrival\_threshold\_days}, \texttt{default\_valid\_time\_field}, \texttt{temporal\_extraction\_model\_id} \\
+Etapa 2 (CGER) & \texttt{cger\_enabled}, \texttt{cger\_scorer}, pesos $w_1,\ldots,w_5$, \texttt{cger\_merge\_threshold}, \texttt{cger\_llm\_threshold\_low/high}, \texttt{cger\_candidate\_top\_k} \\
+Etapa 2b (CGRR) & \texttt{cgrr\_enabled}, \texttt{cgrr\_scorer}, pesos BM25/semántico/endpoint, umbrales \\
+Etapa 3 (ETCDR) & \texttt{etcdr\_enabled}, \texttt{etcdr\_confidence\_threshold}, \texttt{relation\_cardinality\_overrides} \\
+Actualización incremental & \texttt{community\_update\_k\_hop} \\
+Consulta temporal & \texttt{temporal\_decay\_alpha} \\
+\emph{Prompts} y diagnóstico & \texttt{extraction\_prompt}, \texttt{community\_report\_prompt}, \texttt{cardinality\_prompt}, \texttt{debug\_output\_dir} \\ \hline
+\end{tabular}
+\caption{Grupos de parámetros expuestos por \texttt{BTGraphRAGConfig}.}
+\label{tab:impl-config}
+\end{table}
+
+Cada subsistema dispone de un indicador de habilitación independiente (\texttt{cger\_enabled}, \texttt{cgrr\_enabled}, \texttt{etcdr\_enabled}), lo que aporta dos ventajas prácticas:
+
+\begin{itemize}
+  \item \textbf{Ablación selectiva}: es posible deshabilitar uno o varios componentes en una misma corrida sin necesidad de mantener ramas paralelas del código.
+  \item \textbf{Optimización dirigida por datos}: los pesos del \emph{scoring} compuesto y los umbrales de las zonas de incertidumbre se exponen como parámetros.
+\end{itemize}
+
+Adicionalmente, el campo \texttt{relation\_cardinality\_overrides} permite que un experto de dominio fije manualmente la clasificación para tipos de relación críticos, sin necesidad de modificar el \emph{prompt} ni el código del clasificador.
+
+\section{Modelo de datos bitemporal}\label{sec:impl-data-model}
+
+La cuádrupla de estado temporal y los conceptos asociados se definen en \texttt{models/temporal\_types.py}. El elemento central es la clase \texttt{TemporalStateQuad}, que agrupa los cuatro \emph{timestamps} $(t_v^s, t_v^e, t_t^s, t_t^e)$ y aporta propiedades para:
+
+\begin{itemize}
+  \item Derivar el estado epistémico de la arista.
+  \item Comprobar si la arista está activa en un momento dado.
+  \item Calcular el solapamiento con otras cuádruplas.
+\end{itemize}
+
+El módulo define además tres \emph{tipos enumerados} principales:
+
+\begin{itemize}
+  \item \texttt{RelationCardinality}: las cuatro categorías de cardinalidad de la sección~\ref{sec:bt-cardinality}.
+  \item \texttt{EpistemicState}: los cuatro estados epistémicos derivados de la cuádrupla.
+  \item \texttt{ResolutionStrategy}: las cinco estrategias de resolución de ETCDR.
+\end{itemize}
+
+El uso de \texttt{StrEnum}~\cite{TODO_strenum} garantiza tanto la comprobación estática de tipos como la serialización transparente a JSON y a determinadas propiedades de Neo4j.
+
+Las constantes \texttt{INFINITY}, \texttt{INFINITY\_ISO} y \texttt{MINUS\_INFINITY\_ISO} representan los extremos abiertos de los intervalos temporales mediante un valor explícito ---la fecha máxima representable en formato ISO 8601~\cite{TODO_iso8601}--- en lugar de un valor nulo. Esta decisión, justificada en la sección~\ref{sec:bt-bitemporal}, permite formular las comparaciones temporales como simples desigualdades sobre \texttt{datetime} y cadenas ISO, eliminando la necesidad de ramas condicionales para los intervalos abiertos.
+
+Las clases \texttt{TemporalEntity} y \texttt{TemporalRelationship} extienden los registros estándar de GraphRAG con las columnas adicionales recogidas en la Tabla~\ref{tab:bt-schema}. Cada arista incorpora además un campo \texttt{provenance} de tipo \texttt{ProvenanceRecord}, que registra:
+
+\begin{itemize}
+  \item La fuente y el documento de origen.
+  \item La fecha del documento y la confianza extraída.
+  \item El identificador del bloque de texto del que procede la información.
+\end{itemize}
+
+La clase \texttt{ConflictResult} agrupa la salida del módulo de detección de conflictos y cumple un doble propósito: se emplea tanto en tiempo de ejecución como en el registro persistente de auditoría que se describe en la sección~\ref{sec:impl-maintenance-traceability}.
+
+\section{Etapa 1: Extracción temporal}\label{sec:impl-stage1}
+
+La extracción temporal se implementa mediante \texttt{TemporalGraphExtractor}, una subclase de \texttt{GraphExtractor} (el extractor base de GraphRAG), ubicada en \texttt{temporal\_extraction/temporal\_graph\_extractor.py}. La clase hereda el ciclo de extracción original de GraphRAG en su totalidad, incluyendo los \emph{prompts} de continuación y de bucle (\texttt{TEMPORAL\_CONTINUE\_PROMPT}, \texttt{TEMPORAL\_LOOP\_PROMPT}), que fuerzan al modelo a recorrer el texto en pasadas sucesivas hasta agotar las menciones relevantes. El único elemento sustituido es el \emph{prompt} principal, reemplazado por \texttt{TEMPORAL\_GRAPH\_EXTRACTION\_PROMPT}, definido en \texttt{prompts.py}.
+
+El nuevo \emph{prompt} extiende el comportamiento original ---extracción de entidades y relaciones en formato delimitado por tuplas--- con dos incorporaciones:
+
+\begin{enumerate}[label=(\alph*)]
+  \item La fecha del documento, suministrada como contexto explícito para la extracción.
+  \item Por cada relación, los campos de inicio y fin del hecho descrito, junto con una fecha relativa al período de validez.
+\end{enumerate}
+
+Además, el \emph{prompt} instruye al modelo para que normalice las expresiones temporales relativas, convirtiendo expresiones como ``el año pasado'' o ``hace tres meses'' en fechas absolutas, tomando la fecha del documento como referencia.
+
+La normalización posterior se realiza en \texttt{temporal\_normalization.py}, que aplica expresiones regulares y heurísticas para reconocer fechas absolutas y períodos en la salida del LLM. Sus responsabilidades son:
+
+\begin{itemize}
+  \item Asignar a cada documento las marcas $t_{\text{valid}}$ (fecha del documento, configurable mediante \texttt{default\_valid\_time\_field}) y $t_{\text{tx}}$ (instante en que el documento entra al \emph{pipeline}).
+  \item Detectar documentos \emph{late arrival}, comparando la diferencia $t_{\text{tx}} - t_{\text{valid}}$ con el umbral \texttt{late\_arrival\_threshold\_days}.
+\end{itemize}
+
+Antes de pasar a las etapas siguientes, todas las descripciones se vectorizan mediante \texttt{LLMEmbedding}. Adicionalmente, cada entidad recibe el vector promedio de los bloques de texto en los que aparece, señal que será utilizada posteriormente por el \emph{scorer} de CGER.
+
+Por último, el orquestador inicializa las columnas bitemporales de la Tabla~\ref{tab:bt-schema} siguiendo reglas distintas según el tipo de elemento, tal como resume la Tabla~\ref{tab:impl-temporal-init}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.18\linewidth}p{0.52\linewidth}p{0.20\linewidth}}
+\hline
+\textbf{Elemento} & \textbf{$t_{\text{valid}}$} & \textbf{$t_{\text{tx}}$} \\ \hline
+Entidades & Inferida a partir de los documentos y de los intervalos de las relaciones en las que participan. & Instante de procesamiento. \\
+Relaciones & Proviene del LLM; si el modelo no produjo un intervalo, se usa la fecha del documento como respaldo. & Instante de procesamiento. \\ \hline
+\end{tabular}
+\caption{Reglas de inicialización de las marcas temporales en la Etapa~1.}
+\label{tab:impl-temporal-init}
+\end{table}
+
+\section{Etapas 2 y 2b: Resolución de entidades y de tipos de relación}\label{sec:impl-cger-cgrr}
+
+El módulo \texttt{entity\_resolution/scorers.py} implementa las cinco señales descritas en la sección~\ref{sec:bt-cger}, cada una expuesta como función pura para facilitar su prueba unitaria y su recombinación en distintos \emph{scorers}:
+
+\begin{itemize}
+  \item \textbf{Similitud coseno}: entre los vectores de descripción de las entidades.
+  \item \textbf{BM25}: sobre los nombres canónicos.
+  \item \textbf{Similitud de Jaccard}: a nivel de carácter.
+  \item \textbf{Solapamiento temporal}: entre los intervalos $[\,\texttt{active\_start},\,\texttt{active\_end}\,]$.
+  \item \textbf{Solapamiento de Jaccard}: entre los conjuntos de tipos de relación que cada entidad mantiene con sus vecinos en el grafo.
+\end{itemize}
+
+La función \texttt{compute\_entity\_composite\_score} agrega las cinco señales mediante una combinación lineal con pesos configurables. Antes de calcular el \emph{score}, un filtro previo de compatibilidad de tipos descarta, sin cómputo adicional, los pares manifiestamente incompatibles (por ejemplo, \texttt{PERSON} y \texttt{ORGANIZATION}). El parámetro \texttt{cger\_scorer} permite seleccionar variantes con un subconjunto de señales ---solo \emph{embedding}, o \emph{citation-and-description}---, lo que posibilita evaluar el aporte marginal de cada señal sin modificar el código.
+
+CGER se implementa en \texttt{entity\_resolution/cger.py}, cuya función principal es \texttt{resolve\_entities}. El proceso se estructura en tres fases, siguiendo el diseño expuesto en la sección~\ref{sec:bt-cger}.
+
+\paragraph{Fase 1 --- Prefiltrado por similitud vectorial.}
+Para cada entidad nueva se recuperan los \texttt{cger\_candidate\_top\_k} candidatos más similares mediante el índice vectorial de Neo4j. Si el controlador no está disponible o el grafo está vacío ---situación habitual en el primer procesamiento---, el sistema cae automáticamente a un respaldo en memoria que calcula la similitud coseno con \texttt{numpy} sobre todas las entidades del lote actual.
+
+\paragraph{Fase 2 --- Scoring compuesto con política de tres umbrales.}
+Sobre el subconjunto reducido se evalúa el \emph{score} compuesto aplicando la siguiente lógica:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.45\linewidth}p{0.45\linewidth}}
+\hline
+\textbf{Condición} & \textbf{Acción} \\ \hline
+\emph{score} $>$ \texttt{cger\_merge\_threshold} & Fusión automática \\
+\emph{score} $<$ \texttt{cger\_llm\_threshold\_low} & Separación preservada \\
+Zona de incertidumbre intermedia & Verificación por LLM \\ \hline
+\end{tabular}
+\caption{Política de tres umbrales para la decisión de fusión en CGER.}
+\label{tab:impl-cger-thresholds}
+\end{table}
+
+\paragraph{Fase 3 --- Verificación por LLM.}
+El \emph{prompt} de verificación recibe, para cada par en la zona de incertidumbre, el nombre, el tipo, la descripción, el período activo y el conjunto de relaciones conocidas de ambas entidades. El modelo devuelve una de tres etiquetas (\texttt{SAME}, \texttt{DIFFERENT}, \texttt{UNCERTAIN}) acompañada de una justificación.
+
+Las decisiones de fusión se acumulan en un \texttt{merge\_map} que, una vez completada la pasada, se aplica también a las relaciones, garantizando la consistencia referencial entre nodos y aristas.
+
+CGRR, implementado en \texttt{entity\_resolution/cgrr.py}, aplica el mismo esquema de tres fases que CGER, pero orientado a los tipos de relación. Su \emph{score} combina tres señales complementarias:
+
+\begin{itemize}
+  \item \textbf{BM25}: sobre el nombre del tipo de relación.
+  \item \textbf{Similitud semántica}: sobre la descripción del tipo.
+  \item \textbf{Coincidencia de extremos}: cuando los pares sujeto-objeto se solapan, la evidencia de equivalencia semántica se refuerza.
+\end{itemize}
+
+En la zona de incertidumbre el LLM es consultado siguiendo el mismo mecanismo que en CGER. El mapa de normalización resultante se propaga al campo \texttt{cardinality} de las aristas afectadas, garantizando que tanto la clasificación de cardinalidad como la detección de conflictos operen sobre un vocabulario canónico, libre de variantes léxicas.
+
+\section{Clasificación de cardinalidad}\label{sec:impl-cardinality}
+
+La clasificación se realiza en la función \texttt{\_classify\_cardinalities} del orquestador (\texttt{pipeline.py}).
+
+\paragraph{Clasificación por LLM.}
+Para cada tipo de relación nuevo, el sistema construye un \emph{prompt} a partir de la plantilla \texttt{CARDINALITY\_CLASSIFICATION\_PROMPT}, que incluye:
+
+\begin{itemize}
+  \item Las definiciones de las cuatro categorías.
+  \item Ejemplos representativos extraídos del grafo.
+  \item La instrucción de favorecer, por defecto, la categoría \texttt{NON\_EXCLUSIVE}, salvo que exista una restricción del mundo real claramente establecida.
+\end{itemize}
+
+La salida es exactamente una etiqueta del conjunto $\{\texttt{SUBJECT\_EXCLUSIVE},$ $\texttt{OBJECT\_EXCLUSIVE},$ $\texttt{BOTH\_EXCLUSIVE},$ $\texttt{NON\_EXCLUSIVE}\}$.
+
+\paragraph{Jerarquía de resolución.}
+La consulta \texttt{BTGraphRAGConfig.get\_cardinality} resuelve la cardinalidad de una relación aplicando una jerarquía de tres niveles, en orden de prioridad:
+
+\begin{enumerate}
+  \item \textbf{Sobreescrituras manuales}: campo \texttt{relation\_cardinality\_overrides} del archivo de configuración.
+  \item \textbf{Mapa por defecto}: clasificaciones previas almacenadas.
+  \item \textbf{Valor de reserva}: \texttt{NON\_EXCLUSIVE}, si no existe coincidencia en los niveles anteriores.
+\end{enumerate}
+
+Esta jerarquía permite corregir clasificaciones erróneas sin modificar el código: basta con añadir la entrada correspondiente al archivo de configuración.
+
+\section{Etapa 3: ETCDR}\label{sec:impl-etcdr}
+
+ETCDR es el módulo de mayor extensión del subpaquete y constituye la implementación del Algoritmo~\ref{alg:etcdr} (sección~\ref{sec:bt-etcdr}). Su código, ubicado en \texttt{conflict\_detection/etcdr.py}, se organiza en tres bloques funcionales: detección, decisión y aplicación. Las secciones siguientes describen cada bloque en detalle.
+
+% TODO: figura fig:impl-etcdr-blocks que muestre los tres bloques funcionales de ETCDR (detección, decisión, aplicación) como un pipeline horizontal: bloque de detección con las seis funciones Cypher (subject/object/same-pair, con y sin restricción de tipo) y sus equivalentes intra-batch; bloque de decisión con la ramificación entre \texttt{\_llm\_route} y \texttt{\_heuristic\_route}; bloque de aplicación con las cinco funciones \texttt{apply\_*}.
+\subsection{Detección: consultas Cypher}
+
+La detección bidireccional dirigida por cardinalidad se realiza mediante seis funciones \emph{Cypher} parametrizadas, organizadas en dos grupos según el alcance de la búsqueda.
+
+\paragraph{Consultas restringidas por tipo de relación.}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.42\linewidth}p{0.48\linewidth}}
+\hline
+\textbf{Función} & \textbf{Búsqueda} \\ \hline
+\texttt{run\_subject\_side\_query} & $(s, r, *)$ --- fijo el sujeto, libre el objeto \\
+\texttt{run\_object\_side\_query} & $(*, r, o)$ --- libre el sujeto, fijo el objeto \\
+\texttt{run\_same\_pair\_query} & $(s, r, o)$ --- fijos ambos extremos \\ \hline
+\end{tabular}
+\caption{Consultas Cypher con restricción al mismo tipo de relación que la arista candidata.}
+\label{tab:impl-etcdr-q-typed}
+\end{table}
+
+\paragraph{Consultas sin restricción de tipo.}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.42\linewidth}p{0.48\linewidth}}
+\hline
+\textbf{Función} & \textbf{Búsqueda} \\ \hline
+\texttt{run\_subject\_any\_type\_query} & $(s, *, *)$ --- cualquier tipo, fijo el sujeto \\
+\texttt{run\_object\_any\_type\_query} & $(*, *, o)$ --- cualquier tipo, fijo el objeto \\
+\texttt{run\_source\_target\_query} & $(s, *, o)$ --- cualquier tipo, fijos ambos extremos \\ \hline
+\end{tabular}
+\caption{Consultas Cypher sin restricción de tipo, que habilitan la detección de conflictos cruzados entre relaciones consolidadas por CGRR.}
+\label{tab:impl-etcdr-q-anytype}
+\end{table}
+
+Todas las consultas filtran además por el predicado de actividad temporal, descartando aristas históricas o ya retractadas. La selección de qué consultas ejecutar para cada arista candidata depende de la cardinalidad del tipo de relación, siguiendo la lógica descrita en la sección~\ref{sec:bt-cardinality}.
+
+Las consultas se ejecutan sobre dos ámbitos complementarios:
+
+\begin{itemize}
+  \item \textbf{Neo4j}: sobre el grafo persistido en la base de datos.
+  \item \textbf{Lote de aristas en memoria}: mediante un conjunto simétrico de funciones (\texttt{find\_intra\_batch\_subject\_conflicts}, \texttt{find\_intra\_batch\_object\_conflicts}, etc.).
+\end{itemize}
+
+Este doble alcance es necesario porque dos aristas extraídas en el mismo lote pueden entrar en conflicto entre sí antes de haber sido incorporadas al grafo, escenario que las consultas a Neo4j por sí solas no detectarían.
+
+\subsection{Decision Router}
+
+La función \texttt{route\_conflict} actúa como punto de entrada del \emph{Decision Router}. Recibe la arista candidata, las aristas conflictivas detectadas y la cardinalidad del tipo de relación, y devuelve una tupla \texttt{(estrategia, confianza, justificación)}. Internamente, delega en una de estas dos rutas:
+
+\begin{itemize}
+  \item \texttt{\_llm\_route} (\emph{ruta principal}): construye un \emph{prompt} con la información de cada arista (cuádrupla, descripción, procedencia y confianza), consulta al LLM e interpreta la salida como una de las cinco estrategias, acompañada de un valor de confianza en $[0, 1]$ y una justificación textual.
+  \item \texttt{\_heuristic\_route} (\emph{ruta de respaldo}): se activa cuando el LLM no está disponible o su salida no es interpretable. Aplica una política conservadora basada en el solapamiento temporal y en la procedencia para emitir una decisión por defecto.
+\end{itemize}
+
+Adicionalmente, cuando el valor de confianza emitido por el LLM cae por debajo de \texttt{etcdr\_confidence\_threshold}, el sistema degrada automáticamente la decisión a \texttt{DISAGREEMENT}, en concordancia con la política descrita en la sección~\ref{sec:bt-etcdr}.
+
+\subsection{Aplicación de las cinco estrategias}
+
+Las cinco estrategias de resolución se implementan según el esquema de la Tabla~\ref{tab:impl-etcdr-strategies}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.28\linewidth}p{0.62\linewidth}}
+\hline
+\textbf{Estrategia} & \textbf{Implementación} \\ \hline
+\texttt{EVOLUTION} & \texttt{apply\_evolution}: modifica la cuádrupla según la Tabla~\ref{tab:etcdr-strategies}. \\
+\texttt{CORRECTION} & \texttt{apply\_correction}: modifica la cuádrupla según la Tabla~\ref{tab:etcdr-strategies}. \\
+\texttt{CORROBORATION} & \texttt{apply\_corroboration}: modifica la cuádrupla según la Tabla~\ref{tab:etcdr-strategies}. \\
+\texttt{DISAGREEMENT} & Marca la arista con \texttt{status = disputed} (sin función específica). \\
+\texttt{NEW\_EDGE} & Inserción ordinaria de la arista candidata (sin función específica). \\ \hline
+\end{tabular}
+\caption{Implementación de las cinco estrategias de resolución de ETCDR.}
+\label{tab:impl-etcdr-strategies}
+\end{table}
+
+Las versiones intra-lote replican la misma lógica sobre la estructura de datos en memoria, garantizando que la resolución sea coherente independientemente de si la arista existente reside ya en Neo4j o aún está en el lote.
+
+\paragraph{Orquestación del ciclo completo.}
+La función \texttt{detect\_and\_resolve} coordina el proceso completo para cada arista candidata, siguiendo estos pasos en orden:
+
+\begin{enumerate}
+  \item Determinación de la cardinalidad del tipo de relación.
+  \item Ejecución de las consultas de detección seleccionadas.
+  \item Agregación de los resultados intra-lote y de los persistidos.
+  \item Invocación del \emph{Decision Router} si se detectaron conflictos.
+  \item Aplicación de la estrategia resultante.
+  \item Generación del \texttt{ConflictResult} correspondiente.
+\end{enumerate}
+
+\section{Etapa 4: Almacén dual}\label{sec:impl-dual-store}
+
+La representación tabular se persiste sin modificaciones a través de la cadena de \emph{workflows} de GraphRAG. Una vez que el orquestador completa las etapas 1 a 3, los \texttt{DataFrame}s enriquecidos se devuelven al \emph{workflow} \texttt{bt\_extract\_graph}, que escribe los \emph{artifacts} Parquet correspondientes (\texttt{entities.parquet}, \texttt{relationships.parquet} y demás artefactos del esquema estándar). El esquema resultante es el de GraphRAG ampliado con las columnas de la Tabla~\ref{tab:bt-schema}. Los \emph{workflows} posteriores y las búsquedas local y global del sistema base consumen estos archivos sin modificación.
+
+La representación en grafo se gestiona desde \texttt{neo4j\_store.py}, que expone las primitivas de acceso a la base de datos. Sus responsabilidades se organizan en cuatro áreas:
+
+\begin{itemize}
+  \item \textbf{Inicialización}: creación del controlador asíncrono y configuración del esquema (índices ordinarios sobre identificadores y \emph{labels}, e índices vectoriales para los prefiltrados de CGER y CGRR).
+  \item \textbf{Escritura}: inserción de nodos y aristas en variantes individual y por lotes.
+  \item \textbf{Lectura}: consultas para los tres casos de uso del sistema:
+    \begin{itemize}
+      \item Detección de conflictos.
+      \item Inspección de la evolución de una entidad.
+      \item Reconstrucciones \emph{as-of}.
+    \end{itemize}
+  \item \textbf{Modificaciones puntuales}: operaciones sobre la cuádrupla que requieren las estrategias \texttt{EVOLUTION} y \texttt{CORRECTION} (cierre del tiempo válido y retractación).
+\end{itemize}
+
+La sincronización entre las dos representaciones se realiza al final de la etapa 3, en la función \texttt{\_write\_to\_neo4j} del orquestador, que recibe los \texttt{DataFrame}s ya resueltos y reconciliados y los traduce a operaciones \emph{Cypher} mediante las primitivas anteriores. La operación es idempotente: las aristas y nodos ya presentes se actualizan en lugar de duplicarse, lo que permite reejecutar el \emph{pipeline} sobre el mismo lote sin corromper el estado del grafo.
+
+\section{Etapas 5 y 6: reportes de comunidad temporales y actualización incremental}\label{sec:impl-community}
+
+\paragraph{Generación de reportes temporales.}
+El \emph{workflow} \texttt{bt\_create\_community\_reports.py} sustituye al \emph{workflow} estándar de GraphRAG, manteniendo la misma interfaz pero invocando internamente al módulo \texttt{community\_update.py}. Para cada nivel de la jerarquía y cada comunidad, el \emph{prompt} estándar se reemplaza por \texttt{TEMPORAL\_COMMUNITY\_REPORT\_PROMPT}, que extiende la estructura habitual de los reportes de GraphRAG con una sección adicional de \emph{evolución temporal}, tal como resume la Tabla~\ref{tab:impl-community-sections}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.28\linewidth}p{0.62\linewidth}}
+\hline
+\textbf{Sección} & \textbf{Contenido} \\ \hline
+Título & Sin cambios respecto al formato estándar de GraphRAG. \\
+Resumen & Sin cambios respecto al formato estándar de GraphRAG. \\
+Hallazgos & Sin cambios respecto al formato estándar de GraphRAG. \\
+Valoración & Sin cambios respecto al formato estándar de GraphRAG. \\
+Evolución temporal & Apariciones y desapariciones de entidades, transiciones de estado en las relaciones y hechos en disputa. \\ \hline
+\end{tabular}
+\caption{Secciones del reporte de comunidad en BT-GRAPHRAG. La última sección es la única adición respecto al formato estándar de GraphRAG.}
+\label{tab:impl-community-sections}
+\end{table}
+
+La salida conserva el formato esperado por el módulo de búsqueda global, que opera sin modificación.
+
+\paragraph{Actualización incremental.}
+La actualización incremental sigue el patrón propuesto por TG-RAG~\cite{tg_rag2025} y se realiza en tres pasos:
+
+\begin{enumerate}
+  \item \textbf{Identificación de entidades modificadas}: la función \texttt{get\_modified\_entity\_titles} devuelve el conjunto de entidades cuyo estado cambió en la última pasada (insertadas, fusionadas, retractadas o con cardinalidad modificada).
+  \item \textbf{Expansión del vecindario}: la función \texttt{get\_k\_hop\_neighbors} expande el conjunto anterior hasta una distancia $k$ configurable (parámetro \texttt{community\_update\_k\_hop}), dado que las modificaciones pueden propagar su efecto a vecinos próximos.
+  \item \textbf{Marcado de comunidades obsoletas}: la función \texttt{identify\_stale\_communities} marca como obsoletas las comunidades cuya intersección con el vecindario expandido es no vacía.
+\end{enumerate}
+
+Finalmente, la función \texttt{run\_incremental\_community\_update} reejecuta la partición de Leiden y la generación de reportes únicamente sobre las comunidades marcadas como obsoletas. Los reportes nuevos se fusionan con los previamente válidos, respetando los \emph{artifacts} Parquet del sistema base.
+
+\section{Etapa 7: Consulta temporal}\label{sec:impl-query}
+
+% TODO: figura fig:impl-temporal-query-flow que diagrame el flujo de \texttt{temporal\_search}: consulta del usuario $\to$ \texttt{decompose\_temporal\_query} (etiquetado POINT\_IN\_TIME/RANGE/EVOLUTION/COMPARISON) $\to$ ejecución paralela de sub-consultas con \texttt{local\_temporal\_search} y atenuación por \texttt{temporal\_decay\_score} $\to$ \texttt{dispute\_resolution\_search} para aristas \texttt{disputed} $\to$ \texttt{TEMPORAL\_ANSWER\_SYNTHESIS\_PROMPT} $\to$ respuesta final.
+El módulo \texttt{temporal\_query.py} implementa las funcionalidades de consulta descritas en la sección~\ref{sec:bt-integration}. Su función de alto nivel, \texttt{temporal\_search}, actúa como punto de entrada y coordina las subfunciones siguientes.
+
+\paragraph{Descomposición de la consulta.}
+La función \texttt{decompose\_temporal\_query} aplica el \emph{prompt} \texttt{TEMPORAL\_QUERY\_DECOMPOSITION\_PROMPT} para identificar las restricciones temporales de la consulta original y producir un conjunto de sub-consultas, cada una etiquetada con uno de los siguientes tipos:
+
+\begin{itemize}
+  \item \texttt{POINT\_IN\_TIME}
+  \item \texttt{RANGE}
+  \item \texttt{EVOLUTION}
+  \item \texttt{COMPARISON}
+\end{itemize}
+
+\paragraph{Búsqueda local temporal.}
+La función \texttt{local\_temporal\_search} reutiliza la búsqueda local de GraphRAG y reescala los \emph{scores} de relevancia mediante \texttt{temporal\_decay\_score}, que penaliza las aristas cuyo período de validez se aleja del instante consultado. La penalización es una atenuación exponencial controlada por el parámetro \texttt{temporal\_decay\_alpha}: a mayor distancia temporal entre la arista y el instante consultado, menor el peso final del \emph{score}.
+
+\paragraph{Resolución de disputas.}
+La función \texttt{dispute\_resolution\_search} aplica el \emph{prompt} \texttt{DISPUTE\_RESOLUTION\_PROMPT} a las aristas en estado \texttt{disputed} recuperadas durante la consulta. La resolución pondera tres factores:
+
+\begin{itemize}
+  \item La fecha de cada versión de la arista.
+  \item La confianza de la fuente.
+  \item El valor de \texttt{support\_count}.
+\end{itemize}
+
+El resultado es una respuesta razonada sobre el conflicto.
+
+\paragraph{Síntesis final.}
+Las respuestas parciales de cada sub-consulta se integran mediante el \emph{prompt} \texttt{TEMPORAL\_ANSWER\_SYNTHESIS\_PROMPT}, que produce la respuesta definitiva.
+
+\section{Mantenimiento del conocimiento y trazabilidad}\label{sec:impl-maintenance-traceability}
+
+El módulo \texttt{knowledge\_maintenance.py} implementa las operaciones de mantenimiento del grafo que el modelo bitemporal habilita de forma natural. Las tres operaciones principales son:
+
+\begin{itemize}
+  \item \texttt{gdpr\_remove\_entity} ---\emph{eliminación con preservación de auditoría}: la entidad y sus aristas asociadas se retiran del grafo activo, pero los registros de resolución auditables se enmascaran (se sustituyen los identificadores personales por valores no reidentificables) en lugar de borrarse. De este modo se preserva la trazabilidad histórica sin exponer información identificable.
+  \item \texttt{retract\_source} ---\emph{retractación de fuente}: cierra el tiempo de transacción de todas las aristas atribuibles a una fuente concreta, reproduciendo el efecto de una retractación selectiva. Los hechos respaldados también por otras fuentes permanecen activos.
+  \item \texttt{archive\_old\_facts} ---\emph{archivado de hechos antiguos}: marca como archivadas las aristas cuyo \texttt{t\_valid\_end} supera un umbral de antigüedad, reduciendo la carga sobre las consultas activas sin perder la información histórica.
+\end{itemize}
+
+La trazabilidad del sistema se sustenta en tres mecanismos complementarios.
+
+\paragraph{1. Registro de decisiones de ETCDR.}
+Cada decisión adoptada por ETCDR se serializa mediante \texttt{\_log\_resolution} y \texttt{flush\_resolution\_log}. Cada entrada del registro contiene:
+
+\begin{itemize}
+  \item La arista candidata y las aristas conflictivas detectadas.
+  \item El tipo de conflicto y la cardinalidad consultada.
+  \item La estrategia seleccionada y el valor de confianza emitido por el \emph{Decision Router}.
+  \item La justificación textual del modelo y un \emph{timestamp} de la decisión.
+\end{itemize}
+
+Este registro permite reconstruir el razonamiento que llevó a marcar una arista como \texttt{disputed} o a retraer otra, y sustenta los experimentos descritos en el capítulo siguiente.
+
+\paragraph{2. Registro de estado por etapa.}
+Cuando \texttt{debug\_output\_dir} está configurado, el orquestador escribe a disco el estado de las tablas de entidades y relaciones tras cada etapa, junto con los \emph{prompts} y respuestas de las llamadas al LLM. Esto permite examinar el comportamiento de cada etapa de forma aislada.
+
+\paragraph{3. Verificación de consistencia.}
+Al finalizar el \emph{pipeline}, se ejecuta una verificación que comprueba los siguientes invariantes:
+
+\begin{itemize}
+  \item Que toda arista disponga de las cuatro marcas temporales.
+  \item Que se cumpla el invariante $t_v^s \leq t_v^e$.
+  \item Que ninguna arista persistida quede en estado \texttt{disputed} sin un registro de conflicto correspondiente.
+\end{itemize}
+
+Las violaciones se reportan por consola con su recuento, lo que permite detectar regresiones ante cualquier modificación posterior del \emph{pipeline}.
+
+El subdirectorio \texttt{evaluation/} organiza las pruebas por componente e incluye tres niveles de evaluación:
+
+\begin{itemize}
+  \item \textbf{Pruebas unitarias}: verificación aislada de cada componente.
+  \item \textbf{Evaluación sobre datos reales}: validación del comportamiento en condiciones de producción.
+  \item \textbf{Búsqueda de hiperparámetros}: optimización de los parámetros de CGER, CGRR, ETCDR e ICUS.
+\end{itemize}
+
+Adicionalmente, el \emph{script} \texttt{evaluation/inspect\_graph.py} ofrece una vista en consola del grafo persistido en Neo4j, útil tanto para depuración como para inspección manual durante la evaluación.
+
+\section{Conclusiones del capítulo}\label{sec:impl-conclusions}
+
+Este capítulo ha documentado la realización computacional de BT-GRAPHRAG, traduciendo cada componente del diseño conceptual del Capítulo~\ref{chapter:proposal} en módulos concretos del subpaquete \texttt{graphrag.bt\_graphrag}, tal como resume la Tabla~\ref{tab:impl-design-to-module}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{0.45\linewidth}p{0.45\linewidth}}
+\hline
+\textbf{Componente del diseño} & \textbf{Módulo de implementación} \\ \hline
+Modelo bitemporal & \texttt{models/temporal\_types.py} \\
+Cinco señales de \emph{scoring} & \texttt{entity\_resolution/scorers.py} \\
+Resolución contextual de entidades & \texttt{entity\_resolution/cger.py} \\
+Resolución de tipos de relación & \texttt{entity\_resolution/cgrr.py} \\
+Detección bidireccional, \emph{Decision Router} y cinco estrategias & \texttt{conflict\_detection/etcdr.py} \\
+Almacén bitemporal & \texttt{neo4j\_store.py} \\
+Actualización incremental & \texttt{community\_update.py} \\
+Consulta temporal & \texttt{temporal\_query.py} \\ \hline
+\end{tabular}
+\caption{Correspondencia entre los componentes del diseño y los módulos de implementación.}
+\label{tab:impl-design-to-module}
+\end{table}
+
+Tres aportaciones de ingeniería merecen destacarse. En primer lugar, la \emph{integración no invasiva con GraphRAG}: los dos \emph{workflows} adicionales sustituyen únicamente los de extracción y de generación de reportes, sin alterar el resto del \emph{pipeline}, lo que confirma en términos operativos el principio expuesto en la sección~\ref{sec:bt-overview}. En segundo lugar, la \emph{arquitectura modular}: la separación por componentes y la exposición de los indicadores de habilitación, los pesos del \emph{scoring} y los umbrales como parámetros de configuración hacen posible modificar, combinar o deshabilitar componentes sin tocar el código. En tercer lugar, la \emph{trazabilidad integrada}: el registro de decisiones de ETCDR, el registro de estado por etapa y la verificación de consistencia final proporcionan una base sólida para los estudios de ablación y la búsqueda de hiperparámetros que se abordan en el siguiente capítulo del presente documento.
