@@ -1,0 +1,19 @@
+{
+  "_description": "Manual ground truth for CGER. Each cluster lists the alias titles the extractor is likely to produce (UPPERCASE, as the extractor emits) that should all collapse to the same canonical entity. The 'canonical' field is the title CGER's merge_map should resolve every alias to. Aliases that appear only once in the extracted output (no duplicates) should NOT be listed here — they are not entity-resolution targets.",
+  "_format": {
+    "clusters": [
+      {
+        "canonical": "<UPPERCASE_CANONICAL_TITLE>",
+        "type": "<entity_type, e.g. person|organization|geo>",
+        "aliases": ["<UPPERCASE_ALIAS_1>", "<UPPERCASE_ALIAS_2>", "..."]
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "canonical": "GEOFFREY HINTON",
+      "type": "person",
+      "aliases": ["GEOFFREY HINTON", "PROF. HINTON", "HINTON"]
+    }
+  ]
+}
