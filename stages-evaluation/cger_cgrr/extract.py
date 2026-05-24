@@ -76,13 +76,7 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 MAX_GLEANINGS = 1
 
-ENTITY_TYPES = [
-    "person",
-    "organization",
-    "geo",
-    "event",
-    "concept",
-]
+ENTITY_TYPES = ["organization","person","geo","event","other"]
 
 DEFAULT_CONCURRENCY = 10
 
