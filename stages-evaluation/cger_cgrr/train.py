@@ -105,12 +105,13 @@ NEO4J_VECTOR_DIMENSIONS = 3072
 
 THRESHOLD_MIN = 0.20
 THRESHOLD_MAX = 0.95
-INITIAL_THRESHOLD = 0.75   # SA start point
-INITIAL_TEMPERATURE = 0.10  # in units of F1 (objective is in [0, 1])
+INITIAL_THRESHOLD = 0.4  # SA start point
+INITIAL_TEMPERATURE = 0.20  # in units of F1 (objective is in [0, 1])
 COOLING_ALPHA = 0.85        # T <- T * alpha per accepted/rejected step
 NEIGHBOR_RADIUS_INIT = 0.15  # max neighborhood jump at T = T_0
 NEIGHBOR_RADIUS_MIN = 0.01   # neighborhood never shrinks below this
 ROUND_TO = 3                 # cache key precision for F1 memoization
+SA_ITERS = 20                # SA iterations per stage; overridable via --iters
 
 # Weight of the LLM-usage penalty in the SA objective:
 #   score = F1 - LLM_PENALTY_LAMBDA * (llm_calls / max_llm_calls)
@@ -368,13 +369,8 @@ async def _simulated_annealing(
         cache[key] = scores
         return scores
 
-    print(f"\n{'=' * 70}")
-    print(f"  [{label}] Simulated annealing  "
-          f"iters={iters}  T0={INITIAL_TEMPERATURE}  alpha={COOLING_ALPHA}")
-    print(f"  Bounds=[{THRESHOLD_MIN}, {THRESHOLD_MAX}]  "
-          f"grid_points={n_grid_points}")
-    print(f"  Objective: F1 - {lambda_llm} * (llm_calls / {max_llm_calls})")
-    print(f"{'=' * 70}")
+    print(f"\n[{label}] SA iters={iters} bounds=[{THRESHOLD_MIN},{THRESHOLD_MAX}] "
+          f"lambda={lambda_llm} max_llm={max_llm_calls}")
 
     # --- Coarse grid pre-scan -------------------------------------------
     # Evaluate evenly-spaced thresholds across the bounds, then start SA
@@ -389,7 +385,6 @@ async def _simulated_annealing(
         grid_points.append(INITIAL_THRESHOLD)
     grid_points = sorted(set(round(g, ROUND_TO) for g in grid_points))
 
-    print(f"  [{label}] Grid pre-scan ({len(grid_points)} points):")
     trace: list[dict] = []
     grid_results: list[dict] = []
     grid_best: tuple[float, float, float, float, int, float] | None = None
@@ -406,13 +401,12 @@ async def _simulated_annealing(
         }
         trace.append(entry)
         grid_results.append(entry)
-        is_grid_best = grid_best is None or gscore > grid_best[5] + 1e-9
-        marker = "  <- grid best" if is_grid_best else ""
-        if is_grid_best:
+        if grid_best is None or gscore > grid_best[5] + 1e-9:
             grid_best = (gtheta, gp, gr, gf1, gllm, gscore)
-        print(f"    grid {gi}  theta={gtheta:.3f}  P={gp:.3f} R={gr:.3f} "
-              f"F1={gf1:.3f}  llm={gllm}/{max_llm_calls} score={gscore:.3f}"
-              f"{marker}")
+    assert grid_best is not None
+    print(f"  grid best: theta={grid_best[0]:.3f} F1={grid_best[3]:.3f} "
+          f"llm={grid_best[4]}/{max_llm_calls} score={grid_best[5]:.3f} "
+          f"({len(grid_points)} pts)")
 
     assert grid_best is not None
     current = grid_best[0]
@@ -429,10 +423,8 @@ async def _simulated_annealing(
         "accepted": True, "temperature": INITIAL_TEMPERATURE,
         "is_best_so_far": True,
     })
-    print(f"\n  [{label}] SA start (seeded from grid):")
-    print(f"  iter   0  theta={current:.3f}  P={cur_p:.3f} R={cur_r:.3f} "
-          f"F1={cur_f1:.3f} llm={cur_llm}/{max_llm_calls} "
-          f"score={cur_score:.3f}   <- start")
+    print(f"  SA start: theta={current:.3f} F1={cur_f1:.3f} "
+          f"llm={cur_llm}/{max_llm_calls} score={cur_score:.3f}")
 
     temperature = INITIAL_TEMPERATURE
     for step in range(1, iters + 1):
@@ -470,12 +462,11 @@ async def _simulated_annealing(
             "is_best_so_far": is_new_best,
         })
 
-        marker = " ** NEW BEST" if is_new_best else ""
-        print(f"  iter {step:3d}  theta={proposal:.3f}  "
-              f"P={prop_p:.3f} R={prop_r:.3f} F1={prop_f1:.3f} "
-              f"llm={prop_llm}/{max_llm_calls} score={prop_score:.3f}  "
-              f"T={temperature:.4f}  r={radius:.3f}  "
-              f"{'accept' if accept else 'reject'} ({reason}){marker}")
+        if is_new_best or step % 10 == 0 or step == iters:
+            marker = " ** NEW BEST" if is_new_best else ""
+            print(f"  iter {step:3d}  theta={proposal:.3f} F1={prop_f1:.3f} "
+                  f"llm={prop_llm}/{max_llm_calls} score={prop_score:.3f} "
+                  f"T={temperature:.4f}{marker}")
 
         if accept:
             current = proposal
@@ -554,15 +545,8 @@ async def main(stages: list[str], iters: int, seed: int,
     print(f"[LOAD] train ground truth: {len(truth_entity_pairs)} entity pair(s), "
           f"{len(truth_rel_pairs)} relation-type pair(s)")
 
-    print(f"\n[CONFIG] (fixed across search)")
-    print(f"  CGER_CANDIDATE_TOP_K       = {CGER_CANDIDATE_TOP_K}")
-    print(f"  CGER_PHASE_B_TOP_K         = {CGER_PHASE_B_TOP_K}")
-    print(f"  CGRR_CANDIDATE_TOP_K       = {CGRR_CANDIDATE_TOP_K}")
-    print(f"  NEO4J_VECTOR_DIMENSIONS    = {NEO4J_VECTOR_DIMENSIONS}")
-    print(f"  COMPLETION_MODEL           = {COMPLETION_MODEL}")
-    print(f"  LLM_PENALTY_LAMBDA         = {lambda_llm}")
-    print(f"  GRID_SCAN_POINTS           = {grid_points}")
-    print(f"  stages={stages}  iters={iters}  seed={seed}")
+    print(f"[CONFIG] stages={stages} iters={iters} seed={seed} "
+          f"lambda={lambda_llm} grid={grid_points} model={COMPLETION_MODEL}")
 
     # Loose upper bounds on Phase-B LLM verdicts per evaluation. CGER
     # invokes the LLM at most once per entity; CGRR at most once per
@@ -670,8 +654,9 @@ def _parse_args() -> argparse.Namespace:
         description="Tune CGER/CGRR cosine thresholds on the train split via simulated annealing.")
     p.add_argument("--stages", default="cger,cgrr",
                    help="Comma-separated stages to tune. Default: cger,cgrr")
-    p.add_argument("--iters", type=int, default=10,
-                   help="Simulated-annealing iterations per stage. Default: 10")
+    p.add_argument("--iters", type=int, default=SA_ITERS,
+                   help=f"Simulated-annealing iterations per stage. "
+                        f"Default: {SA_ITERS}")
     p.add_argument("--seed", type=int, default=42,
                    help="RNG seed for reproducibility. Default: 42")
     p.add_argument("--lambda-llm", type=float, default=LLM_PENALTY_LAMBDA,
