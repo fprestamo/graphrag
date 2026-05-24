@@ -1,9 +1,0 @@
-University Affiliations of AI Researchers
-
-Geoffrey Hinton was a professor at the University of Toronto for many years before joining Google. He is widely regarded as the originator of modern deep learning. Hinton continues to be affiliated with the U. of Toronto as professor emeritus.
-
-Yoshua Bengio is a full professor at Université de Montréal and the scientific director of the Montreal Institute for Learning Algorithms (MILA). Bengio earned the 2018 Turing Award alongside Hinton and LeCun for their contributions to deep learning.
-
-Andrew Ng co-founded Google Brain in 2011 and later joined Baidu as chief scientist in 2014. Ng departed from Baidu in 2017 and founded the company Landing AI. A. Ng is also an adjunct professor at Stanford University.
-
-Fei-Fei Li is a professor of computer science at Stanford. Prof. Li served as Chief Scientist of AI/ML at Google Cloud from 2017 to 2018. She co-founded the Stanford Institute for Human-Centered AI (HAI) in 2019.

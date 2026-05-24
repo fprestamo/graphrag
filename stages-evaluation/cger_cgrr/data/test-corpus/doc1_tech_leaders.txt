@@ -1,9 +1,0 @@
-Tech Leadership in 2024
-
-Geoffrey Hinton, often called the "Godfather of Deep Learning," was a long-time researcher at Google. In May 2023, Prof. Hinton resigned from Google in order to speak freely about the risks of AI. Hinton previously held a faculty position at the University of Toronto.
-
-Yann LeCun is the Chief AI Scientist at Meta, the company that owns Facebook, Instagram, and WhatsApp. LeCun has led AI research at Meta since 2013, when the company was still known as Facebook. Y. LeCun is also a professor at New York University (NYU).
-
-Sundar Pichai is the CEO of Alphabet, the parent company of Google. He was appointed CEO of Google in 2015 and additionally became chief executive of Alphabet in 2019. Mr. Pichai joined Google in 2004 and previously oversaw Chrome and Android.
-
-Demis Hassabis leads Google DeepMind, a research lab that resulted from the 2023 merger of Google Brain and DeepMind. Hassabis co-founded DeepMind in 2010, and the lab was acquired by Google in 2014.
