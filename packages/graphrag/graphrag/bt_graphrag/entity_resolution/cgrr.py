@@ -47,7 +47,7 @@ from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 
 if TYPE_CHECKING:
     from graphrag_llm.completion import LLMCompletion
-    from neo4j import AsyncSession
+    from neo4j import AsyncDriver, AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def _top_k_by_embedding(
     existing_types: list[dict[str, Any]],
     top_k: int,
 ) -> list[dict[str, Any]]:
-    """Return the top-K existing relation types by description-embedding cosine.
+    """Return the top-K existing relation types by relation-type-embedding cosine.
 
     Falls back to all existing types if the query embedding is missing.
     """
@@ -82,7 +82,7 @@ def _top_k_by_embedding(
 
     scored = []
     for et in existing_types:
-        emb = et.get("description_embedding")
+        emb = et.get("relation_type_embedding")
         if emb is not None:
             sim = _cosine_similarity(query_embedding, emb)
         else:
@@ -97,9 +97,22 @@ def _top_k_by_embedding(
 # LLM verification
 # ---------------------------------------------------------------------------
 
-CGRR_VERIFICATION_PROMPT = """You are a knowledge-graph expert. Two candidate relationship types are presented below, each with a short description and a sample endpoint pair. Decide whether they denote the **same predicate**.
+CGRR_VERIFICATION_PROMPT = """You are a knowledge-graph expert. Two candidate relationship types are presented below, each with a short description and one sample endpoint pair. Decide whether they denote the **same predicate**.
 
-Your default answer is DIFFERENT. Only answer SAME when both strings clearly describe the same kind of relationship between the same kinds of entities (e.g. "IS_CEO_OF" and "LEADS" when used between a person and a company; "WORKS_FOR" and "EMPLOYED_BY"; "BORN_IN" and "PLACE_OF_BIRTH"). When the predicates differ in scope, direction, or the kind of entities they connect, answer DIFFERENT.
+Focus on the *predicate* — what kind of relationship the label expresses — NOT on the specific entities mentioned in the description or example. Each description and example is just one instance of the relation; different instances naturally mention different people, companies, places or dates. Two predicates are SAME when, applied to any pair of entities, they would assert the same kind of fact, even if the example shown happens to involve unrelated entities.
+
+Answer SAME when both labels denote the same predicate. Examples of SAME:
+- "IS_CEO_OF" / "LEADS" / "IS_PRESIDENT_OF" — all assert the top-executive-of relation between a person and an organisation, regardless of which specific person or company appears in either example.
+- "WORKS_FOR" / "EMPLOYED_AT" / "EMPLOYED_BY" — all assert the employment relation between a person and an employer.
+- "BORN_IN" / "PLACE_OF_BIRTH" — both assert the birthplace relation between a person and a location.
+
+Answer DIFFERENT when the predicates differ in meaning, direction, or the kind of fact they assert. Examples of DIFFERENT:
+- "IS_CEO_OF" vs "FOUNDED" — both involve a person and a company, but one asserts leadership and the other asserts creation.
+- "ACQUIRED" vs "MERGED_WITH" — both involve two companies, but acquisition is directional whereas merger is symmetric.
+- "SUCCEEDED_BY" vs "IS_PRESIDENT_OF" — succession links two presidents whereas IS_PRESIDENT_OF links a president to an organisation.
+- "OWNS" vs "SUBSIDIARY_OF" — opposite directions of ownership.
+
+Do NOT answer DIFFERENT just because the two examples mention unrelated entities or domains. The examples are illustrative; the predicate is what matters.
 
 Relationship A:
 - Relation Type: {type_a}
@@ -250,6 +263,8 @@ async def resolve_relationships(
     session: "AsyncSession",
     model: "LLMCompletion | None" = None,
     relationship_scorer: RelationshipScorer = description_cosine_relationship_scorer,
+    driver: "AsyncDriver | None" = None,
+    phase_b_top_k: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, str], list[dict[str, Any]]]:
     """Resolve candidate relationship types against existing graph predicates.
 
@@ -282,18 +297,12 @@ async def resolve_relationships(
     exact_match_skip = 0
 
     # --- Phase A: Resolve against existing Neo4j relation types ---
-    # Collect all entity titles from the incoming batch so we only
-    # compare against existing relationships that share at least one entity.
-    batch_entities = list(set(
-        relationships_df["source"].dropna().unique().tolist()
-        + relationships_df["target"].dropna().unique().tolist()
-    ))
-
+    # Synonym detection compares the predicate labels themselves, not the
+    # specific edges, so we fetch every active relation type from the graph
+    # rather than restricting to types that share an entity with this batch.
     from graphrag.bt_graphrag.neo4j_store import get_existing_relation_types_with_embeddings
 
-    existing_types = await get_existing_relation_types_with_embeddings(
-        session, entity_titles=batch_entities,
-    )
+    existing_types = await get_existing_relation_types_with_embeddings(session)
 
     candidate_types = relationships_df["relation_type"].unique().tolist()
     cand_type_counts = relationships_df["relation_type"].value_counts().to_dict()
@@ -344,89 +353,40 @@ async def resolve_relationships(
             cand_edge_count = cand_type_counts.get(cand_type, 0)
 
             cand_emb = (
-                cand_sample.get("description_embedding")
-                if "description_embedding" in cand_sample.index else None
-            )
-
-            cand_rows = relationships_df[relationships_df["relation_type"] == cand_type]
-            cand_entities = set(
-                cand_rows["source"].dropna().tolist()
-                + cand_rows["target"].dropna().tolist()
+                cand_sample.get("relation_type_embedding")
+                if "relation_type_embedding" in cand_sample.index else None
             )
 
             print(f"\n    [{cand_idx}] Candidate: '{cand_type[:40]}' ({cand_edge_count} edges)")
             print(f"         Sample: ({cand_source[:20]}) -> ({cand_target[:20]})")
             print(f"         Desc: '{cand_desc[:60]}'")
 
-            # Top-K pre-filter: try Neo4j vector index first, fall back to in-memory cosine
-            narrowed: list[dict[str, Any]] = []
-            if cand_emb is not None:
-                from graphrag.bt_graphrag.neo4j_store import vector_search_relationships
-                try:
-                    vec_results = await vector_search_relationships(
-                        session, cand_emb, top_k=cgrr_top_k,
-                    )
-                except Exception:
-                    vec_results = []
-                if vec_results:
-                    seen_types: set[str] = set()
-                    for vr in vec_results:
-                        rt = vr.get("relation_type", "")
-                        if rt and rt not in seen_types:
-                            seen_types.add(rt)
-                            match_rec = next(
-                                (et for et in existing_types if et["relation_type"] == rt),
-                                None,
-                            )
-                            if match_rec:
-                                narrowed.append(match_rec)
-                            else:
-                                narrowed.append({
-                                    "relation_type": rt,
-                                    "description": vr.get("description", ""),
-                                    "source": vr.get("source", ""),
-                                    "target": vr.get("target", ""),
-                                    "all_sources": [vr.get("source", "")],
-                                    "all_targets": [vr.get("target", "")],
-                                    "edge_count": 1,
-                                    "description_embedding": vr.get("description_embedding"),
-                                })
-                    print(f"         Neo4j vector search: {len(narrowed)} types from top-{cgrr_top_k} edges")
-
-            if not narrowed:
-                narrowed = _top_k_by_embedding(cand_emb, existing_types, cgrr_top_k)
-                if len(narrowed) < len(existing_types):
-                    print(f"         In-memory top-K: {len(existing_types)} -> {len(narrowed)} candidates (k={cgrr_top_k})")
+            # Top-K pre-filter on relation_type_embedding. The Neo4j vector
+            # index is keyed on description_embedding (the wrong signal for
+            # predicate-synonym detection), so we use in-memory cosine.
+            narrowed = _top_k_by_embedding(cand_emb, existing_types, cgrr_top_k)
+            if len(narrowed) < len(existing_types):
+                print(f"         In-memory top-K: {len(existing_types)} -> {len(narrowed)} candidates (k={cgrr_top_k})")
 
             cand_record = {
                 "relation_type": cand_type,
                 "description": cand_desc,
                 "source": cand_source,
                 "target": cand_target,
-                "description_embedding": cand_emb,
+                "relation_type_embedding": cand_emb,
             }
 
             scored_matches: list[tuple[float, dict[str, float], dict[str, Any]]] = []
-            skipped_no_overlap = 0
 
             for existing in narrowed:
                 if cand_type == existing["relation_type"]:
-                    continue
-                existing_entities_set = set(
-                    existing.get("all_sources", [existing.get("source", "")])
-                    + existing.get("all_targets", [existing.get("target", "")])
-                )
-                if not cand_entities.intersection(existing_entities_set):
-                    skipped_no_overlap += 1
                     continue
                 score, breakdown = relationship_scorer(cand_record, existing, config)
                 scored_matches.append((score, breakdown, existing))
 
             scored_matches.sort(key=lambda x: x[0], reverse=True)
 
-            if skipped_no_overlap > 0:
-                print(f"         Skipped {skipped_no_overlap} existing types (no shared entities)")
-            print(f"         Top candidates ({len(scored_matches)} with entity overlap):")
+            print(f"         Top candidates ({len(scored_matches)}):")
             for rank, (score, _bd, match) in enumerate(scored_matches[:5]):
                 zone = " << LLM" if score >= config.cgrr_cosine_threshold else ""
                 print(f"           #{rank+1} cosine={score:.4f}  "
@@ -494,132 +454,198 @@ async def resolve_relationships(
     intra_rejections_b = 0
 
     if len(remaining_types) > 1:
-        print(f"\n    [CGRR] Phase B: Intra-batch resolution ({len(remaining_types)} remaining types)")
+        phase_b_k = (
+            phase_b_top_k
+            if phase_b_top_k is not None
+            else getattr(config, "cgrr_candidate_top_k", 10)
+        )
+        use_temp_db = driver is not None and bool(getattr(config, "cgrr_phase_b_temp_db", ""))
+        batch_db: Any = None
+        if use_temp_db:
+            from graphrag.bt_graphrag.neo4j_store import CGRRBatchDB
+            batch_db = CGRRBatchDB(
+                driver=driver,  # type: ignore[arg-type]
+                db_name=config.cgrr_phase_b_temp_db,
+                vector_dimensions=config.neo4j_vector_dimensions,
+            )
+
+        print(f"\n    [CGRR] Phase B: Intra-batch resolution "
+              f"({len(remaining_types)} remaining types, top_k={phase_b_k}, "
+              f"backend={'neo4j_temp_db' if use_temp_db else 'in_memory'})")
+
         intra_normalize: dict[str, str] = {}
         canonical_types: list[dict[str, Any]] = []
+        canonical_by_rt: dict[str, dict[str, Any]] = {}
+        kept_rts: set[str] = set()
 
-        # Pre-compute entity sets per relation type for overlap checking
-        _type_entities: dict[str, set[str]] = {}
-        for rt in remaining_types:
-            rows_rt = relationships_df[relationships_df["relation_type"] == rt]
-            _type_entities[rt] = set(
-                rows_rt["source"].dropna().tolist()
-                + rows_rt["target"].dropna().tolist()
-            )
-
+        # Pre-collect one sample row per remaining relation type so the
+        # temp DB can bulk-load every candidate's embedding up front.
+        rt_records: list[dict[str, Any]] = []
+        rt_record_by_rt: dict[str, dict[str, Any]] = {}
         for rt in remaining_types:
             sample = relationships_df[relationships_df["relation_type"] == rt].iloc[0]
-            cand_desc = str(sample.get("description", ""))
-            cand_src = str(sample.get("source", ""))
-            cand_tgt = str(sample.get("target", ""))
-            cand_entities = _type_entities[rt]
-            cand_emb = (
-                sample.get("description_embedding")
-                if "description_embedding" in sample.index else None
-            )
-
-            if not canonical_types:
-                canonical_types.append({
-                    "relation_type": rt,
-                    "description": cand_desc,
-                    "source": cand_src,
-                    "target": cand_tgt,
-                    "description_embedding": cand_emb,
-                })
-                continue
-
-            cand_record = {
+            rec = {
                 "relation_type": rt,
-                "description": cand_desc,
-                "source": cand_src,
-                "target": cand_tgt,
-                "description_embedding": cand_emb,
+                "description": str(sample.get("description", "")),
+                "source": str(sample.get("source", "")),
+                "target": str(sample.get("target", "")),
+                "relation_type_embedding": (
+                    sample.get("relation_type_embedding")
+                    if "relation_type_embedding" in sample.index else None
+                ),
             }
+            rt_records.append(rec)
+            rt_record_by_rt[rt] = rec
 
-            best_score = 0.0
-            best_canon: dict[str, Any] | None = None
+        async def _pick_phase_b_candidates(
+            rec: dict[str, Any],
+        ) -> list[dict[str, Any]]:
+            """Return up to top-K canonical candidates for one rel type."""
+            emb = rec.get("relation_type_embedding") or []
+            rt_label = rec["relation_type"]
 
-            for canon in canonical_types:
-                canon_entities = _type_entities.get(canon["relation_type"], set())
-                if not cand_entities.intersection(canon_entities):
-                    continue
-                score, _ = relationship_scorer(cand_record, canon, config)
-                if score > best_score:
-                    best_score = score
-                    best_canon = canon
-
-            match_type = best_canon["relation_type"] if best_canon else ""
-
-            if (best_canon is not None
-                    and best_score >= config.cgrr_cosine_threshold
-                    and model is not None):
-                print(f"    [INTRA] LLM: '{rt[:30]}' vs '{match_type[:30]}'  "
-                      f"cosine={best_score:.4f}")
-                verdict = await llm_verify_relationship_match(
-                    candidate={"relation_type": rt, "description": cand_desc,
-                               "source": cand_src, "target": cand_tgt},
-                    existing={"relation_type": match_type,
-                              "description": best_canon.get("description", ""),
-                              "source": best_canon.get("source", ""),
-                              "target": best_canon.get("target", "")},
-                    model=model,
+            if batch_db is not None and emb:
+                cand_refs = await batch_db.find_candidates(
+                    embedding=list(emb),
+                    top_k=phase_b_k,
+                    exclude_relation_type=rt_label,
+                    allowed_relation_types=kept_rts,
                 )
-                if verdict == "SAME":
-                    intra_normalize[rt] = match_type
-                    intra_llm_normalizes += 1
-                    phase_b_log.append({
-                        "phase": "B_intra_batch",
-                        "relation_type": rt,
-                        "edge_count": cand_type_counts.get(rt, 0),
-                        "best_match": match_type,
-                        "best_score": round(best_score, 4),
-                        "decision": "LLM_NORMALIZE",
-                        "top_comparisons": [],
-                    })
-                    print(f"           LLM verdict: SAME -> NORMALIZED")
-                    logger.info(
-                        "CGRR: Intra-batch LLM normalize '%s' -> '%s' (cosine=%.3f)",
-                        rt, match_type, best_score,
+                return [
+                    canonical_by_rt[c["relation_type"]]
+                    for c in cand_refs
+                    if c["relation_type"] in canonical_by_rt
+                ]
+
+            # In-memory fallback: cosine over canonical_types
+            if not canonical_types:
+                return []
+            cand_record = {"relation_type_embedding": emb}
+            scored: list[tuple[float, dict[str, Any]]] = []
+            for canon in canonical_types:
+                score, _ = relationship_scorer(cand_record, canon, config)
+                scored.append((score, canon))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [c for _, c in scored[:phase_b_k]]
+
+        async def _phase_b_loop() -> None:
+            nonlocal intra_llm_normalizes, intra_rejections_b
+            for rec in rt_records:
+                rt = rec["relation_type"]
+                cand_desc = rec["description"]
+                cand_src = rec["source"]
+                cand_tgt = rec["target"]
+                cand_emb = rec["relation_type_embedding"]
+
+                if not canonical_types:
+                    canonical_types.append(rec)
+                    canonical_by_rt[rt] = rec
+                    kept_rts.add(rt)
+                    continue
+
+                candidate_pool = await _pick_phase_b_candidates(rec)
+
+                best_score = 0.0
+                best_canon: dict[str, Any] | None = None
+                for canon in candidate_pool:
+                    score, _ = relationship_scorer(rec, canon, config)
+                    if score > best_score:
+                        best_score = score
+                        best_canon = canon
+
+                match_type = best_canon["relation_type"] if best_canon else ""
+
+                if (best_canon is not None
+                        and best_score >= config.cgrr_cosine_threshold
+                        and model is not None):
+                    print(f"    [INTRA] LLM: '{rt[:30]}' vs '{match_type[:30]}'  "
+                          f"cosine={best_score:.4f}  (pool={len(candidate_pool)})")
+                    verdict = await llm_verify_relationship_match(
+                        candidate={"relation_type": rt, "description": cand_desc,
+                                   "source": cand_src, "target": cand_tgt},
+                        existing={"relation_type": match_type,
+                                  "description": best_canon.get("description", ""),
+                                  "source": best_canon.get("source", ""),
+                                  "target": best_canon.get("target", "")},
+                        model=model,
                     )
+                    if verdict == "SAME":
+                        intra_normalize[rt] = match_type
+                        intra_llm_normalizes += 1
+                        phase_b_log.append({
+                            "phase": "B_intra_batch",
+                            "relation_type": rt,
+                            "edge_count": cand_type_counts.get(rt, 0),
+                            "best_match": match_type,
+                            "best_score": round(best_score, 4),
+                            "decision": "LLM_NORMALIZE",
+                            "candidate_pool_size": len(candidate_pool),
+                            "top_comparisons": [],
+                        })
+                        print(f"           LLM verdict: SAME -> NORMALIZED")
+                        logger.info(
+                            "CGRR: Intra-batch LLM normalize '%s' -> '%s' (cosine=%.3f)",
+                            rt, match_type, best_score,
+                        )
+                    else:
+                        intra_rejections_b += 1
+                        phase_b_log.append({
+                            "phase": "B_intra_batch",
+                            "relation_type": rt,
+                            "edge_count": cand_type_counts.get(rt, 0),
+                            "best_match": match_type,
+                            "best_score": round(best_score, 4),
+                            "decision": "LLM_DIFFERENT",
+                            "candidate_pool_size": len(candidate_pool),
+                            "top_comparisons": [],
+                        })
+                        print(f"           LLM verdict: DIFFERENT -> KEPT SEPARATE")
+                        canonical_types.append(rec)
+                        canonical_by_rt[rt] = rec
+                        kept_rts.add(rt)
                 else:
-                    intra_rejections_b += 1
-                    phase_b_log.append({
-                        "phase": "B_intra_batch",
-                        "relation_type": rt,
-                        "edge_count": cand_type_counts.get(rt, 0),
-                        "best_match": match_type,
-                        "best_score": round(best_score, 4),
-                        "decision": "LLM_DIFFERENT",
-                        "top_comparisons": [],
-                    })
-                    print(f"           LLM verdict: DIFFERENT -> KEPT SEPARATE")
-                    canonical_types.append({
-                        "relation_type": rt,
-                        "description": cand_desc,
-                        "source": cand_src,
-                        "target": cand_tgt,
-                        "description_embedding": cand_emb,
-                    })
-            else:
-                if best_score > 0.3:
-                    phase_b_log.append({
-                        "phase": "B_intra_batch",
-                        "relation_type": rt,
-                        "edge_count": cand_type_counts.get(rt, 0),
-                        "best_match": match_type,
-                        "best_score": round(best_score, 4),
-                        "decision": "BELOW_THRESHOLD",
-                        "top_comparisons": [],
-                    })
-                    print(f"    [INTRA] BELOW: '{rt[:30]}' best='{match_type[:30]}'  "
-                          f"cosine={best_score:.4f}")
-                canonical_types.append({
-                    "relation_type": rt,
-                    "description": cand_desc,
-                    "source": cand_src,
-                    "target": cand_tgt,
-                    "description_embedding": cand_emb,
-                })
+                    if best_score > 0.3:
+                        phase_b_log.append({
+                            "phase": "B_intra_batch",
+                            "relation_type": rt,
+                            "edge_count": cand_type_counts.get(rt, 0),
+                            "best_match": match_type,
+                            "best_score": round(best_score, 4),
+                            "decision": "BELOW_THRESHOLD",
+                            "candidate_pool_size": len(candidate_pool),
+                            "top_comparisons": [],
+                        })
+                        print(f"    [INTRA] BELOW: '{rt[:30]}' best='{match_type[:30]}'  "
+                              f"cosine={best_score:.4f}  (pool={len(candidate_pool)})")
+                    canonical_types.append(rec)
+                    canonical_by_rt[rt] = rec
+                    kept_rts.add(rt)
+
+        if batch_db is not None:
+            try:
+                async with batch_db:
+                    await batch_db.bulk_load(rt_records)
+                    print(f"    [CGRR] Phase B: temp Neo4j DB '{batch_db.db_name}' "
+                          f"loaded with {len(rt_records)} relation types")
+                    await _phase_b_loop()
+            except Exception as temp_err:
+                logger.warning(
+                    "CGRR Phase B: temp Neo4j DB failed (%s); "
+                    "falling back to in-memory candidate selection",
+                    temp_err,
+                )
+                print(f"    [CGRR] Phase B: temp DB unavailable ({temp_err}); "
+                      f"falling back to in-memory")
+                batch_db = None
+                intra_normalize.clear()
+                canonical_types.clear()
+                canonical_by_rt.clear()
+                kept_rts.clear()
+                intra_llm_normalizes = 0
+                intra_rejections_b = 0
+                await _phase_b_loop()
+        else:
+            await _phase_b_loop()
 
         if intra_normalize:
             relationships_df = relationships_df.copy()

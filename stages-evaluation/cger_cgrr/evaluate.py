@@ -75,6 +75,7 @@ NEO4J_USER = "neo4j"
 NEO4J_PASSWORD = "12345678"
 TEST_DB = "cgrreval"
 CGER_TEMP_DB = "cgerbatch"
+CGRR_TEMP_DB = "cgrrbatch"
 
 COMPLETION_MODEL = "gpt-4.1-mini"
 
@@ -271,6 +272,7 @@ async def main() -> None:
         cgrr_enabled=True,
         cgrr_cosine_threshold=CGRR_COSINE_THRESHOLD,
         cgrr_candidate_top_k=CGRR_CANDIDATE_TOP_K,
+        cgrr_phase_b_temp_db=CGRR_TEMP_DB,
         neo4j_vector_dimensions=NEO4J_VECTOR_DIMENSIONS,
     )
 
@@ -305,12 +307,15 @@ async def main() -> None:
         async with driver.session(database=TEST_DB) as session:
             print(f"\n[CGRR] Wiping {TEST_DB} (so Phase A finds an empty graph)…")
             await session.run("MATCH (n) DETACH DELETE n")
-            print(f"[CGRR] Running with empty existing graph (Phase B intra-batch only)…")
+            print(f"[CGRR] Running with empty existing graph "
+                  f"(Phase B intra-batch via scratch DB '{CGRR_TEMP_DB}')…")
             _, cgrr_normalize_map, _ = await resolve_relationships(
                 relationships_df=rels_df,
                 config=config,
                 session=session,
                 model=model,
+                driver=driver,
+                phase_b_top_k=CGRR_CANDIDATE_TOP_K,
             )
         print(f"[CGRR] normalize_map: {len(cgrr_normalize_map)} entries")
         cgrr_pairs = _pairs_from_merge_map(cgrr_normalize_map)

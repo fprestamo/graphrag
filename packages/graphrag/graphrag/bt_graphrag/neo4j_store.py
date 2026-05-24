@@ -713,13 +713,15 @@ async def get_existing_relation_types_with_embeddings(
                desc: r.description,
                source: s.title,
                target: t.title,
-               emb: r.description_embedding
+               emb: r.description_embedding,
+               rt_emb: r.relation_type_embedding
              })[0] AS sample,
              count(*) AS edge_count
         RETURN rel_type, sample.desc AS description,
                sample.source AS source, sample.target AS target,
                all_sources, all_targets, edge_count,
-               sample.emb AS description_embedding
+               sample.emb AS description_embedding,
+               sample.rt_emb AS relation_type_embedding
         ORDER BY edge_count DESC
         """
         result = await session.run(
@@ -736,13 +738,15 @@ async def get_existing_relation_types_with_embeddings(
                desc: r.description,
                source: s.title,
                target: t.title,
-               emb: r.description_embedding
+               emb: r.description_embedding,
+               rt_emb: r.relation_type_embedding
              })[0] AS sample,
              count(*) AS edge_count
         RETURN rel_type, sample.desc AS description,
                sample.source AS source, sample.target AS target,
                all_sources, all_targets, edge_count,
-               sample.emb AS description_embedding
+               sample.emb AS description_embedding,
+               sample.rt_emb AS relation_type_embedding
         ORDER BY edge_count DESC
         """
         result = await session.run(query, infinity=INFINITY_ISO)
@@ -758,6 +762,7 @@ async def get_existing_relation_types_with_embeddings(
             "all_targets": record["all_targets"] or [],
             "edge_count": record["edge_count"],
             "description_embedding": record["description_embedding"],
+            "relation_type_embedding": record["relation_type_embedding"],
         })
     return records
 
@@ -1088,3 +1093,166 @@ class CGERBatchDB:
             }
 
         return list(titles.values())
+
+
+class CGRRBatchDB:
+    """Scratch Neo4j database scoping CGRR Phase B candidate retrieval.
+
+    Mirrors :class:`CGERBatchDB` but indexes ``relation_type_embedding``
+    on nodes that represent distinct relation types from the incoming
+    batch. Phase B turns N^2 pairwise scoring into N * top-K vector
+    lookups against the established canonicals.
+
+    The backing database must already exist (``CREATE DATABASE <name>``
+    run manually); this helper only wipes its contents at entry and exit
+    and (re)creates the indexes it needs.
+
+    Use as an async context manager — the workspace is cleaned on exit
+    even if an exception fires.
+    """
+
+    def __init__(
+        self,
+        driver: "AsyncDriver",
+        db_name: str,
+        vector_dimensions: int,
+        label: str = "CGRRBatchRelType",
+    ) -> None:
+        self.driver = driver
+        self.db_name = db_name
+        self.dimensions = vector_dimensions
+        self.label = label
+        self.index_name = "cgrr_batch_rt_embedding"
+
+    async def __aenter__(self) -> "CGRRBatchDB":
+        await self._wipe_workspace()
+        await self._create_indexes()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        try:
+            await self._wipe_workspace()
+        except Exception as wipe_err:
+            logger.warning(
+                "CGRRBatchDB: failed to wipe scratch database '%s': %s",
+                self.db_name, wipe_err,
+            )
+
+    async def _wipe_workspace(self) -> None:
+        async with self.driver.session(database=self.db_name) as session:
+            try:
+                await session.run(f"DROP INDEX {self.index_name} IF EXISTS")
+            except Exception:
+                logger.debug("CGRRBatchDB: drop index '%s' no-op", self.index_name)
+            await session.run(f"MATCH (n:{self.label}) DETACH DELETE n")
+        logger.info("CGRRBatchDB: wiped scratch workspace in '%s'", self.db_name)
+
+    async def _create_indexes(self) -> None:
+        vec_cypher = f"""
+        CREATE VECTOR INDEX {self.index_name} IF NOT EXISTS
+        FOR (n:{self.label}) ON (n.relation_type_embedding)
+        OPTIONS {{
+          indexConfig: {{
+            `vector.dimensions`: {self.dimensions},
+            `vector.similarity_function`: 'cosine'
+          }}
+        }}
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            await session.run(
+                f"CREATE INDEX IF NOT EXISTS FOR (n:{self.label}) ON (n.relation_type)"
+            )
+            await session.run(vec_cypher)
+
+    async def bulk_load(self, rel_types: list[dict[str, Any]]) -> None:
+        """Insert one node per distinct relation type into the temp DB.
+
+        Each item in ``rel_types`` must expose ``relation_type`` and
+        ``relation_type_embedding``; ``description``, ``source`` and
+        ``target`` are stored for downstream prompt context (not used
+        by the vector query).
+        """
+        rows: list[dict[str, Any]] = []
+        for rt in rel_types:
+            label = rt.get("relation_type")
+            emb = rt.get("relation_type_embedding")
+            if not label or not emb:
+                continue
+            rows.append({
+                "relation_type": str(label),
+                "description": str(rt.get("description") or ""),
+                "source": str(rt.get("source") or ""),
+                "target": str(rt.get("target") or ""),
+                "relation_type_embedding": list(emb),
+            })
+        if not rows:
+            return
+        cypher = f"""
+        UNWIND $rows AS row
+        MERGE (n:{self.label} {{relation_type: row.relation_type}})
+        SET n.description = row.description,
+            n.source = row.source,
+            n.target = row.target,
+            n.relation_type_embedding = row.relation_type_embedding
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            await session.run(cypher, rows=rows)
+            try:
+                await session.run(
+                    "CALL db.awaitIndex($name, $timeout)",
+                    name=self.index_name, timeout=60,
+                )
+            except Exception:
+                logger.debug("CGRRBatchDB: db.awaitIndex not available")
+
+    async def find_candidates(
+        self,
+        embedding: list[float],
+        top_k: int,
+        exclude_relation_type: str,
+        allowed_relation_types: set[str],
+    ) -> list[dict[str, Any]]:
+        """Return the top-K canonical relation types by cosine, restricted
+        to *allowed_relation_types* and excluding ``exclude_relation_type``.
+
+        Returns dicts with ``relation_type``, ``description``, ``source``,
+        ``target`` and ``_vector_score``.
+        """
+        if not allowed_relation_types:
+            return []
+
+        allowed = list(allowed_relation_types)
+        index_fetch = min(max(top_k * 4, top_k + 5), 200)
+
+        vector_cypher = f"""
+        CALL db.index.vector.queryNodes($index_name, $fetch, $embedding)
+        YIELD node, score
+        WHERE node.relation_type IN $allowed
+          AND node.relation_type <> $exclude
+        RETURN node.relation_type AS relation_type,
+               node.description AS description,
+               node.source AS source,
+               node.target AS target,
+               score
+        LIMIT $top_k
+        """
+        records: list[dict[str, Any]] = []
+        async with self.driver.session(database=self.db_name) as session:
+            result = await session.run(
+                vector_cypher,
+                index_name=self.index_name,
+                fetch=index_fetch,
+                embedding=embedding,
+                allowed=allowed,
+                exclude=exclude_relation_type,
+                top_k=top_k,
+            )
+            async for rec in result:
+                records.append({
+                    "relation_type": rec["relation_type"],
+                    "description": rec["description"] or "",
+                    "source": rec["source"] or "",
+                    "target": rec["target"] or "",
+                    "_vector_score": rec["score"],
+                })
+        return records

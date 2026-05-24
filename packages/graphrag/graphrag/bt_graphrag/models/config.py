@@ -100,6 +100,13 @@ class BTGraphRAGConfig:
     """Number of top-K existing relation types to compare per candidate,
     pre-filtered by description embedding cosine similarity."""
 
+    cgrr_phase_b_temp_db: str = "cgrrbatch"
+    """Name of a pre-existing Neo4j database used by CGRR Phase B as a
+    scratch area for intra-batch candidate retrieval.  The database must
+    be created manually (CREATE DATABASE <name>); the pipeline only wipes
+    its contents before and after each Phase B run. Mirrors
+    ``cger_phase_b_temp_db`` but indexes ``relation_type_embedding``."""
+
     # --- Stage 3: ETCDR ---
     etcdr_enabled: bool = True
     """Enable Edge-Level Temporal Conflict Detection and Resolution."""

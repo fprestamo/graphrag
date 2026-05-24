@@ -90,6 +90,7 @@ NEO4J_USER = "neo4j"
 NEO4J_PASSWORD = "12345678"
 TEST_DB = "cgrreval"
 CGER_TEMP_DB = "cgerbatch"
+CGRR_TEMP_DB = "cgrrbatch"
 
 COMPLETION_MODEL = "gpt-4.1-mini"
 
@@ -268,6 +269,7 @@ def _make_config(cger_threshold: float, cgrr_threshold: float) -> BTGraphRAGConf
         cgrr_enabled=True,
         cgrr_cosine_threshold=cgrr_threshold,
         cgrr_candidate_top_k=CGRR_CANDIDATE_TOP_K,
+        cgrr_phase_b_temp_db=CGRR_TEMP_DB,
         neo4j_vector_dimensions=NEO4J_VECTOR_DIMENSIONS,
     )
 
@@ -322,6 +324,8 @@ async def _eval_cgrr(
             config=config,
             session=session,
             model=model,
+            driver=driver,
+            phase_b_top_k=CGRR_CANDIDATE_TOP_K,
         )
     p, r, f1 = _f1(_pairs_from_merge_map(normalize_map), truth_pairs)
     return p, r, f1, _count_llm_calls(phase_b_log)

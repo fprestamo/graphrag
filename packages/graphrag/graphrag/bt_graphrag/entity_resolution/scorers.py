@@ -109,19 +109,12 @@ def description_cosine_relationship_scorer(
     existing: dict[str, Any],
     config: "BTGraphRAGConfig",
 ) -> tuple[float, dict[str, float]]:
-    """Score two relation types by the cosine similarity of their description embeddings.
-
-    Mirrors :func:`description_cosine_entity_scorer` but operates on
-    relation-type records. The endpoint pair, relation-type string and
-    description text are reserved for the LLM prompt; the score itself
-    is the single cosine signal.
-
+    """Score two relation types by cosine similarity of their relation-type embeddings.
     Returns 0.0 whenever either relation lacks a
-    ``description_embedding``. Same-endpoint and same-type filtering is
-    the caller's responsibility.
+    ``relation_type_embedding``.
     """
-    emb_cand = candidate.get("description_embedding") or []
-    emb_exist = existing.get("description_embedding") or []
+    emb_cand = candidate.get("relation_type_embedding") or []
+    emb_exist = existing.get("relation_type_embedding") or []
     score = cosine_similarity(emb_cand, emb_exist)
     breakdown = {
         "cosine_emb": score,
