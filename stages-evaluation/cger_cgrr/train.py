@@ -62,7 +62,7 @@ import sys
 import time
 from itertools import combinations
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 import pandas as pd
 
@@ -163,6 +163,46 @@ def _completion():
             api_key=_api_key(),
         )
     )
+
+
+class _CachingCompletion:
+    """Wrap an ``LLMCompletion`` so ``completion_async`` is memoized by prompt.
+
+    CGER/CGRR verdicts are deterministic in the (pair-of-entities) /
+    (pair-of-relation-types) they receive, which fully determines the
+    prompt text. During SA + grid search the same pair shows up across
+    many threshold evaluations; without this wrapper each repetition
+    would issue an identical API call. Caching by the serialized
+    ``completion_async`` kwargs makes "same pair -> 1 real call" hold
+    for the whole training run.
+
+    The penalty term in the SA objective still uses the *logical* LLM-call
+    count from ``phase_b_log`` (i.e. what production would have spent),
+    so cache hits cut wall-clock + API cost without changing the score.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._cache: dict[str, Any] = {}
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def _key(kwargs: dict[str, Any]) -> str:
+        return json.dumps(kwargs, sort_keys=True, default=str)
+
+    async def completion_async(self, /, **kwargs: Any) -> Any:
+        key = self._key(kwargs)
+        if key in self._cache:
+            self.hits += 1
+            return self._cache[key]
+        self.misses += 1
+        response = await self._inner.completion_async(**kwargs)
+        self._cache[key] = response
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +567,7 @@ async def main(stages: list[str], iters: int, seed: int,
     cgrr_max_llm = max(1, rels_df["relation_type"].nunique())
 
     rng = random.Random(seed)
-    model = _completion()
+    model = _CachingCompletion(_completion())
     started = time.time()
 
     from neo4j import AsyncGraphDatabase
@@ -585,6 +625,14 @@ async def main(stages: list[str], iters: int, seed: int,
         await driver.close()
 
     results["elapsed_seconds"] = round(time.time() - started, 2)
+    total_llm_lookups = model.hits + model.misses
+    results["llm_cache"] = {
+        "hits": model.hits,
+        "misses": model.misses,
+        "lookups": total_llm_lookups,
+        "hit_rate": (model.hits / total_llm_lookups) if total_llm_lookups else 0.0,
+        "unique_pairs": len(model._cache),
+    }
 
     RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     RESULTS_PATH.write_text(json.dumps(results, indent=2, ensure_ascii=False),
@@ -605,6 +653,10 @@ async def main(stages: list[str], iters: int, seed: int,
               f"(P={b['precision']:.3f} R={b['recall']:.3f} F1={b['f1']:.3f}  "
               f"llm={b['llm_calls']}/{cgrr_max_llm} score={b['score']:.3f})")
     print(f"  elapsed: {results['elapsed_seconds']}s")
+    cache_info = results["llm_cache"]  # type: ignore[index]
+    print(f"  LLM cache: {cache_info['hits']} hits / {cache_info['lookups']} lookups "
+          f"({cache_info['hit_rate']:.1%}), {cache_info['misses']} real API calls "
+          f"over {cache_info['unique_pairs']} unique pairs")
     print(f"  full trace + cache written to: {RESULTS_PATH.relative_to(PROJECT_ROOT)}")
     print("=" * 70)
 
