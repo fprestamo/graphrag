@@ -22,6 +22,10 @@ Usage:
     python stages-evaluation/cger_cgrr/extract.py --split test
     python stages-evaluation/cger_cgrr/extract.py --split train
 
+Documents are processed concurrently (default 10 at a time). Chunks within
+a document still run sequentially, so the worst-case in-flight LLM calls
+is roughly ``concurrency * max_gleanings``. Override with ``--concurrency``.
+
 Requirements:
     - ``GRAPHRAG_API_KEY`` (or ``OPENAI_API_KEY``) defined either in the
       current shell or in the project-root ``.env`` file — the script
@@ -79,6 +83,8 @@ ENTITY_TYPES = [
     "event",
     "concept",
 ]
+
+DEFAULT_CONCURRENCY = 10
 
 
 def _load_env_file(path: Path) -> None:
@@ -142,7 +148,64 @@ def _chunker(embedding_model) -> TokenChunker:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-async def extract(split: str) -> None:
+async def _process_document(
+    doc_path: Path,
+    chunker: TokenChunker,
+    extractor: TemporalGraphExtractor,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, list[dict], list[pd.DataFrame], list[pd.DataFrame]]:
+    """Extract one document end-to-end.
+
+    The ``semaphore`` caps how many documents are in-flight at once. Per-doc
+    log lines are buffered and flushed in a single ``print`` call so output
+    from concurrent docs doesn't interleave line-by-line.
+    """
+    async with semaphore:
+        text = doc_path.read_text(encoding="utf-8")
+        chunks = chunker.chunk(text)
+
+        doc_units: list[dict] = []
+        doc_entities: list[pd.DataFrame] = []
+        doc_relationships: list[pd.DataFrame] = []
+        log_lines: list[str] = [f"  [{doc_path.name}] {len(chunks)} chunk(s)"]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            unit_id = str(uuid4())
+            unit_text = chunk.text
+
+            doc_units.append({
+                "id": unit_id,
+                "document": doc_path.name,
+                "chunk_index": chunk_idx,
+                "text": unit_text,
+            })
+
+            ents_df, rels_df = await extractor(
+                text=unit_text,
+                entity_types=ENTITY_TYPES,
+                source_id=unit_id,
+            )
+
+            if not ents_df.empty:
+                ents_df = ents_df.copy()
+                ents_df["document"] = doc_path.name
+                doc_entities.append(ents_df)
+            if not rels_df.empty:
+                rels_df = rels_df.copy()
+                rels_df["document"] = doc_path.name
+                doc_relationships.append(rels_df)
+
+            log_lines.append(
+                f"    chunk {chunk_idx}: "
+                f"{0 if ents_df.empty else len(ents_df)} entities, "
+                f"{0 if rels_df.empty else len(rels_df)} relationships"
+            )
+
+        print("\n".join(log_lines))
+        return doc_path.name, doc_units, doc_entities, doc_relationships
+
+
+async def extract(split: str, concurrency: int = DEFAULT_CONCURRENCY) -> None:
     corpus_dir = DATA_DIR / f"{split}-corpus"
     out_dir = DATA_DIR / f"{split}-extracted"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +215,8 @@ async def extract(split: str) -> None:
         print(f"[ERROR] No .txt files found in {corpus_dir}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"[EXTRACT] split={split}: {len(docs)} document(s) in {corpus_dir}")
+    print(f"[EXTRACT] split={split}: {len(docs)} document(s) in {corpus_dir} "
+          f"(concurrency={concurrency})")
 
     completion = _completion()
     embedding = _embedding()
@@ -175,46 +239,21 @@ async def extract(split: str) -> None:
         embedding_model=embedding,
     )
 
+    # Fan out: each document is its own task; the semaphore caps how many
+    # run concurrently. gather() preserves the input order so text_units /
+    # entities / relationships end up in the same order as before.
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    doc_results = await asyncio.gather(*(
+        _process_document(d, chunker, extractor, semaphore) for d in docs
+    ))
+
     text_units: list[dict] = []
     all_entities: list[pd.DataFrame] = []
     all_relationships: list[pd.DataFrame] = []
-
-    for doc_path in docs:
-        text = doc_path.read_text(encoding="utf-8")
-        chunks = chunker.chunk(text)
-        print(f"  [{doc_path.name}] {len(chunks)} chunk(s)")
-
-        for chunk_idx, chunk in enumerate(chunks):
-            unit_id = str(uuid4())
-            unit_text = chunk.text
-
-            text_units.append({
-                "id": unit_id,
-                "document": doc_path.name,
-                "chunk_index": chunk_idx,
-                "text": unit_text,
-            })
-
-            ents_df, rels_df = await extractor(
-                text=unit_text,
-                entity_types=ENTITY_TYPES,
-                source_id=unit_id,
-            )
-
-            if not ents_df.empty:
-                ents_df = ents_df.copy()
-                ents_df["document"] = doc_path.name
-                all_entities.append(ents_df)
-            if not rels_df.empty:
-                rels_df = rels_df.copy()
-                rels_df["document"] = doc_path.name
-                all_relationships.append(rels_df)
-
-            print(
-                f"    chunk {chunk_idx}: "
-                f"{0 if ents_df.empty else len(ents_df)} entities, "
-                f"{0 if rels_df.empty else len(rels_df)} relationships"
-            )
+    for _name, units, ents, rels in doc_results:
+        text_units.extend(units)
+        all_entities.extend(ents)
+        all_relationships.extend(rels)
 
     entities_df = (
         pd.concat(all_entities, ignore_index=True)
@@ -254,9 +293,22 @@ def _parse_args() -> argparse.Namespace:
         default="test",
         help="Which split to process: read data/<split>-corpus/, write data/<split>-extracted/ (default: test).",
     )
+    p.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"How many documents to extract in parallel (default: {DEFAULT_CONCURRENCY}). "
+             f"Each in-flight document holds the LLM busy on at most one "
+             f"chunk at a time, so peak concurrent LLM calls is roughly "
+             f"this value (times max_gleanings).",
+    )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(extract(args.split))
+    if args.concurrency < 1:
+        print(f"[ERROR] --concurrency must be >= 1 (got {args.concurrency})",
+              file=sys.stderr)
+        sys.exit(1)
+    asyncio.run(extract(args.split, concurrency=args.concurrency))

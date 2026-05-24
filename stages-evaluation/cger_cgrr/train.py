@@ -34,12 +34,24 @@ Writes the full search trace + best thresholds to:
 Usage:
     python stages-evaluation/cger_cgrr/train.py
 
+For each requested stage two SA runs are produced:
+  * LLM-assisted — objective ``F1 - lambda*(llm_calls/max_llm_calls)``.
+  * Auto-merge   — objective ``F1`` (pure), evaluated with a stand-in
+                   LLM that always answers ``SAME``, so every candidate
+                   above the threshold is merged unconditionally. This
+                   isolates the cosine pre-filter and lets you compare
+                   "trust embeddings only" vs "embeddings + LLM verifier"
+                   side by side. Results land under ``cger_auto`` /
+                   ``cgrr_auto`` in ``train-results.json``. Disable with
+                   ``--skip-auto``.
+
 Optional flags:
     --stages cger,cgrr         # which stages to tune (default: both)
     --iters 10                 # SA iterations per stage (default: 10)
     --seed 42                  # RNG seed for SA (default: 42)
     --lambda-llm 0.3           # LLM-usage penalty weight (default: 0.3)
     --grid-points 5            # pre-scan grid size per stage (default: 5)
+    --skip-auto                # skip the no-LLM auto-merge baseline
 
 Requirements:
     - ``extract.py --split train`` has been run first.
@@ -205,6 +217,26 @@ class _CachingCompletion:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+class _AutoMergeCompletion:
+    """Stand-in LLM that always answers ``SAME`` without issuing API calls.
+
+    Used by the "auto-merge" baseline: pass this mock to ``resolve_entities`` /
+    ``resolve_relationships`` and every candidate that clears the cosine
+    threshold gets merged unconditionally. This isolates the contribution of
+    the cosine pre-filter alone, so we can compare against the LLM-assisted
+    pipeline at each threshold.
+
+    The full Phase-A/Phase-B routing (top-K selection, type-gating, intra-batch
+    walk) is reused unchanged — only the verdict is hard-coded.
+    """
+
+    class _Response:
+        content = "SAME"
+
+    async def completion_async(self, /, **_kwargs: Any) -> "_AutoMergeCompletion._Response":
+        return self._Response()
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +557,8 @@ async def _simulated_annealing(
 # ---------------------------------------------------------------------------
 
 async def main(stages: list[str], iters: int, seed: int,
-               lambda_llm: float, grid_points: int) -> None:
+               lambda_llm: float, grid_points: int,
+               skip_auto: bool = False) -> None:
     entities_path = TRAIN_EXTRACTED_DIR / "entities.json"
     rels_path = TRAIN_EXTRACTED_DIR / "relationships.json"
     if not entities_path.exists() or not rels_path.exists():
@@ -556,6 +589,7 @@ async def main(stages: list[str], iters: int, seed: int,
 
     rng = random.Random(seed)
     model = _CachingCompletion(_completion())
+    auto_model = _AutoMergeCompletion()
     started = time.time()
 
     from neo4j import AsyncGraphDatabase
@@ -595,20 +629,43 @@ async def main(stages: list[str], iters: int, seed: int,
                 return await _eval_cger(theta, entities_df, truth_entity_pairs,
                                         model, driver)
             results["cger"] = await _simulated_annealing(
-                "CGER", cger_obj, iters, rng,
+                "CGER (LLM)", cger_obj, iters, rng,
                 max_llm_calls=cger_max_llm, lambda_llm=lambda_llm,
                 n_grid_points=grid_points,
             )
+
+            if not skip_auto:
+                async def cger_auto_obj(theta: float) -> tuple[float, float, float, int]:
+                    return await _eval_cger(theta, entities_df, truth_entity_pairs,
+                                            auto_model, driver)
+                # lambda_llm=0 -> objective collapses to pure F1; the
+                # ``llm_calls`` column in the trace becomes "would-be" calls
+                # at this threshold (informational only, not penalised).
+                results["cger_auto"] = await _simulated_annealing(
+                    "CGER (auto)", cger_auto_obj, iters, rng,
+                    max_llm_calls=cger_max_llm, lambda_llm=0.0,
+                    n_grid_points=grid_points,
+                )
 
         if "cgrr" in stages:
             async def cgrr_obj(theta: float) -> tuple[float, float, float, int]:
                 return await _eval_cgrr(theta, rels_df, truth_rel_pairs,
                                         model, driver)
             results["cgrr"] = await _simulated_annealing(
-                "CGRR", cgrr_obj, iters, rng,
+                "CGRR (LLM)", cgrr_obj, iters, rng,
                 max_llm_calls=cgrr_max_llm, lambda_llm=lambda_llm,
                 n_grid_points=grid_points,
             )
+
+            if not skip_auto:
+                async def cgrr_auto_obj(theta: float) -> tuple[float, float, float, int]:
+                    return await _eval_cgrr(theta, rels_df, truth_rel_pairs,
+                                            auto_model, driver)
+                results["cgrr_auto"] = await _simulated_annealing(
+                    "CGRR (auto)", cgrr_auto_obj, iters, rng,
+                    max_llm_calls=cgrr_max_llm, lambda_llm=0.0,
+                    n_grid_points=grid_points,
+                )
     finally:
         await driver.close()
 
@@ -626,27 +683,38 @@ async def main(stages: list[str], iters: int, seed: int,
     RESULTS_PATH.write_text(json.dumps(results, indent=2, ensure_ascii=False),
                             encoding="utf-8")
 
+    def _fmt_best(b: dict, max_llm: int) -> str:
+        return (f"theta={b['threshold']:.3f}  P={b['precision']:.3f}  "
+                f"R={b['recall']:.3f}  F1={b['f1']:.3f}  "
+                f"llm={b['llm_calls']}/{max_llm}  score={b['score']:.3f}")
+
     print()
-    print("=" * 70)
+    print("=" * 78)
     print("  Best thresholds (train)")
-    print("=" * 70)
+    print("=" * 78)
     if "cger" in stages:
         b = results["cger"]["best"]  # type: ignore[index]
-        print(f"  CGER_COSINE_THRESHOLD = {b['threshold']:.3f}   "
-              f"(P={b['precision']:.3f} R={b['recall']:.3f} F1={b['f1']:.3f}  "
-              f"llm={b['llm_calls']}/{cger_max_llm} score={b['score']:.3f})")
+        print(f"  CGER  [LLM] : {_fmt_best(b, cger_max_llm)}")
+        if "cger_auto" in results:
+            ba = results["cger_auto"]["best"]  # type: ignore[index]
+            print(f"  CGER [auto] : {_fmt_best(ba, cger_max_llm)}")
+            print(f"        delta : F1 {ba['f1'] - b['f1']:+.3f}  "
+                  f"(auto threshold {ba['threshold'] - b['threshold']:+.3f})")
     if "cgrr" in stages:
         b = results["cgrr"]["best"]  # type: ignore[index]
-        print(f"  CGRR_COSINE_THRESHOLD = {b['threshold']:.3f}   "
-              f"(P={b['precision']:.3f} R={b['recall']:.3f} F1={b['f1']:.3f}  "
-              f"llm={b['llm_calls']}/{cgrr_max_llm} score={b['score']:.3f})")
+        print(f"  CGRR  [LLM] : {_fmt_best(b, cgrr_max_llm)}")
+        if "cgrr_auto" in results:
+            ba = results["cgrr_auto"]["best"]  # type: ignore[index]
+            print(f"  CGRR [auto] : {_fmt_best(ba, cgrr_max_llm)}")
+            print(f"        delta : F1 {ba['f1'] - b['f1']:+.3f}  "
+                  f"(auto threshold {ba['threshold'] - b['threshold']:+.3f})")
     print(f"  elapsed: {results['elapsed_seconds']}s")
     cache_info = results["llm_cache"]  # type: ignore[index]
     print(f"  LLM cache: {cache_info['hits']} hits / {cache_info['lookups']} lookups "
           f"({cache_info['hit_rate']:.1%}), {cache_info['misses']} real API calls "
           f"over {cache_info['unique_pairs']} unique pairs")
     print(f"  full trace + cache written to: {RESULTS_PATH.relative_to(PROJECT_ROOT)}")
-    print("=" * 70)
+    print("=" * 78)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -671,6 +739,13 @@ def _parse_args() -> argparse.Namespace:
                         f"robust against degenerate local optima, but "
                         f"costs that many extra evaluations per stage. "
                         f"Default: {GRID_SCAN_POINTS}")
+    p.add_argument("--skip-auto", action="store_true", dest="skip_auto",
+                   help="Skip the auto-merge baseline (no-LLM, F1-only "
+                        "objective) that's normally tuned alongside each "
+                        "LLM-assisted stage. By default both modes are "
+                        "tuned per stage so you can compare auto-merge vs "
+                        "LLM-verified merging at their respective best "
+                        "thresholds.")
     return p.parse_args()
 
 
@@ -688,4 +763,4 @@ if __name__ == "__main__":
         print(f"[ERROR] --grid-points must be >= 1 (got {args.grid_points})", file=sys.stderr)
         sys.exit(1)
     asyncio.run(main(stages, args.iters, args.seed, args.lambda_llm,
-                     args.grid_points))
+                     args.grid_points, skip_auto=args.skip_auto))

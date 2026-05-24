@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import re
 import sys
 from pathlib import Path
@@ -98,15 +99,35 @@ def _build_records(
     raws: Iterable[dict[str, Any]],
     corpus_dir: Path,
     max_entities: int | None = None,
+    seed: int | None = None,
 ) -> tuple[list[EvalRecord], int]:
     """Emit one EvalRecord per question and write the unified corpus.
 
     Every unique /wiki/... entity contributes one .txt to `corpus_dir`. All
     questions share that single pool — there is no per-entity corpus.
     """
+    raws = list(raws)
+
+    selected: set[str] | None = None
+    if max_entities is not None:
+        all_entities: list[str] = []
+        seen_entities: set[str] = set()
+        for raw in raws:
+            idx = str(raw.get("idx") or raw.get("id") or "")
+            if not idx:
+                continue
+            eid = _entity_id(idx)
+            if eid and eid not in seen_entities:
+                seen_entities.add(eid)
+                all_entities.append(eid)
+        rng = random.Random(seed)
+        if max_entities < len(all_entities):
+            selected = set(rng.sample(all_entities, max_entities))
+        else:
+            selected = set(all_entities)
+
     records: list[EvalRecord] = []
     seen: dict[str, str] = {}  # entity_id -> filename
-    kept_entities: set[str] = set()
 
     for raw in raws:
         idx = str(raw.get("idx") or raw.get("id") or "")
@@ -114,10 +135,8 @@ def _build_records(
             continue
 
         entity_id = _entity_id(idx)
-        if max_entities is not None and entity_id not in kept_entities:
-            if len(kept_entities) >= max_entities:
-                continue
-            kept_entities.add(entity_id)
+        if selected is not None and entity_id not in selected:
+            continue
 
         # Corpus: write the page once per unique entity, regardless of whether
         # any of its questions are answerable. Unanswerable-only pages still
@@ -178,7 +197,13 @@ def main(argv: list[str] | None = None) -> int:
         "--max-entities",
         type=int,
         default=None,
-        help="Keep only the first N unique entities (for quick smoke tests).",
+        help="Keep N unique entities sampled at random (for quick smoke tests).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for --max-entities sampling. Omit for nondeterministic.",
     )
     args = parser.parse_args(argv)
 
@@ -191,7 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     args.out_corpus.mkdir(parents=True, exist_ok=True)
 
     raws = _read_raw(args.input_hard)
-    records, doc_count = _build_records(raws, args.out_corpus, args.max_entities)
+    records, doc_count = _build_records(
+        raws, args.out_corpus, args.max_entities, args.seed
+    )
 
     if args.limit is not None and args.limit >= 0:
         records = records[: args.limit]
