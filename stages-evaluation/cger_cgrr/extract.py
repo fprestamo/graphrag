@@ -78,7 +78,7 @@ MAX_GLEANINGS = 1
 
 ENTITY_TYPES = ["organization","person","geo","event","other"]
 
-DEFAULT_CONCURRENCY = 10
+DEFAULT_CONCURRENCY = 15
 
 # Transient LLM errors (e.g. "Server disconnected", connection resets) are
 # common during long extraction runs.  Without retries, a single failed
