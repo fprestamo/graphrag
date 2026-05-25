@@ -101,6 +101,11 @@ CGRR_CANDIDATE_TOP_K = 5
 NEO4J_VECTOR_DIMENSIONS = 3072
 """Must match the embedding model: 1536 = text-embedding-3-small, 3072 = text-embedding-3-large."""
 
+NUM_RUNS = 3
+"""Re-run the full resolution pipeline this many times to observe variance
+from LLM stochasticity. The same-name baseline is computed once at the end
+(it is deterministic)."""
+
 
 def _load_env_file(path: Path) -> None:
     """Populate ``os.environ`` from a ``.env`` file without clobbering existing vars."""
@@ -206,6 +211,49 @@ def _score(predicted: set[frozenset[str]], truth: set[frozenset[str]]) -> dict:
     }
 
 
+def _same_name_pairs(items) -> set[frozenset[str]]:
+    """Group strings by normalized form (lowercase + strip) and emit every
+    in-group pair.
+
+    Represents the trivial baseline: "merge any two extracted strings whose
+    normalized form is identical". Useful as a floor to compare CGER/CGRR
+    against — anything they catch beyond this set is a non-trivial merge
+    that required semantic reasoning.
+    """
+    groups: dict[str, set[str]] = {}
+    for s in items:
+        s = str(s)
+        groups.setdefault(s.strip().lower(), set()).add(s)
+    pairs: set[frozenset[str]] = set()
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        for a, b in combinations(sorted(group), 2):
+            pairs.add(frozenset({a, b}))
+    return pairs
+
+
+def _truth_pairs_same_name_count(truth_pairs: set[frozenset[str]]) -> int:
+    """Count truth pairs whose two aliases share the same normalized form."""
+    count = 0
+    for pair in truth_pairs:
+        items = list(pair)
+        if len(items) == 2 and items[0].strip().lower() == items[1].strip().lower():
+            count += 1
+    return count
+
+
+def _mean(vals: list[float]) -> float:
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def _std(vals: list[float]) -> float:
+    if len(vals) < 2:
+        return 0.0
+    m = _mean(vals)
+    return (sum((v - m) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5
+
+
 def _print_report(label: str, scores: dict) -> None:
     print(f"\n{'=' * 70}")
     print(f"  {label}")
@@ -233,6 +281,68 @@ def _print_report(label: str, scores: dict) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+async def _run_resolution_once(
+    run_idx: int,
+    entities_df: pd.DataFrame,
+    rels_df: pd.DataFrame,
+    truth_entity_pairs: set[frozenset[str]],
+    truth_rel_pairs: set[frozenset[str]],
+    config: BTGraphRAGConfig,
+    model,
+    driver,
+) -> dict:
+    """Run a single CGER + CGRR pass and score it against ground truth.
+
+    Each run is independent: the CGER/CGRR scratch databases auto-wipe on
+    entry/exit, and the CGRR test DB is wiped before each call. Variance
+    between runs comes purely from LLM stochasticity.
+    """
+    print(f"\n{'#' * 78}")
+    print(f"#  RUN {run_idx}/{NUM_RUNS}")
+    print(f"{'#' * 78}")
+
+    print(f"\n[CGER] Run {run_idx}: Running with empty existing graph "
+          f"(Phase B intra-batch via scratch DB '{CGER_TEMP_DB}')…")
+    _, cger_merge_map, _ = await resolve_entities(
+        new_entities=entities_df,
+        existing_entities=pd.DataFrame(),
+        config=config,
+        model=model,
+        driver=driver,
+        phase_b_top_k=CGER_PHASE_B_TOP_K,
+    )
+    print(f"[CGER] Run {run_idx}: merge_map: {len(cger_merge_map)} entries")
+    cger_pairs = _pairs_from_merge_map(cger_merge_map)
+    cger_scores = _score(cger_pairs, truth_entity_pairs)
+    _print_report(f"CGER evaluation — run {run_idx}", cger_scores)
+
+    async with driver.session(database=TEST_DB) as session:
+        print(f"\n[CGRR] Run {run_idx}: Wiping {TEST_DB} (Phase A no-op)…")
+        await session.run("MATCH (n) DETACH DELETE n")
+        print(f"[CGRR] Run {run_idx}: Running with empty existing graph "
+              f"(Phase B intra-batch via scratch DB '{CGRR_TEMP_DB}')…")
+        _, cgrr_normalize_map, _ = await resolve_relationships(
+            relationships_df=rels_df,
+            config=config,
+            session=session,
+            model=model,
+            driver=driver,
+            phase_b_top_k=CGRR_CANDIDATE_TOP_K,
+        )
+    print(f"[CGRR] Run {run_idx}: normalize_map: {len(cgrr_normalize_map)} entries")
+    cgrr_pairs = _pairs_from_merge_map(cgrr_normalize_map)
+    cgrr_scores = _score(cgrr_pairs, truth_rel_pairs)
+    _print_report(f"CGRR evaluation — run {run_idx}", cgrr_scores)
+
+    return {
+        "run": run_idx,
+        "cger_merge_map": cger_merge_map,
+        "cger_scores": cger_scores,
+        "cgrr_normalize_map": cgrr_normalize_map,
+        "cgrr_scores": cgrr_scores,
+    }
+
 
 async def main() -> None:
     entities_path = EXTRACTED_DIR / "entities.json"
@@ -281,59 +391,112 @@ async def main() -> None:
           f"phase_b_top_k={CGER_PHASE_B_TOP_K}")
     print(f"  CGRR: cosine≥{CGRR_COSINE_THRESHOLD}  top_k={CGRR_CANDIDATE_TOP_K}")
     print(f"  LLM:  {COMPLETION_MODEL}  |  vector_dim={NEO4J_VECTOR_DIMENSIONS}")
+    print(f"  Runs: {NUM_RUNS}  (same-name baseline computed once at end)")
 
     model = _completion()
 
     from neo4j import AsyncGraphDatabase
     driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    runs: list[dict] = []
     try:
-        # --- CGER: scratch DB ('cgerbatch') backs Phase B top-K via HNSW ---
-        print(f"\n[CGER] Running with empty existing graph "
-              f"(Phase B intra-batch via scratch DB '{CGER_TEMP_DB}')…")
-        _, cger_merge_map, _ = await resolve_entities(
-            new_entities=entities_df,
-            existing_entities=pd.DataFrame(),
-            config=config,
-            model=model,
-            driver=driver,
-            phase_b_top_k=CGER_PHASE_B_TOP_K,
-        )
-        print(f"[CGER] merge_map: {len(cger_merge_map)} entries")
-        cger_pairs = _pairs_from_merge_map(cger_merge_map)
-        cger_scores = _score(cger_pairs, truth_entity_pairs)
-        _print_report("CGER evaluation (entity resolution)", cger_scores)
-
-        # --- CGRR: requires a session; point at an empty test DB ---
-        async with driver.session(database=TEST_DB) as session:
-            print(f"\n[CGRR] Wiping {TEST_DB} (so Phase A finds an empty graph)…")
-            await session.run("MATCH (n) DETACH DELETE n")
-            print(f"[CGRR] Running with empty existing graph "
-                  f"(Phase B intra-batch via scratch DB '{CGRR_TEMP_DB}')…")
-            _, cgrr_normalize_map, _ = await resolve_relationships(
-                relationships_df=rels_df,
-                config=config,
-                session=session,
-                model=model,
-                driver=driver,
-                phase_b_top_k=CGRR_CANDIDATE_TOP_K,
+        for run_idx in range(1, NUM_RUNS + 1):
+            run_result = await _run_resolution_once(
+                run_idx,
+                entities_df,
+                rels_df,
+                truth_entity_pairs,
+                truth_rel_pairs,
+                config,
+                model,
+                driver,
             )
-        print(f"[CGRR] normalize_map: {len(cgrr_normalize_map)} entries")
-        cgrr_pairs = _pairs_from_merge_map(cgrr_normalize_map)
-        cgrr_scores = _score(cgrr_pairs, truth_rel_pairs)
-        _print_report("CGRR evaluation (relationship-type resolution)", cgrr_scores)
+            runs.append(run_result)
     finally:
         await driver.close()
 
-    print()
-    print("=" * 70)
-    print("  Summary")
-    print("=" * 70)
-    print(f"  CGER:  P={cger_scores['precision']:.3f}  "
-          f"R={cger_scores['recall']:.3f}  F1={cger_scores['f1']:.3f}")
-    print(f"  CGRR:  P={cgrr_scores['precision']:.3f}  "
-          f"R={cgrr_scores['recall']:.3f}  F1={cgrr_scores['f1']:.3f}")
-    print("=" * 70)
+    # ------------------------------------------------------------------
+    # Same-name baseline (deterministic — computed once)
+    # ------------------------------------------------------------------
+    entity_titles = entities_df["title"].astype(str).tolist()
+    rel_types = (
+        rels_df["relation_type"].astype(str).tolist()
+        if "relation_type" in rels_df.columns else []
+    )
 
+    baseline_entity_pairs = _same_name_pairs(entity_titles)
+    baseline_rel_pairs = _same_name_pairs(rel_types)
+    baseline_entity_scores = _score(baseline_entity_pairs, truth_entity_pairs)
+    baseline_rel_scores = _score(baseline_rel_pairs, truth_rel_pairs)
+
+    truth_entity_same_name = _truth_pairs_same_name_count(truth_entity_pairs)
+    truth_rel_same_name = _truth_pairs_same_name_count(truth_rel_pairs)
+
+    # ------------------------------------------------------------------
+    # Cross-run summary
+    # ------------------------------------------------------------------
+    cger_p = [r["cger_scores"]["precision"] for r in runs]
+    cger_r = [r["cger_scores"]["recall"] for r in runs]
+    cger_f = [r["cger_scores"]["f1"] for r in runs]
+    cgrr_p = [r["cgrr_scores"]["precision"] for r in runs]
+    cgrr_r = [r["cgrr_scores"]["recall"] for r in runs]
+    cgrr_f = [r["cgrr_scores"]["f1"] for r in runs]
+
+    print()
+    print("=" * 86)
+    print(f"  Summary across {NUM_RUNS} runs  (variance from LLM stochasticity)")
+    print("=" * 86)
+    header = (f"  {'Run':<6}{'CGER P':>10}{'CGER R':>10}{'CGER F1':>10}"
+              f"   |  {'CGRR P':>10}{'CGRR R':>10}{'CGRR F1':>10}")
+    print(header)
+    print(f"  {'-' * 6}{'-' * 30}   |  {'-' * 30}")
+    for r in runs:
+        c, g = r["cger_scores"], r["cgrr_scores"]
+        print(f"  {r['run']:<6}{c['precision']:>10.3f}{c['recall']:>10.3f}{c['f1']:>10.3f}"
+              f"   |  {g['precision']:>10.3f}{g['recall']:>10.3f}{g['f1']:>10.3f}")
+    print(f"  {'-' * 6}{'-' * 30}   |  {'-' * 30}")
+    print(f"  {'mean':<6}{_mean(cger_p):>10.3f}{_mean(cger_r):>10.3f}{_mean(cger_f):>10.3f}"
+          f"   |  {_mean(cgrr_p):>10.3f}{_mean(cgrr_r):>10.3f}{_mean(cgrr_f):>10.3f}")
+    print(f"  {'std':<6}{_std(cger_p):>10.3f}{_std(cger_r):>10.3f}{_std(cger_f):>10.3f}"
+          f"   |  {_std(cgrr_p):>10.3f}{_std(cgrr_r):>10.3f}{_std(cgrr_f):>10.3f}")
+    print("=" * 86)
+
+    # ------------------------------------------------------------------
+    # Same-name baseline comparison (deterministic)
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 86)
+    print("  Same-name baseline vs CGER+CGRR  (deterministic, computed once)")
+    print("=" * 86)
+    print(f"  CGER (entities)")
+    print(f"    Total truth pairs (resolutions CGER should detect): {len(truth_entity_pairs)}")
+    print(f"    Of those, 'same normalized name' (trivial):         {truth_entity_same_name}")
+    print(f"    Baseline predicted pairs:                           {len(baseline_entity_pairs)}")
+    print(f"    Baseline:  P={baseline_entity_scores['precision']:.3f}  "
+          f"R={baseline_entity_scores['recall']:.3f}  "
+          f"F1={baseline_entity_scores['f1']:.3f}  "
+          f"(TP={len(baseline_entity_scores['true_positives'])} "
+          f"FP={len(baseline_entity_scores['false_positives'])} "
+          f"FN={len(baseline_entity_scores['false_negatives'])})")
+    print(f"    CGER mean: P={_mean(cger_p):.3f}  R={_mean(cger_r):.3f}  "
+          f"F1={_mean(cger_f):.3f}")
+    print()
+    print(f"  CGRR (relation types)")
+    print(f"    Total truth pairs (resolutions CGRR should detect): {len(truth_rel_pairs)}")
+    print(f"    Of those, 'same normalized name' (trivial):         {truth_rel_same_name}")
+    print(f"    Baseline predicted pairs:                           {len(baseline_rel_pairs)}")
+    print(f"    Baseline:  P={baseline_rel_scores['precision']:.3f}  "
+          f"R={baseline_rel_scores['recall']:.3f}  "
+          f"F1={baseline_rel_scores['f1']:.3f}  "
+          f"(TP={len(baseline_rel_scores['true_positives'])} "
+          f"FP={len(baseline_rel_scores['false_positives'])} "
+          f"FN={len(baseline_rel_scores['false_negatives'])})")
+    print(f"    CGRR mean: P={_mean(cgrr_p):.3f}  R={_mean(cgrr_r):.3f}  "
+          f"F1={_mean(cgrr_f):.3f}")
+    print("=" * 86)
+
+    # ------------------------------------------------------------------
+    # Persist
+    # ------------------------------------------------------------------
     results = {
         "config": {
             "cger_cosine_threshold": CGER_COSINE_THRESHOLD,
@@ -343,6 +506,7 @@ async def main() -> None:
             "cgrr_candidate_top_k": CGRR_CANDIDATE_TOP_K,
             "neo4j_vector_dimensions": NEO4J_VECTOR_DIMENSIONS,
             "completion_model": COMPLETION_MODEL,
+            "num_runs": NUM_RUNS,
         },
         "test_data": {
             "entities": len(entities_df),
@@ -350,13 +514,51 @@ async def main() -> None:
             "entity_truth_pairs": len(truth_entity_pairs),
             "relation_truth_pairs": len(truth_rel_pairs),
         },
-        "cger": {
-            "scores": cger_scores,
-            "merge_map": cger_merge_map,
+        "runs": [
+            {
+                "run": r["run"],
+                "cger": {
+                    "scores": r["cger_scores"],
+                    "merge_map": r["cger_merge_map"],
+                },
+                "cgrr": {
+                    "scores": r["cgrr_scores"],
+                    "normalize_map": r["cgrr_normalize_map"],
+                },
+            }
+            for r in runs
+        ],
+        "summary": {
+            "cger": {
+                "precision_mean": _mean(cger_p),
+                "precision_std": _std(cger_p),
+                "recall_mean": _mean(cger_r),
+                "recall_std": _std(cger_r),
+                "f1_mean": _mean(cger_f),
+                "f1_std": _std(cger_f),
+            },
+            "cgrr": {
+                "precision_mean": _mean(cgrr_p),
+                "precision_std": _std(cgrr_p),
+                "recall_mean": _mean(cgrr_r),
+                "recall_std": _std(cgrr_r),
+                "f1_mean": _mean(cgrr_f),
+                "f1_std": _std(cgrr_f),
+            },
         },
-        "cgrr": {
-            "scores": cgrr_scores,
-            "normalize_map": cgrr_normalize_map,
+        "same_name_baseline": {
+            "cger": {
+                "predicted_pairs": len(baseline_entity_pairs),
+                "truth_pairs_total": len(truth_entity_pairs),
+                "truth_pairs_same_name": truth_entity_same_name,
+                "scores": baseline_entity_scores,
+            },
+            "cgrr": {
+                "predicted_pairs": len(baseline_rel_pairs),
+                "truth_pairs_total": len(truth_rel_pairs),
+                "truth_pairs_same_name": truth_rel_same_name,
+                "scores": baseline_rel_scores,
+            },
         },
     }
     RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
