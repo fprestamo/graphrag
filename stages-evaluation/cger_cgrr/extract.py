@@ -54,8 +54,8 @@ from graphrag.bt_graphrag.temporal_extraction.temporal_graph_extractor import (
 from graphrag.bt_graphrag.prompts import TEMPORAL_GRAPH_EXTRACTION_PROMPT
 from graphrag_chunking.token_chunker import TokenChunker
 from graphrag_llm.completion import create_completion
-from graphrag_llm.config import ModelConfig
-from graphrag_llm.config.types import LLMProviderType
+from graphrag_llm.config import ModelConfig, RetryConfig
+from graphrag_llm.config.types import LLMProviderType, RetryType
 from graphrag_llm.embedding import create_embedding
 
 
@@ -72,13 +72,24 @@ VALID_SPLITS = ("train", "test")
 # Same defaults the .ragtest settings.yaml uses, so the eval mirrors prod.
 COMPLETION_MODEL = "gpt-4.1-mini"
 EMBEDDING_MODEL = "text-embedding-3-large"
-CHUNK_SIZE = 800
+CHUNK_SIZE = 600
 CHUNK_OVERLAP = 100
 MAX_GLEANINGS = 1
 
 ENTITY_TYPES = ["organization","person","geo","event","other"]
 
 DEFAULT_CONCURRENCY = 10
+
+# Transient LLM errors (e.g. "Server disconnected", connection resets) are
+# common during long extraction runs.  Without retries, a single failed
+# chunk kills the whole asyncio.gather and we lose in-flight progress.
+_RETRY_CONFIG = RetryConfig(
+    type=RetryType.ExponentialBackoff,
+    max_retries=6,
+    base_delay=2.0,
+    max_delay=60.0,
+    jitter=True,
+)
 
 
 def _load_env_file(path: Path) -> None:
@@ -113,6 +124,7 @@ def _completion():
             model_provider="openai",
             model=COMPLETION_MODEL,
             api_key=_api_key(),
+            retry=_RETRY_CONFIG,
         )
     )
 
@@ -124,6 +136,7 @@ def _embedding():
             model_provider="openai",
             model=EMBEDDING_MODEL,
             api_key=_api_key(),
+            retry=_RETRY_CONFIG,
         )
     )
 
