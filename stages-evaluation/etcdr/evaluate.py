@@ -86,6 +86,7 @@ from graphrag.bt_graphrag.entity_resolution.cgrr import resolve_relationships
 from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 from graphrag.bt_graphrag.models.temporal_types import (
     INFINITY,
+    MINUS_INFINITY,
     ProvenanceRecord,
     RelationCardinality,
     ResolutionStrategy,
@@ -337,18 +338,26 @@ def _load_ground_truth(path: Path, required_keys: list[str]) -> dict[str, Any]:
     return data
 
 
-def _parse_dt(raw: Any) -> datetime:
+def _parse_dt(raw: Any, *, default: datetime) -> datetime:
+    """Parse a temporal field, returning ``default`` for missing/invalid input.
+
+    Use ``default=MINUS_INFINITY`` for ``t_valid_start`` (left-open interval
+    sentinel: "unknown start") and ``default=INFINITY`` for ``t_valid_end``
+    (right-open interval sentinel: "unknown end / still true"). Keeping the
+    two endpoints asymmetric preserves the invariant ``t_v^s <= t_v^e`` and
+    matches the bitemporal contract used by ETCDR's apply_evolution table.
+    """
     if raw is None or (isinstance(raw, float) and math.isnan(raw)):
-        return INFINITY
+        return default
     if isinstance(raw, datetime):
         return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
     if isinstance(raw, str):
         try:
             dt = datetime.fromisoformat(raw)
         except ValueError:
-            return INFINITY
+            return default
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    return INFINITY
+    return default
 
 
 def _build_temporal_relationship(row: dict[str, Any]) -> TemporalRelationship:
@@ -356,15 +365,14 @@ def _build_temporal_relationship(row: dict[str, Any]) -> TemporalRelationship:
 
     Uses the canonical source/target/relation_type strings already in
     place (the caller is responsible for applying the merge maps).
+    Missing temporal endpoints are coerced to the bitemporal sentinels
+    (MINUS_INFINITY for unknown start, INFINITY for unknown end) so the
+    candidate enters ETCDR with the same semantics the rest of the
+    pipeline assumes.
     """
-    t_valid_start = _parse_dt(row.get("t_valid_start"))
-    # The extractor leaves t_valid_start as INFINITY when it could not
-    # anchor the fact in time. ETCDR's temporal queries treat such edges
-    # as "active forever", which is fine for evaluation purposes.
-    t_valid_end = _parse_dt(row.get("t_valid_end"))
     quad = TemporalStateQuad(
-        t_valid_start=t_valid_start if t_valid_start != INFINITY else utcnow(),
-        t_valid_end=t_valid_end,
+        t_valid_start=_parse_dt(row.get("t_valid_start"), default=MINUS_INFINITY),
+        t_valid_end=_parse_dt(row.get("t_valid_end"), default=INFINITY),
         t_tx_start=utcnow(),
         t_tx_end=INFINITY,
     )
