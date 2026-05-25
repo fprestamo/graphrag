@@ -85,6 +85,17 @@ from graphrag_llm.completion import create_completion
 from graphrag_llm.config import ModelConfig
 from graphrag_llm.config.types import LLMProviderType
 
+# Reuse the extraction-stage constants so the train-results.json records
+# exactly the upstream settings that produced data/train-extracted/*.
+from extract import (
+    CHUNK_OVERLAP as EXTRACT_CHUNK_OVERLAP,
+    CHUNK_SIZE as EXTRACT_CHUNK_SIZE,
+    COMPLETION_MODEL as EXTRACT_COMPLETION_MODEL,
+    EMBEDDING_MODEL as EXTRACT_EMBEDDING_MODEL,
+    ENTITY_TYPES as EXTRACT_ENTITY_TYPES,
+    MAX_GLEANINGS as EXTRACT_MAX_GLEANINGS,
+)
+
 
 # ---------------------------------------------------------------------------
 # Configuration  (held fixed across the search)
@@ -561,6 +572,7 @@ async def main(stages: list[str], iters: int, seed: int,
                skip_auto: bool = False) -> None:
     entities_path = TRAIN_EXTRACTED_DIR / "entities.json"
     rels_path = TRAIN_EXTRACTED_DIR / "relationships.json"
+    text_units_path = TRAIN_EXTRACTED_DIR / "text_units.json"
     if not entities_path.exists() or not rels_path.exists():
         print(f"[ERROR] Missing {entities_path} or {rels_path}. "
               f"Run: python {Path(__file__).name.replace('train', 'extract')} --split train",
@@ -569,7 +581,13 @@ async def main(stages: list[str], iters: int, seed: int,
 
     entities_df = pd.read_json(entities_path)
     rels_df = pd.read_json(rels_path)
-    print(f"[LOAD] {len(entities_df)} train entities, {len(rels_df)} train relationships")
+    text_units_count = (
+        len(json.loads(text_units_path.read_text(encoding="utf-8")))
+        if text_units_path.exists() else 0
+    )
+    unique_relation_types = int(rels_df["relation_type"].nunique()) if not rels_df.empty else 0
+    print(f"[LOAD] {len(entities_df)} train entities, {len(rels_df)} train relationships, "
+          f"{text_units_count} text units")
 
     truth_entity_clusters = _load_clusters(TRAIN_GROUND_TRUTH_DIR / "entity_resolution.json")
     truth_rel_clusters = _load_clusters(TRAIN_GROUND_TRUTH_DIR / "relationship_resolution.json")
@@ -601,6 +619,14 @@ async def main(stages: list[str], iters: int, seed: int,
             "cgrr_candidate_top_k": CGRR_CANDIDATE_TOP_K,
             "neo4j_vector_dimensions": NEO4J_VECTOR_DIMENSIONS,
             "completion_model": COMPLETION_MODEL,
+            "extraction": {
+                "completion_model": EXTRACT_COMPLETION_MODEL,
+                "embedding_model": EXTRACT_EMBEDDING_MODEL,
+                "chunk_size": EXTRACT_CHUNK_SIZE,
+                "chunk_overlap": EXTRACT_CHUNK_OVERLAP,
+                "max_gleanings": EXTRACT_MAX_GLEANINGS,
+                "entity_types": list(EXTRACT_ENTITY_TYPES),
+            },
             "sa": {
                 "iters": iters,
                 "seed": seed,
@@ -617,8 +643,10 @@ async def main(stages: list[str], iters: int, seed: int,
             },
         },
         "train_data": {
+            "text_units": text_units_count,
             "entities": len(entities_df),
             "relationships": len(rels_df),
+            "unique_relation_types": unique_relation_types,
             "entity_truth_pairs": len(truth_entity_pairs),
             "relation_truth_pairs": len(truth_rel_pairs),
         },
