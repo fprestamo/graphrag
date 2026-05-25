@@ -80,22 +80,22 @@ CGRR_TEMP_DB = "cgrrbatch"
 COMPLETION_MODEL = "gpt-4.1-mini"
 
 # --- CGER tunables (mirror BTGraphRAGConfig defaults; tweak to study effect) ---
-CGER_COSINE_THRESHOLD = 0.592
+CGER_COSINE_THRESHOLD = 0.686
 """Cosine ≥ this triggers the LLM SAME/DIFFERENT_ENTITY/DIFFERENT_TEMPORAL verdict.
 Below this, CGER never merges. Lower → more LLM calls, more recall, more risk of FPs."""
 
-CGER_CANDIDATE_TOP_K = 10
+CGER_CANDIDATE_TOP_K = 3
 """Per new entity, this many same-type candidates are scored by cosine.
 Only matters for Phase A (existing graph); Phase B intra-batch uses its own knob."""
 
-CGER_PHASE_B_TOP_K = 5
+CGER_PHASE_B_TOP_K = 3
 """Per entity in Phase B, this many already-seen batch entities are scored by cosine."""
 
 # --- CGRR tunables ---
-CGRR_COSINE_THRESHOLD = 0.1
+CGRR_COSINE_THRESHOLD = 0.556
 """Cosine ≥ this triggers the LLM SAME/DIFFERENT verdict for two relation-type strings."""
 
-CGRR_CANDIDATE_TOP_K = 5
+CGRR_CANDIDATE_TOP_K = 3
 """Per candidate relation type, this many existing types are kept for scoring."""
 
 NEO4J_VECTOR_DIMENSIONS = 3072
