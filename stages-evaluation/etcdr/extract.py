@@ -273,6 +273,29 @@ async def extract(concurrency: int = DEFAULT_CONCURRENCY) -> None:
         entities_df, relationships_df, embedding,
     )
 
+    # TemporalGraphExtractor leaves t_valid_start / t_valid_end out of rel_data
+    # when the LLM did not anchor the fact in time. pandas serialises the
+    # missing column as null. Align with the bt_extract_graph workflow
+    # (packages/.../workflows/bt_extract_graph.py::_parse_temporal_fields_from_extraction)
+    # by filling those nulls with the canonical bitemporal sentinels.
+    from graphrag.bt_graphrag.models.temporal_types import (
+        INFINITY_ISO,
+        MINUS_INFINITY_ISO,
+    )
+    if not relationships_df.empty:
+        if "t_valid_start" in relationships_df.columns:
+            relationships_df["t_valid_start"] = (
+                relationships_df["t_valid_start"].fillna(MINUS_INFINITY_ISO)
+            )
+        else:
+            relationships_df["t_valid_start"] = MINUS_INFINITY_ISO
+        if "t_valid_end" in relationships_df.columns:
+            relationships_df["t_valid_end"] = (
+                relationships_df["t_valid_end"].fillna(INFINITY_ISO)
+            )
+        else:
+            relationships_df["t_valid_end"] = INFINITY_ISO
+
     (out_dir / "text_units.json").write_text(
         json.dumps(text_units, ensure_ascii=False, indent=2),
         encoding="utf-8",
