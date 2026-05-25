@@ -70,8 +70,10 @@ def _log_resolution(
             or ``"NONE"``.
     """
     def _ts(v: float | datetime | None) -> str:
-        if v is None or v == INFINITY:
+        if v == INFINITY:
             return "present"
+        if v is None or v == MINUS_INFINITY:
+            return "unknown"
         if isinstance(v, datetime):
             return v.strftime("%Y-%m-%dT%H:%M:%S")
         return "present"
@@ -184,6 +186,11 @@ DECISION_ROUTER_PROMPT = """You are a temporal knowledge graph expert tasked wit
 
 ## Conflict Type
 {conflict_type}
+
+## Reading the Valid Time bounds
+- A real date (e.g. ``2020-03-15``) means the extractor anchored that endpoint to a specific point in time.
+- ``present`` in the right bound means the fact is still being asserted (open-ended).
+- ``unknown`` in either bound means the extractor could NOT anchor that endpoint. Reason about temporal ordering from the descriptions and the source authority; if neither breaks the tie, prefer DISAGREEMENT over guessing EVOLUTION/CORRECTION.
 
 ## Task
 Based on the evidence above, select the most appropriate resolution strategy:
@@ -908,8 +915,10 @@ async def _llm_route(
     from graphrag_llm.utils import CompletionMessagesBuilder
 
     def _ts(v: float | datetime | None) -> str:
-        if v is None or v == INFINITY:
+        if v == INFINITY:
             return "present"
+        if v is None or v == MINUS_INFINITY:
+            return "unknown"
         if isinstance(v, datetime):
             return v.strftime("%Y-%m-%d")
         return "present"
