@@ -213,6 +213,16 @@ You must produce a JSON file at:
    Preserve the original on-disk order — the harness feeds candidates
    to ETCDR in exactly this order.
 
+   IMPORTANT — temporal sentinels:
+     * `t_valid_start == "0001-01-01T00:00:00+00:00"` means the extractor
+       could not anchor the START of validity. Treat it as UNKNOWN.
+       Do NOT compare it as if it were the year 1 A.D.
+     * `t_valid_end   == "9999-12-31T23:59:59+00:00"` means the fact
+       has no known END (still asserted / open-ended). This is normal
+       and not a missing value.
+   When either endpoint is the UNKNOWN sentinel, you cannot use it
+   for temporal ordering.
+
 3. Classify every distinct `canonical_rel_type` into one of the four
    cardinalities and emit it under `cardinality_overrides`. Use the
    description text in relationships.json to disambiguate when the
@@ -262,6 +272,14 @@ You must produce a JSON file at:
       AND the new row's `t_valid_start` is strictly LATER than the
       prior row's `t_valid_start` AND both descriptions are
       internally consistent ("X CEO 2004-2024" + "Y CEO 2024-").
+
+      Sentinel handling: if either `t_valid_start` is the UNKNOWN
+      sentinel `"0001-01-01T00:00:00+00:00"`, temporal ordering is
+      UNDEFINED — do NOT pick EVOLUTION on the basis of a literal
+      comparison (year 1 vs 2020 is not a real order, it is "unknown
+      vs 2020"). If the descriptions themselves disambiguate the
+      sequence ("X CEO 2004-2024" before "Y is the current CEO"),
+      EVOLUTION is still appropriate; otherwise prefer DISAGREEMENT.
 
    c) CORRECTION — same conflict shape as (b), but the new row
       RETRACTS the prior row rather than succeeding it: the new
@@ -317,7 +335,10 @@ You must produce a JSON file at:
 It is better to omit a borderline `expected` entry than to invent
 one. The scorer treats unmatched entries as informational, but a
 wrong `expected_strategy` directly lowers accuracy. When in doubt:
-- temporal ordering unclear -> DISAGREEMENT (not EVOLUTION/CORRECTION).
+- temporal ordering unclear OR either `t_valid_start` is the
+  UNKNOWN sentinel `"0001-01-01T00:00:00+00:00"`, and the
+  descriptions do not disambiguate the sequence
+                               -> DISAGREEMENT (not EVOLUTION/CORRECTION).
 - cardinality unclear        -> NON_EXCLUSIVE.
 - triple uncertain to recur  -> emit only the first occurrence.
 
