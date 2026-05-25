@@ -1,5 +1,5 @@
 {
-  "_description": "Manual relation-type-resolution ground truth, consumed by the ETCDR evaluation harness during the canonicalisation pre-step. Each cluster lists relation_type strings (UPPER_SNAKE_CASE, as emitted) that denote the same predicate and should all normalise to the same canonical relation_type. The harness builds a normalize_map (alias -> canonical) from this file and rewrites the relation_type column of the extracted relationships before running ETCDR.",
+  "_description": "Manual ground truth for CGRR. Each cluster lists relation_type strings (UPPER_SNAKE_CASE, as the extractor emits) that denote the same predicate and should all normalise to the same canonical relation_type. The 'canonical' field is the relation_type CGRR's normalize_map should resolve every alias to. Relation types that appear only once with no synonymous alternative should NOT be listed here.",
   "_format": {
     "clusters": [
       {
@@ -8,5 +8,62 @@
       }
     ]
   },
-  "clusters": []
+  "clusters": [
+    {
+      "canonical": "OWNS",
+      "aliases": ["OWNS", "OWNED"]
+    },
+    {
+      "canonical": "SUPPORTED",
+      "aliases": ["SUPPORTED", "SUPPORTS"]
+    },
+    {
+      "canonical": "INFLUENCED",
+      "aliases": ["INFLUENCED", "INFLUENCES"]
+    },
+    {
+      "canonical": "REPRESENTS",
+      "aliases": ["REPRESENTS", "REPRESENTED"]
+    },
+    {
+      "canonical": "HOLDS_POSITION",
+      "aliases": ["HOLDS_POSITION", "HELD_POSITION"]
+    },
+    {
+      "canonical": "IS_CHAIRMAN_OF",
+      "aliases": ["IS_CHAIRMAN_OF", "CHAIRMAN_OF", "CHAIRED", "CHAIRING", "LEADS"]
+    },
+    {
+      "canonical": "INTERRED_AT",
+      "aliases": ["INTERRED_AT", "BURRIED_AT", "BURRIED_IN"]
+    },
+    {
+      "canonical": "DIED_IN",
+      "aliases": ["DIED_IN", "DIED_AT"]
+    },
+    {
+      "canonical": "MARRIED_TO",
+      "aliases": ["MARRIED_TO", "IS_SPOUSE_OF"]
+    },
+    {
+      "canonical": "EMPLOYED_AT",
+      "aliases": ["EMPLOYED_AT", "WORKED_AT", "WORKS_FOR"]
+    },
+    {
+      "canonical": "ADVISED",
+      "aliases": ["ADVISED", "ADVISOR_TO"]
+    },
+    {
+      "canonical": "IS_PRESIDENT_OF",
+      "aliases": ["IS_PRESIDENT_OF", "IS_CEO_OF", "IS_LEADER_OF"]
+    },
+    {
+      "canonical": "ALIAS_OF",
+      "aliases": ["ALIAS_OF", "SAME_AS"]
+    },
+    {
+      "canonical": "RECEIVED_AWARD",
+      "aliases": ["RECEIVED_AWARD", "AWARDED"]
+    }
+  ]
 }
