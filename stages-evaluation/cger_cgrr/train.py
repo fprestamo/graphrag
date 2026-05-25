@@ -117,9 +117,9 @@ CGRR_TEMP_DB = "cgrrbatch"
 
 COMPLETION_MODEL = "gpt-4.1-mini"
 
-CGER_CANDIDATE_TOP_K = 5
-CGER_PHASE_B_TOP_K = 5
-CGRR_CANDIDATE_TOP_K = 5
+CGER_CANDIDATE_TOP_K = 3
+CGER_PHASE_B_TOP_K = 3
+CGRR_CANDIDATE_TOP_K = 3
 NEO4J_VECTOR_DIMENSIONS = 3072
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ THRESHOLD_MAX = 0.95
 INITIAL_THRESHOLD = 0.4  # SA start point
 INITIAL_TEMPERATURE = 0.20  # in units of F1 (objective is in [0, 1])
 COOLING_ALPHA = 0.85        # T <- T * alpha per accepted/rejected step
-NEIGHBOR_RADIUS_INIT = 0.15  # max neighborhood jump at T = T_0
+NEIGHBOR_RADIUS_INIT = 0.25  # max neighborhood jump at T = T_0
 NEIGHBOR_RADIUS_MIN = 0.01   # neighborhood never shrinks below this
 ROUND_TO = 3                 # cache key precision for F1 memoization
 SA_ITERS = 20                # SA iterations per stage; overridable via --iters

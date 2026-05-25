@@ -222,7 +222,15 @@ async def resolve_entities(
         print(f"    [CGER] LLM trigger: cosine >= {config.cger_cosine_threshold}")
         print()
 
+        total_a = len(new_entities)
+        step_a = 0
         for idx, new_row in new_entities.iterrows():
+            step_a += 1
+            if step_a % 100 == 0:
+                print(f"    [CGER] Phase A progress: {step_a}/{total_a}  "
+                      f"merges={llm_merges}  diff_entity={llm_diff_entity}  "
+                      f"diff_temporal={llm_diff_temporal}  "
+                      f"below={below_threshold_count}  no_cands={no_match_count}")
             new_entity = dict(new_row)
             best_score = 0.0
             best_match: dict[str, Any] | None = None
@@ -263,40 +271,31 @@ async def resolve_entities(
 
             if best_match is None:
                 no_match_count += 1
-                print(f"    [{idx}] '{entity_title[:35]}' — no candidates found")
                 continue
 
-            match_title = str(best_match.get("title", "?"))
-
             if best_score >= config.cger_cosine_threshold and model is not None:
-                print(f"    [{idx}] LLM: '{entity_title[:30]}' vs '{match_title[:30]}'  cosine={best_score:.4f}")
                 verdict = await llm_verify_entity_match(new_entity, best_match, model)
                 if verdict == "SAME":
                     merge_map[new_entity["title"]] = best_match["title"]
                     llm_merges += 1
-                    print(f"         LLM verdict: SAME -> MERGED")
                     logger.info(
                         "CGER: LLM-confirmed merge '%s' -> '%s' (cosine=%.3f)",
                         new_entity["title"], best_match["title"], best_score,
                     )
                 elif verdict == "DIFFERENT_TEMPORAL":
                     llm_diff_temporal += 1
-                    print(f"         LLM verdict: DIFFERENT_TEMPORAL -> KEPT SEPARATE (same referent, temporal gap)")
                     logger.info(
                         "CGER: LLM kept temporally separate '%s' vs '%s' (cosine=%.3f)",
                         new_entity["title"], best_match["title"], best_score,
                     )
                 else:
                     llm_diff_entity += 1
-                    print(f"         LLM verdict: DIFFERENT_ENTITY -> KEPT SEPARATE")
                     logger.info(
                         "CGER: LLM rejected merge '%s' vs '%s' (cosine=%.3f, verdict=%s)",
                         new_entity["title"], best_match["title"], best_score, verdict,
                     )
             else:
                 below_threshold_count += 1
-                if best_score > 0.3:
-                    print(f"    [{idx}] BELOW THRESHOLD: '{entity_title[:30]}' best='{match_title[:30]}'  cosine={best_score:.4f}")
 
     # Apply Phase A merge map to new entities
     if merge_map:
@@ -383,7 +382,15 @@ async def resolve_entities(
 
         async def _phase_b_loop() -> None:
             nonlocal intra_llm_merges, intra_diff_entity, intra_diff_temporal
+            total_b = len(unmerged_records)
+            step_b = 0
             for entity in unmerged_records:
+                step_b += 1
+                if step_b % 100 == 0:
+                    print(f"    [CGER] Phase B progress: {step_b}/{total_b}  "
+                          f"merges={intra_llm_merges}  "
+                          f"diff_entity={intra_diff_entity}  "
+                          f"diff_temporal={intra_diff_temporal}")
                 entity_title = str(entity.get("title", ""))
 
                 if entity_title in merge_map:
@@ -414,8 +421,6 @@ async def resolve_entities(
                 if (best_match is not None
                         and best_score >= config.cger_cosine_threshold
                         and model is not None):
-                    print(f"    [INTRA] LLM: '{entity_title[:30]}' vs '{match_title[:30]}'  "
-                          f"cosine={best_score:.4f}  (pool={len(candidate_pool)})")
                     verdict = await llm_verify_entity_match(entity, best_match, model)
                     if verdict == "SAME":
                         intra_merge_map[entity_title] = match_title
@@ -430,7 +435,6 @@ async def resolve_entities(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"           LLM verdict: SAME -> MERGED")
                         logger.info(
                             "CGER: Intra-batch LLM merge '%s' -> '%s' (cosine=%.3f)",
                             entity_title, match_title, best_score,
@@ -447,7 +451,6 @@ async def resolve_entities(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"           LLM verdict: DIFFERENT_TEMPORAL -> KEPT SEPARATE")
                         seen_entities.append(entity)
                         seen_by_title[entity_title] = entity
                         kept_titles.add(entity_title)
@@ -463,7 +466,6 @@ async def resolve_entities(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"           LLM verdict: DIFFERENT_ENTITY -> KEPT SEPARATE")
                         seen_entities.append(entity)
                         seen_by_title[entity_title] = entity
                         kept_titles.add(entity_title)
@@ -479,8 +481,6 @@ async def resolve_entities(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"    [INTRA] BELOW: '{entity_title[:30]}' best='{match_title[:30]}'  "
-                              f"cosine={best_score:.4f}  (pool={len(candidate_pool)})")
                     seen_entities.append(entity)
                     seen_by_title[entity_title] = entity
                     kept_titles.add(entity_title)

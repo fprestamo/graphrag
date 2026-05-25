@@ -339,34 +339,31 @@ async def resolve_relationships(
         print(f"\n    [CGRR] Processing each candidate type:")
         print(f"    {'-' * 65}")
 
+        total_cands = len(candidate_types)
         for cand_idx, cand_type in enumerate(candidate_types):
+            if (cand_idx + 1) % 100 == 0:
+                print(f"    [CGRR] Phase A progress: {cand_idx + 1}/{total_cands}  "
+                      f"exact={exact_match_skip}  merges={llm_merges}  "
+                      f"rejects={llm_rejections}  below={below_threshold}")
             exact_exists = any(et["relation_type"] == cand_type for et in existing_types)
             if exact_exists:
                 exact_match_skip += 1
-                print(f"\n    [{cand_idx}] '{cand_type[:35]}' — EXACT MATCH in graph (skip)")
                 continue
 
             cand_sample = relationships_df[relationships_df["relation_type"] == cand_type].iloc[0]
             cand_desc = str(cand_sample.get("description", ""))
             cand_source = str(cand_sample.get("source", ""))
             cand_target = str(cand_sample.get("target", ""))
-            cand_edge_count = cand_type_counts.get(cand_type, 0)
 
             cand_emb = (
                 cand_sample.get("relation_type_embedding")
                 if "relation_type_embedding" in cand_sample.index else None
             )
 
-            print(f"\n    [{cand_idx}] Candidate: '{cand_type[:40]}' ({cand_edge_count} edges)")
-            print(f"         Sample: ({cand_source[:20]}) -> ({cand_target[:20]})")
-            print(f"         Desc: '{cand_desc[:60]}'")
-
             # Top-K pre-filter on relation_type_embedding. The Neo4j vector
             # index is keyed on description_embedding (the wrong signal for
             # predicate-synonym detection), so we use in-memory cosine.
             narrowed = _top_k_by_embedding(cand_emb, existing_types, cgrr_top_k)
-            if len(narrowed) < len(existing_types):
-                print(f"         In-memory top-K: {len(existing_types)} -> {len(narrowed)} candidates (k={cgrr_top_k})")
 
             cand_record = {
                 "relation_type": cand_type,
@@ -386,21 +383,13 @@ async def resolve_relationships(
 
             scored_matches.sort(key=lambda x: x[0], reverse=True)
 
-            print(f"         Top candidates ({len(scored_matches)}):")
-            for rank, (score, _bd, match) in enumerate(scored_matches[:5]):
-                zone = " << LLM" if score >= config.cgrr_cosine_threshold else ""
-                print(f"           #{rank+1} cosine={score:.4f}  "
-                      f"'{match['relation_type'][:30]:30s}'{zone}")
-
             if not scored_matches:
-                print(f"           (no comparisons available)")
                 continue
 
             best_score, _best_bd, best_match_record = scored_matches[0]
             match_type = best_match_record["relation_type"]
 
             if best_score >= config.cgrr_cosine_threshold and model is not None:
-                print(f"         LLM: '{cand_type[:30]}' vs '{match_type[:30]}'  cosine={best_score:.4f}")
                 verdict = await llm_verify_relationship_match(
                     candidate={
                         "relation_type": cand_type,
@@ -419,22 +408,18 @@ async def resolve_relationships(
                 if verdict == "SAME":
                     normalize_map[cand_type] = match_type
                     llm_merges += 1
-                    print(f"           LLM verdict: SAME -> NORMALIZED to '{match_type[:30]}'")
                     logger.info(
                         "CGRR: LLM-confirmed '%s' -> '%s' (cosine=%.3f)",
                         cand_type, match_type, best_score,
                     )
                 else:
                     llm_rejections += 1
-                    print(f"           LLM verdict: DIFFERENT -> KEPT SEPARATE")
                     logger.info(
                         "CGRR: LLM rejected '%s' vs '%s' (cosine=%.3f)",
                         cand_type, match_type, best_score,
                     )
             else:
                 below_threshold += 1
-                print(f"         BELOW THRESHOLD: best cosine={best_score:.4f} < "
-                      f"{config.cgrr_cosine_threshold} — keeping '{cand_type[:35]}' separate")
 
     # Apply Phase A normalization map
     original_types = relationships_df["relation_type"].copy()
@@ -530,7 +515,14 @@ async def resolve_relationships(
 
         async def _phase_b_loop() -> None:
             nonlocal intra_llm_normalizes, intra_rejections_b
+            total_b = len(rt_records)
+            step_b = 0
             for rec in rt_records:
+                step_b += 1
+                if step_b % 100 == 0:
+                    print(f"    [CGRR] Phase B progress: {step_b}/{total_b}  "
+                          f"merges={intra_llm_normalizes}  "
+                          f"rejects={intra_rejections_b}")
                 rt = rec["relation_type"]
                 cand_desc = rec["description"]
                 cand_src = rec["source"]
@@ -558,8 +550,6 @@ async def resolve_relationships(
                 if (best_canon is not None
                         and best_score >= config.cgrr_cosine_threshold
                         and model is not None):
-                    print(f"    [INTRA] LLM: '{rt[:30]}' vs '{match_type[:30]}'  "
-                          f"cosine={best_score:.4f}  (pool={len(candidate_pool)})")
                     verdict = await llm_verify_relationship_match(
                         candidate={"relation_type": rt, "description": cand_desc,
                                    "source": cand_src, "target": cand_tgt},
@@ -582,7 +572,6 @@ async def resolve_relationships(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"           LLM verdict: SAME -> NORMALIZED")
                         logger.info(
                             "CGRR: Intra-batch LLM normalize '%s' -> '%s' (cosine=%.3f)",
                             rt, match_type, best_score,
@@ -599,7 +588,6 @@ async def resolve_relationships(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"           LLM verdict: DIFFERENT -> KEPT SEPARATE")
                         canonical_types.append(rec)
                         canonical_by_rt[rt] = rec
                         kept_rts.add(rt)
@@ -615,8 +603,6 @@ async def resolve_relationships(
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
-                        print(f"    [INTRA] BELOW: '{rt[:30]}' best='{match_type[:30]}'  "
-                              f"cosine={best_score:.4f}  (pool={len(candidate_pool)})")
                     canonical_types.append(rec)
                     canonical_by_rt[rt] = rec
                     kept_rts.add(rt)
