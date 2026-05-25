@@ -437,7 +437,7 @@ async def _canonicalise(
     async with driver.session(database=TEST_DB) as session:
         print(f"\n[CGRR] Wiping {TEST_DB} so Phase A is a no-op…")
         await session.run("MATCH (n) DETACH DELETE n")
-        _, cgrr_normalize_map, _ = await resolve_relationships(
+        relationships_df, cgrr_normalize_map, _ = await resolve_relationships(
             relationships_df=relationships_df,
             config=config,
             session=session,
