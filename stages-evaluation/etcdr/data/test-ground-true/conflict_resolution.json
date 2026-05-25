@@ -1,0 +1,19 @@
+{
+  "_description": "Manual ETCDR ground truth. After the canonicalisation pre-step (apply entity_resolution.json + relationship_resolution.json), the harness iterates the resulting relationships in the order they appear in test-extracted/relationships.json, feeding each one to detect_and_resolve() with the previously accepted edges as the intra-batch context. For each expected resolution, list the (source, relation_type, target) triple of the candidate (using the CANONICAL strings, post-merge) and the strategy ETCDR should choose. Identical triples that appear more than once in the batch are matched against entries here in order — the first occurrence matches the first matching entry, the second occurrence matches the second matching entry, etc. Candidates whose triple does not appear in `expected` are skipped during scoring. Available strategies: NEW_EDGE, CORROBORATION, EVOLUTION, CORRECTION, DISAGREEMENT. The optional `cardinality` field lets you pin the relation's cardinality so the harness does not call the LLM classifier for it (one of SUBJECT_EXCLUSIVE, OBJECT_EXCLUSIVE, BOTH_EXCLUSIVE, NON_EXCLUSIVE).",
+  "_format": {
+    "cardinality_overrides": {
+      "<RELATION_TYPE>": "<SUBJECT_EXCLUSIVE|OBJECT_EXCLUSIVE|BOTH_EXCLUSIVE|NON_EXCLUSIVE>"
+    },
+    "expected": [
+      {
+        "source": "<CANONICAL_SOURCE>",
+        "relation_type": "<CANONICAL_RELATION_TYPE>",
+        "target": "<CANONICAL_TARGET>",
+        "expected_strategy": "<NEW_EDGE|CORROBORATION|EVOLUTION|CORRECTION|DISAGREEMENT>",
+        "notes": "optional human note"
+      }
+    ]
+  },
+  "cardinality_overrides": {},
+  "expected": []
+}

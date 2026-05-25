@@ -10,9 +10,10 @@ output against the truth.
 | Folder      | Stages exercised                                                                 |
 |-------------|----------------------------------------------------------------------------------|
 | `cger_cgrr` | Cross-Graph Entity Resolution + Cross-Graph Relationship-type Resolution         |
+| `etcdr`     | Edge-Level Temporal Conflict Detection and Resolution (canonicalisation driven by authored alias clusters) |
 
-See `cger_cgrr/README.md` for the usage pattern; future evaluations
-(e.g. for ETCDR end-to-end, ICUS, the temporal extractor itself)
+See `cger_cgrr/README.md` and `etcdr/README.md` for the usage pattern;
+future evaluations (e.g. for ICUS, the temporal extractor itself)
 should follow the same layout:
 
     <eval-name>/

@@ -1,0 +1,12 @@
+{
+  "_description": "Manual relation-type-resolution ground truth, consumed by the ETCDR evaluation harness during the canonicalisation pre-step. Each cluster lists relation_type strings (UPPER_SNAKE_CASE, as emitted) that denote the same predicate and should all normalise to the same canonical relation_type. The harness builds a normalize_map (alias -> canonical) from this file and rewrites the relation_type column of the extracted relationships before running ETCDR.",
+  "_format": {
+    "clusters": [
+      {
+        "canonical": "<UPPER_SNAKE_CASE_CANONICAL_TYPE>",
+        "aliases": ["<UPPER_SNAKE_CASE_ALIAS_1>", "<UPPER_SNAKE_CASE_ALIAS_2>", "..."]
+      }
+    ]
+  },
+  "clusters": []
+}

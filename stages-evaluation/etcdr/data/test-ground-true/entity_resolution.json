@@ -1,0 +1,13 @@
+{
+  "_description": "Manual entity-resolution ground truth, consumed by the ETCDR evaluation harness during the canonicalisation pre-step. Each cluster lists alias titles the extractor produced (UPPERCASE, as emitted) that should all collapse to the same canonical entity. The harness builds a merge_map (alias -> canonical) from this file and applies it to source/target in the extracted relationships before running ETCDR. Aliases that appear only once in the extracted output (no duplicates) should NOT be listed here.",
+  "_format": {
+    "clusters": [
+      {
+        "canonical": "<UPPERCASE_CANONICAL_TITLE>",
+        "type": "<entity_type, e.g. person|organization|geo>",
+        "aliases": ["<UPPERCASE_ALIAS_1>", "<UPPERCASE_ALIAS_2>", "..."]
+      }
+    ]
+  },
+  "clusters": []
+}
