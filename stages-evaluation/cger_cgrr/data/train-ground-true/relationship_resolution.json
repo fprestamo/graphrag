@@ -1,0 +1,113 @@
+{
+  "_description": "Manual ground truth for CGRR. Each cluster lists relation_type strings (UPPER_SNAKE_CASE, as the extractor emits) that denote the same predicate and should all normalise to the same canonical relation_type. The 'canonical' field is the relation_type CGRR's normalize_map should resolve every alias to. Relation types that appear only once with no synonymous alternative should NOT be listed here.",
+  "_format": {
+    "clusters": [
+      {
+        "canonical": "<UPPER_SNAKE_CASE_CANONICAL_TYPE>",
+        "aliases": ["<UPPER_SNAKE_CASE_ALIAS_1>", "<UPPER_SNAKE_CASE_ALIAS_2>", "..."]
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "canonical": "EMPLOYED_AT",
+      "aliases": ["EMPLOYED_AT", "WORKED_FOR", "WORKS_FOR"]
+    },
+    {
+      "canonical": "FOUNDED",
+      "aliases": ["CO_FOUNDED", "ESTABLISHED", "FOUNDED"]
+    },
+    {
+      "canonical": "MARRIED_TO",
+      "aliases": ["IS_MARRIED_TO", "MARRIED", "MARRIED_TO", "SPOUSE_OF"]
+    },
+    {
+      "canonical": "LIVED_IN",
+      "aliases": ["LIVED_IN", "RESIDED_IN", "RESIDES_IN"]
+    },
+    {
+      "canonical": "HELD_POSITION",
+      "aliases": ["HELD", "HELD_POSITION", "HELD_ROLE", "HELD_TITLE", "HOLDS_POSITION", "HOLD_TITLE"]
+    },
+    {
+      "canonical": "IS_PRESIDENT_OF",
+      "aliases": ["CHAIRS", "IS_CHAIRMAN_OF", "IS_PRESIDENT_OF", "LEADS", "LED"]
+    },
+    {
+      "canonical": "IS_RULER_OF",
+      "aliases": ["GOVERNED", "IS_RULER_OF", "RULED"]
+    },
+    {
+      "canonical": "IS_COACH_OF",
+      "aliases": ["COACHED", "IS_COACH_OF"]
+    },
+    {
+      "canonical": "AUTHORED",
+      "aliases": ["AUTHORED", "CO_AUTHORED"]
+    },
+    {
+      "canonical": "DEVELOPED",
+      "aliases": ["CO_DEVELOPED", "DEVELOPED"]
+    },
+    {
+      "canonical": "ADVISED",
+      "aliases": ["ADVISED", "ADVISES", "ADVISOR_TO"]
+    },
+    {
+      "canonical": "INFLUENCED",
+      "aliases": ["INFLUENCED", "INFLUENCES"]
+    },
+    {
+      "canonical": "PARTICIPATED_IN",
+      "aliases": ["PARTICIPATED_IN", "PARTICIPATES_IN"]
+    },
+    {
+      "canonical": "OPPOSED",
+      "aliases": ["OPPOSED", "OPPOSES"]
+    },
+    {
+      "canonical": "SUPPORTED",
+      "aliases": ["SUPPORTED", "SUPPORTS"]
+    },
+    {
+      "canonical": "INVESTIGATED",
+      "aliases": ["INVESTIGATED", "INVESTIGATES"]
+    },
+    {
+      "canonical": "PLAYED_FOR",
+      "aliases": ["PLAYED_FOR", "PLAYS_FOR"]
+    },
+    {
+      "canonical": "COMPETED_WITH",
+      "aliases": ["COMPETED_WITH", "COMPETES_WITH"]
+    },
+    {
+      "canonical": "MANAGED",
+      "aliases": ["MANAGED", "MANAGES"]
+    },
+    {
+      "canonical": "OPERATED_IN",
+      "aliases": ["OPERATED_IN", "OPERATES_IN"]
+    },
+    {
+      "canonical": "ALIAS_OF",
+      "aliases": ["ALIASED_WITH", "ALIAS_OF"]
+    },
+    {
+      "canonical": "SIBLING_OF",
+      "aliases": ["IS_SIBLING_OF", "SIBLING_OF"]
+    },
+    {
+      "canonical": "IS_PARENT_OF",
+      "aliases": ["IS_PARENT_OF", "PARENT_OF"]
+    },
+    {
+      "canonical": "IS_CHILD_OF",
+      "aliases": ["CHILD_OF", "IS_CHILD_OF"]
+    },
+    {
+      "canonical": "BURIED_IN",
+      "aliases": ["BURIAL_PLACE", "BURIED_IN"]
+    }
+  ]
+}

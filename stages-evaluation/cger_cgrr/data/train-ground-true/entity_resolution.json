@@ -1,0 +1,469 @@
+{
+  "_description": "Manual ground truth for CGER. Each cluster lists the alias titles the extractor is likely to produce (UPPERCASE, as the extractor emits) that should all collapse to the same canonical entity. The 'canonical' field is the title CGER's merge_map should resolve every alias to. Aliases that appear only once in the extracted output (no duplicates) should NOT be listed here — they are not entity-resolution targets.",
+  "_format": {
+    "clusters": [
+      {
+        "canonical": "<UPPERCASE_CANONICAL_TITLE>",
+        "type": "<entity_type, e.g. person|organization|geo>",
+        "aliases": ["<UPPERCASE_ALIAS_1>", "<UPPERCASE_ALIAS_2>", "..."]
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "canonical": "ARSENAL FC",
+      "type": "organization",
+      "aliases": ["ARSENAL", "ARSENAL FC"]
+    },
+    {
+      "canonical": "K.S.K. BEVEREN",
+      "type": "organization",
+      "aliases": ["BEVEREN", "K.S.K. BEVEREN"]
+    },
+    {
+      "canonical": "CALIFORNIA INSTITUTE OF TECHNOLOGY",
+      "type": "organization",
+      "aliases": ["CALIFORNIA INSTITUTE OF TECHNOLOGY", "CALTECH"]
+    },
+    {
+      "canonical": "DHOFAR",
+      "type": "organization",
+      "aliases": ["DHOAFR", "DHOFAR"]
+    },
+    {
+      "canonical": "FEDERAL BUREAU OF INVESTIGATION",
+      "type": "organization",
+      "aliases": ["FBI", "FEDERAL BUREAU OF INVESTIGATION"]
+    },
+    {
+      "canonical": "GENFER ARBEITERVEREIN",
+      "type": "organization",
+      "aliases": ["GENFER ARBEITER VEREIN", "GENFER ARBEITERVEREIN"]
+    },
+    {
+      "canonical": "GYMNASIUM OF GIESSEN",
+      "type": "organization",
+      "aliases": ["GIESSEN GYMNASIUM", "GYMNASIUM OF GIESSEN"]
+    },
+    {
+      "canonical": "NK GROBNIČAN",
+      "type": "organization",
+      "aliases": ["GROBNICAN", "NK GROBNIČAN"]
+    },
+    {
+      "canonical": "HNK RIJEKA",
+      "type": "organization",
+      "aliases": ["HNK RIJEKA", "NK RIJEKA"]
+    },
+    {
+      "canonical": "UN HUMAN RIGHTS COUNCIL",
+      "type": "organization",
+      "aliases": ["HUMAN RIGHTS COUNCIL", "UN HUMAN RIGHTS COUNCIL"]
+    },
+    {
+      "canonical": "JUVENTUS F.C.",
+      "type": "organization",
+      "aliases": ["JUVENTUS", "JUVENTUS F.C."]
+    },
+    {
+      "canonical": "LIVERPOOL FC",
+      "type": "organization",
+      "aliases": ["LIVERPOOL", "LIVERPOOL FC"]
+    },
+    {
+      "canonical": "NK PAZINKA",
+      "type": "organization",
+      "aliases": ["NK PAZINKA", "PAZINKA"]
+    },
+    {
+      "canonical": "NYU LAW INSTITUTE FOR EXECUTIVE EDUCATION",
+      "type": "organization",
+      "aliases": ["NYU LAW INSTITUTE FOR EXECUTIVE EDUCATION", "UN INSTITUTE FOR EXECUTIVE EDUCATION"]
+    },
+    {
+      "canonical": "REAL MADRID C.F.",
+      "type": "organization",
+      "aliases": ["REAL MADRID", "REAL MADRID C.F."]
+    },
+    {
+      "canonical": "SOCIAL DEMOCRATIC WORKERS PARTY OF GERMANY",
+      "type": "organization",
+      "aliases": ["SDAP", "SOCIAL DEMOCRATIC WORKERS PARTY OF GERMANY"]
+    },
+    {
+      "canonical": "SOCIAL DEMOCRATIC PARTY OF GERMANY",
+      "type": "organization",
+      "aliases": ["SOCIAL DEMOCRATIC PARTY OF GERMANY", "SPD"]
+    },
+    {
+      "canonical": "SICHUAN QUANXING FC",
+      "type": "organization",
+      "aliases": ["SICHUAN GUANCHENG", "SICHUAN QUANXING FC"]
+    },
+    {
+      "canonical": "GENERAL GERMAN WORKERS ASSOCIATION",
+      "type": "organization",
+      "aliases": ["ADAV", "GENERAL GERMAN WORKERS ASSOCIATION"]
+    },
+    {
+      "canonical": "UNITED STATES ARMY",
+      "type": "organization",
+      "aliases": ["ARMY", "UNITED STATES ARMY"]
+    },
+    {
+      "canonical": "YUGOSLAVIA NATIONAL FOOTBALL TEAM",
+      "type": "organization",
+      "aliases": ["YUGOSLAVIA NATIONAL FOOTBALL TEAM", "YUGOSLAVIA NATIONAL TEAM"]
+    },
+    {
+      "canonical": "PHILIP ALSTON",
+      "type": "person",
+      "aliases": ["ALSTON", "PHILIP ALSTON"]
+    },
+    {
+      "canonical": "IAGO FALQUE",
+      "type": "person",
+      "aliases": ["FALQUE", "IAGO FALQUE"]
+    },
+    {
+      "canonical": "STEVE SIDWELL",
+      "type": "person",
+      "aliases": ["SIDWELL", "STEVE SIDWELL"]
+    },
+    {
+      "canonical": "MILOS HRSTIC",
+      "type": "person",
+      "aliases": ["MILOS HRSTIC", "MR. MILOS"]
+    },
+    {
+      "canonical": "FREDERICA WILSON",
+      "type": "person",
+      "aliases": ["FREDERICA WILSON", "WILSON"]
+    },
+    {
+      "canonical": "DIMITAR BERBATOV",
+      "type": "person",
+      "aliases": ["DIMIAR BERBATOV", "DIMITAR BERBATOV"]
+    },
+    {
+      "canonical": "HENRY VIII OF ENGLAND",
+      "type": "person",
+      "aliases": ["HENRY VIII", "HENRY VIII OF ENGLAND"]
+    },
+    {
+      "canonical": "TINA ANSELMI",
+      "type": "person",
+      "aliases": ["TINA ANSELMI", "TINNA ANSELMI"]
+    },
+    {
+      "canonical": "TUNCAY SÖYLER",
+      "type": "person",
+      "aliases": ["TUNCAY", "TUNCAY SÖYLER"]
+    },
+    {
+      "canonical": "JENNIE CHANOVER",
+      "type": "person",
+      "aliases": ["JENNIE", "JENNIE CHANOVER"]
+    },
+    {
+      "canonical": "MIRIAM ZEITLIN",
+      "type": "person",
+      "aliases": ["MIRIAM", "MIRIAM ZEITLIN"]
+    },
+    {
+      "canonical": "ROBERT E. TARJAN",
+      "type": "person",
+      "aliases": ["R TARJAN", "ROBERT E TARJAN", "ROBERT E. TARJAN", "ROBERT TARJAN"]
+    },
+    {
+      "canonical": "T. SANDER",
+      "type": "person",
+      "aliases": ["T SANDER", "T. SANDER"]
+    },
+    {
+      "canonical": "PRESIDENT DONALD TRUMP",
+      "type": "person",
+      "aliases": ["DONALD J. TRUMP", "PRESIDENT DONALD TRUMP"]
+    },
+    {
+      "canonical": "HESSIAN PUBLIC OFFICIAL LUDWIG CHRISTIAN LIEBKNECHT",
+      "type": "person",
+      "aliases": ["HESSIAN PUBLIC OFFICIAL LUDWIG CHRISTIAN LIEBKNECHT", "LUDWIG CHRISTIAN LIEBKNECHT"]
+    },
+    {
+      "canonical": "JOHN, PRINCE OF GIRONA",
+      "type": "person",
+      "aliases": ["JOHN, PRINCE OF GIRONA", "PRINCE JOHN OF GIRONA", "SON OF FERDINAND AND GERMAINE"]
+    },
+    {
+      "canonical": "JOHN F. KELLY",
+      "type": "person",
+      "aliases": ["JOHN F. KELLY", "KELLY"]
+    },
+    {
+      "canonical": "ISABELLA I OF CASTILE",
+      "type": "person",
+      "aliases": ["ISABELLA", "ISABELLA I OF CASTILE", "QUEEN ISABELLA I"]
+    },
+    {
+      "canonical": "QUEEN JOANNA",
+      "type": "person",
+      "aliases": ["JOANNA", "QUEEN JOANNA"]
+    },
+    {
+      "canonical": "QUEEN ELEANOR OF NAVARRE",
+      "type": "person",
+      "aliases": ["ELEANOR OF NAVARRE", "QUEEN ELEANOR OF NAVARRE"]
+    },
+    {
+      "canonical": "FERDINAND II OF ARAGON",
+      "type": "person",
+      "aliases": ["FERDINAND", "FERDINAND II OF ARAGON"]
+    },
+    {
+      "canonical": "LOUIS XII OF FRANCE",
+      "type": "person",
+      "aliases": ["KING LOUIS XII", "LOUIS XII", "LOUIS XII OF FRANCE"]
+    },
+    {
+      "canonical": "GERMAINE OF FOIX",
+      "type": "person",
+      "aliases": ["GERMAINE", "GERMAINE OF FOIX"]
+    },
+    {
+      "canonical": "JOHN OF FOIX",
+      "type": "person",
+      "aliases": ["FATHER OF GERMAINE", "JOHN OF FOIX"]
+    },
+    {
+      "canonical": "MARIE OF ORLÉANS",
+      "type": "person",
+      "aliases": ["MARIE OF ORLÉANS", "MOTHER OF GERMAINE"]
+    },
+    {
+      "canonical": "JOHANN OF BRANDENBURG-ANSBACH",
+      "type": "person",
+      "aliases": ["JOHANN", "JOHANN OF BRANDENBURG-ANSBACH"]
+    },
+    {
+      "canonical": "NAVANETHEM PILLAY",
+      "type": "person",
+      "aliases": ["NAV[UNKNOWN FULL NAME]", "NAVANETHEM PILLAY"]
+    },
+    {
+      "canonical": "ABRAHAM SEBORER",
+      "type": "person",
+      "aliases": ["ABRAHAM", "ABRAHAM SEBORER"]
+    },
+    {
+      "canonical": "ELEANOR MARGARET PEACHEY",
+      "type": "person",
+      "aliases": ["ELEANOR MARGARET PEACHEY", "MARGARET BURBIDGE", "STEWARDT BURBIDGE"]
+    },
+    {
+      "canonical": "STUART SEBORER",
+      "type": "person",
+      "aliases": ["STUART", "STUART SEBORER"]
+    },
+    {
+      "canonical": "OSCAR SEBORER",
+      "type": "person",
+      "aliases": ["OSCAR", "OSCAR SEBORER"]
+    },
+    {
+      "canonical": "GASTONE MOJAISKY PERRELLI",
+      "type": "person",
+      "aliases": ["GASTONE MOJAISKY PERRELLI", "MOJAISKY PERRELLI"]
+    },
+    {
+      "canonical": "KINGDOM OF CASTILE",
+      "type": "geo",
+      "aliases": ["CASTILE", "KINGDOM OF CASTILE"]
+    },
+    {
+      "canonical": "KINGDOM OF VALENCIA",
+      "type": "geo",
+      "aliases": ["KINGDOM OF VALENCIA", "VALENCIA"]
+    },
+    {
+      "canonical": "NEW YORK CITY",
+      "type": "geo",
+      "aliases": ["NEW YORK", "NEW YORK CITY"]
+    },
+    {
+      "canonical": "PATROL BOMBING SQUADRON 25 (VPB-25)",
+      "type": "other",
+      "aliases": ["PATROL BOMBING SQUADRON 25 (VPB-25)", "PATROL SQUADRON 25 (VP-25)", "VP-25", "VPB-25"]
+    },
+    {
+      "canonical": "ARCHIVES–NAVY MEMORIAL–PENN QUARTER",
+      "type": "other",
+      "aliases": ["ARCHIVES STATION", "ARCHIVES–NAVY MEMORIAL–PENN QUARTER"]
+    },
+    {
+      "canonical": "DEPTH-FIRST SEARCH AND LINEAR GRAPH ALGORITHMS PAPER",
+      "type": "other",
+      "aliases": ["1972 DEPTH-FIRST SEARCH PAPER", "DEPTH-FIRST SEARCH AND LINEAR GRAPH ALGORITHMS PAPER"]
+    },
+    {
+      "canonical": "FIBONACCI HEAPS",
+      "type": "other",
+      "aliases": ["FIBONACCI HEAP", "FIBONACCI HEAPS"]
+    },
+    {
+      "canonical": "5000 ROLE MODELS OF EXCELLENCE",
+      "type": "other",
+      "aliases": ["5000 ROLE MODELS OF EXCELLENCE", "5000 ROLE MODELS PROGRAM"]
+    },
+    {
+      "canonical": "HOPCROFT–TARJAN PLANARITY TESTING ALGORITHM",
+      "type": "other",
+      "aliases": ["HOPCROFT–TARJAN PLANARITY ALGORITHM", "HOPCROFT–TARJAN PLANARITY TESTING ALGORITHM"]
+    },
+    {
+      "canonical": "MEDIAN OF MEDIANS LINEAR TIME SELECTION ALGORITHM",
+      "type": "other",
+      "aliases": ["MEDIAN OF MEDIANS ALGORITHM", "MEDIAN OF MEDIANS LINEAR TIME SELECTION ALGORITHM"]
+    },
+    {
+      "canonical": "NEVANLINNA PRIZE IN INFORMATION SCIENCE",
+      "type": "other",
+      "aliases": ["NEVANLINNA PRIZE", "NEVANLINNA PRIZE IN INFORMATION SCIENCE"]
+    },
+    {
+      "canonical": "SPLAY TREES",
+      "type": "other",
+      "aliases": ["SPLAY TREE", "SPLAY TREES"]
+    },
+    {
+      "canonical": "TARJAN'S OFF-LINE LOWEST COMMON ANCESTORS ALGORITHM",
+      "type": "other",
+      "aliases": ["OFF-LINE LOWEST COMMON ANCESTORS ALGORITHM", "TARJAN'S OFF-LINE LEAST COMMON ANCESTORS ALGORITHM", "TARJAN'S OFF-LINE LOWEST COMMON ANCESTORS ALGORITHM", "TARJANS OFF-LINE LEAST COMMON ANCESTORS ALGORITHM"]
+    },
+    {
+      "canonical": "TARJAN'S STRONGLY CONNECTED COMPONENTS ALGORITHM",
+      "type": "other",
+      "aliases": ["TARJAN'S STRONGLY CONNECTED COMPONENTS ALGORITHM", "TARJANS STRONGLY CONNECTED COMPONENTS ALGORITHM"]
+    },
+    {
+      "canonical": "UNITED NATIONS SPECIAL RAPPORTEUR ON EXTRAJUDICIAL, SUMMARY OR ARBITRARY EXECUTIONS",
+      "type": "other",
+      "aliases": ["UN SPECIAL RAPPORTEUR ON EXTRAJUDICIAL EXECUTIONS", "UN SPECIAL RAPPORTEUR ON EXTRAJUDICIAL, SUMMARY OR ARBITRARY EXECUTIONS", "UNITED NATIONS SPECIAL RAPPORTEUR ON EXTRAJUDICIAL, SUMMARY OR ARBITRARY EXECUTIONS"]
+    },
+    {
+      "canonical": "UNITED NATIONS SPECIAL RAPPORTEUR ON EXTREME POVERTY AND HUMAN RIGHTS",
+      "type": "other",
+      "aliases": ["UN SPECIAL RAPPORTEUR ON EXTREME POVERTY AND HUMAN RIGHTS", "UNITED NATIONS SPECIAL RAPPORTEUR ON EXTREME POVERTY AND HUMAN RIGHTS"]
+    },
+    {
+      "canonical": "US NEO-COLONIALISM IN AFRICA (1974)",
+      "type": "other",
+      "aliases": ["US NEO-COLONIALISM IN AFRICA (1974)", "US NEOCOLONIALISM IN AFRICA"]
+    },
+    {
+      "canonical": "THE MUSICAL WOMAN: AN INTERNATIONAL PERSPECTIVE",
+      "type": "other",
+      "aliases": ["THE MUSICAL WOMAN : AN INTERNATIONAL PERSPECTIVE", "THE MUSICAL WOMAN: AN INTERNATIONAL PERSPECTIVE"]
+    },
+    {
+      "canonical": "ARCHBISHOP OF CONZA-SANT'ANGELO DEI LOMBARDI-BISACCIA",
+      "type": "other",
+      "aliases": ["ARCHBISHOP OF CONZA-SANT'ANGELO DEI LOMBARDI-BISACCIA", "ARCHBISHOP OF CONZA-SANTANGELO DEI LOMBARDI-BISACCIA"]
+    },
+    {
+      "canonical": "WEAPONRY AND DOLLARS: THE WELLSPRINGS OF U.S. FOREIGN POLICY (1987)",
+      "type": "other",
+      "aliases": ["WEAPONRY AND DOLLARS: THE WELLSPRINGS OF U.S. FOREIGN POLICY", "WEAPONRY AND DOLLARS: THE WELLSPRINGS OF U.S. FOREIGN POLICY (1987)"]
+    },
+    {
+      "canonical": "BLACK CAT NIGHTTIME OPERATIONS",
+      "type": "other",
+      "aliases": ["BLACK CAT NIGHTTIME OPERATIONS", "BLACK CAT OPERATIONS"]
+    },
+    {
+      "canonical": "PBM-3D MARINER",
+      "type": "other",
+      "aliases": ["PBM-3D", "PBM-3D MARINER"]
+    },
+    {
+      "canonical": "MARTIN PBM-3D2 MARINER",
+      "type": "other",
+      "aliases": ["MARTIN PBM-3D2 MARINER", "PBM-3D2"]
+    },
+    {
+      "canonical": "YUGOSLAV YOUTH FOOTBALL SYSTEM",
+      "type": "other",
+      "aliases": ["YUGOSLAV YOUTH FOOTBALL SYSTEM", "YUGOSLAVIA YOUTH TEAM SELECTIONS"]
+    },
+    {
+      "canonical": "GERMANIES (VALENCIA GUILDS)",
+      "type": "other",
+      "aliases": ["GERMANIES", "GERMANIES (VALENCIA GUILDS)", "VALENCIAN GUILDS"]
+    },
+    {
+      "canonical": "MOST HOLY SAVIOR SHRINE",
+      "type": "other",
+      "aliases": ["MOST HOLY SAVIOR", "MOST HOLY SAVIOR SHRINE"]
+    },
+    {
+      "canonical": "HOUSE SPEAKER BAN ON HEAD COVERING",
+      "type": "other",
+      "aliases": ["HEAD COVERING BAN", "HOUSE SPEAKER BAN ON HEAD COVERING"]
+    },
+    {
+      "canonical": "TRINITY NUCLEAR TEST JULY 16, 1945",
+      "type": "event",
+      "aliases": ["TRINITY NUCLEAR TEST", "TRINITY NUCLEAR TEST JULY 16, 1945"]
+    },
+    {
+      "canonical": "WORLD WAR I",
+      "type": "event",
+      "aliases": ["FIRST WORLD WAR", "WORLD WAR I"]
+    },
+    {
+      "canonical": "PREMIER LEAGUE 2005–06 SEASON",
+      "type": "event",
+      "aliases": ["PREMIER LEAGUE 2005-06 SEASON", "PREMIER LEAGUE 2005–06 SEASON"]
+    },
+    {
+      "canonical": "2007 FA COMMUNITY SHIELD",
+      "type": "event",
+      "aliases": ["2007 FA COMMUNITY SHIELD", "FA COMMUNITY SHIELD 2007"]
+    },
+    {
+      "canonical": "ELECTION OF TWO MUSLIM WOMEN TO CONGRESS 2018",
+      "type": "event",
+      "aliases": ["ELECTION OF TWO MUSLIM WOMEN TO CONGRESS 2018", "MUSLIM WOMEN CONGRESS ELECTION 2018"]
+    },
+    {
+      "canonical": "LIEBKNECHT AND BEBEL TREASON TRIAL",
+      "type": "event",
+      "aliases": ["LIEBKNECHT AND BEBEL TREASON TRIAL", "TREASON TRIAL 1872"]
+    },
+    {
+      "canonical": "DEDICATION CEREMONY OF FBI BUILDING",
+      "type": "event",
+      "aliases": ["BUILDING DEDICATION CEREMONY", "DEDICATION CEREMONY OF FBI BUILDING"]
+    },
+    {
+      "canonical": "FRIENDLY MATCH YUGOSLAVIA VS ARGENTINA 1979",
+      "type": "event",
+      "aliases": ["FRIENDLY MATCH YUGOSLAVIA VS ARGENTINA 1979", "YUGOSLAVIA NATIONAL FOOTBALL TEAM DEBUT MATCH VS ARGENTINA"]
+    },
+    {
+      "canonical": "TREATY OF BLOIS",
+      "type": "event",
+      "aliases": ["HISTORICAL TREATY", "TREATY OF BLOIS"]
+    },
+    {
+      "canonical": "UEFA CUP 2008",
+      "type": "event",
+      "aliases": ["UEFA CUP", "UEFA CUP 2008"]
+    },
+    {
+      "canonical": "TREATY OF BLOIS ALLIANCE",
+      "type": "event",
+      "aliases": ["FRENCH-ARAGON ALLIANCE", "TREATY OF BLOIS ALLIANCE"]
+    }
+  ]
+}
