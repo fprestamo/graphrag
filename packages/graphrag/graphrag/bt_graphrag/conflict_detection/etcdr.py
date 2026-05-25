@@ -24,6 +24,7 @@ from graphrag.bt_graphrag.models.config import BTGraphRAGConfig
 from graphrag.bt_graphrag.models.temporal_types import (
     INFINITY,
     INFINITY_ISO,
+    MINUS_INFINITY,
     ConflictResult,
     RelationCardinality,
     ResolutionStrategy,
@@ -757,21 +758,67 @@ def find_intra_batch_object_any_type_conflicts(
 # ---------------------------------------------------------------------------
 
 
+def _evolution_resolve_endpoints(
+    a_valid_start: datetime,
+    a_valid_end: datetime,
+    b_valid_start: datetime,
+) -> tuple[datetime | None, datetime]:
+    """Resolve the EVOLUTION endpoints when either side may be unknown.
+
+    Encodes the fallback table:
+
+    | B.start                | A.end                  | A.start  | Action                                  |
+    |------------------------|------------------------|----------|-----------------------------------------|
+    | known                  | known                  | (any)    | A.end <- B.start                        |
+    | known                  | unknown (INFINITY)     | (any)    | A.end <- B.start                        |
+    | unknown (MINUS_INF)    | known                  | (any)    | B.start <- A.end (A unchanged)          |
+    | unknown (MINUS_INF)    | unknown (INFINITY)     | known    | A.end <- A.start, B.start <- A.start    |
+    | unknown                | unknown                | MINUS_INF| both collapse to MINUS_INFINITY         |
+
+    Returns ``(new_a_end, new_b_start)``:
+    - ``new_a_end is None`` means A should NOT be modified (case 3).
+    - ``new_b_start`` is the value the caller must assign to B's
+      ``t_valid_start`` (mutating the candidate in place).
+    """
+    b_start_known = b_valid_start != MINUS_INFINITY
+    a_end_known = a_valid_end != INFINITY
+
+    if b_start_known:
+        return b_valid_start, b_valid_start
+    if a_end_known:
+        return None, a_valid_end
+    # Case 4: both endpoints unknown -> collapse to A.start (which itself
+    # may be MINUS_INFINITY when A is fully temporally unknown).
+    return a_valid_start, a_valid_start
+
+
 def apply_intra_batch_evolution(
     existing: TemporalRelationship,
     candidate: TemporalRelationship,
-    t_now: datetime,
 ) -> None:
-    """Evolution on a batch relationship: close its valid-time end in-memory."""
-    candidate_t_valid_start = (
-        candidate.temporal_quad.t_valid_start if candidate.temporal_quad else t_now
+    """Evolution on a batch relationship: close A's valid-time end and
+    align B's valid-time start, in-memory, following the fallback table
+    in ``_evolution_resolve_endpoints``."""
+    if not (existing.temporal_quad and candidate.temporal_quad):
+        return
+    quad_e = existing.temporal_quad
+    quad_c = candidate.temporal_quad
+
+    new_a_end, new_b_start = _evolution_resolve_endpoints(
+        a_valid_start=quad_e.t_valid_start,
+        a_valid_end=quad_e.t_valid_end,
+        b_valid_start=quad_c.t_valid_start,
     )
-    if existing.temporal_quad:
-        existing.temporal_quad.close_valid_time(candidate_t_valid_start)
+    if new_a_end is not None:
+        quad_e.close_valid_time(new_a_end)
+    quad_c.t_valid_start = new_b_start
+
     logger.info(
-        "ETCDR [INTRA-BATCH EVOLUTION]: Closed batch edge %s valid_end at %s",
+        "ETCDR [INTRA-BATCH EVOLUTION]: batch edge %s -> A.t_valid_end=%s, "
+        "candidate.t_valid_start=%s",
         existing.id,
-        candidate_t_valid_start,
+        quad_e.t_valid_end,
+        quad_c.t_valid_start,
     )
 
 
@@ -959,30 +1006,68 @@ async def apply_evolution(
     session: "AsyncSession",
     existing_edge_id: str,
     candidate: TemporalRelationship,
-    t_now: datetime,
 ) -> None:
-    """Evolution: close existing edge's valid-time, insert new edge.
+    """Evolution: close existing edge's valid-time, align candidate's start.
 
     The world genuinely changed: old edge was true, new edge is now true.
+    When either A.t_valid_end (existing) or B.t_valid_start (candidate) is
+    unknown, the fallback table in ``_evolution_resolve_endpoints`` decides
+    what to write. The candidate's ``t_valid_start`` is mutated in-place so
+    the caller persists it with the resolved value.
     """
-    candidate_t_valid_start = (
-        candidate.temporal_quad.t_valid_start if candidate.temporal_quad else t_now
-    )
+    if candidate.temporal_quad is None:
+        return
 
-    # Close the existing edge's valid-time end
-    await session.run(
+    # Read A's current temporal endpoints so we can apply the fallback table.
+    read_result = await session.run(
         """
         MATCH ()-[e]->()
         WHERE e.id = $edge_id
-        SET e.t_valid_end = $t_valid_end
+        RETURN e.t_valid_start AS start, e.t_valid_end AS end
         """,
         edge_id=existing_edge_id,
-        t_valid_end=candidate_t_valid_start.isoformat(),
     )
+    record = await read_result.single()
+    if record is None:
+        logger.warning(
+            "ETCDR [EVOLUTION]: existing edge %s not found; skipping",
+            existing_edge_id,
+        )
+        return
+
+    a_valid_start = (
+        datetime.fromisoformat(record["start"]) if record["start"] else MINUS_INFINITY
+    )
+    a_valid_end = (
+        datetime.fromisoformat(record["end"]) if record["end"] else INFINITY
+    )
+
+    new_a_end, new_b_start = _evolution_resolve_endpoints(
+        a_valid_start=a_valid_start,
+        a_valid_end=a_valid_end,
+        b_valid_start=candidate.temporal_quad.t_valid_start,
+    )
+
+    # Always mutate the candidate so downstream persistence uses the
+    # resolved t_valid_start (cases 3 and 4 may shift it).
+    candidate.temporal_quad.t_valid_start = new_b_start
+
+    if new_a_end is not None:
+        await session.run(
+            """
+            MATCH ()-[e]->()
+            WHERE e.id = $edge_id
+            SET e.t_valid_end = $t_valid_end
+            """,
+            edge_id=existing_edge_id,
+            t_valid_end=new_a_end.isoformat(),
+        )
+
     logger.info(
-        "ETCDR [EVOLUTION]: Closed edge %s valid_end at %s",
+        "ETCDR [EVOLUTION]: edge %s -> A.t_valid_end=%s, candidate.t_valid_start=%s",
         existing_edge_id,
-        candidate_t_valid_start,
+        new_a_end.isoformat() if new_a_end is not None else "(unchanged)",
+        candidate.temporal_quad.t_valid_start,
     )
 
 
@@ -1401,7 +1486,7 @@ async def detect_and_resolve(
     if strategy == ResolutionStrategy.EVOLUTION:
         for existing in neo4j_conflicts:
             if existing.id:
-                await apply_evolution(session, existing.id, candidate, t_now)
+                await apply_evolution(session, existing.id, candidate)
                 neo4j_actions += 1
                 print(f"{prefix}   Action: Closed edge '{existing.id[:12]}...' valid_end -> "
                       f"{candidate.temporal_quad.t_valid_start.strftime('%Y-%m-%d') if candidate.temporal_quad else '?'}")
@@ -1467,7 +1552,7 @@ async def detect_and_resolve(
 
         if strategy == ResolutionStrategy.EVOLUTION:
             for existing in intra_batch_conflicts:
-                apply_intra_batch_evolution(existing, candidate, t_now)
+                apply_intra_batch_evolution(existing, candidate)
                 batch_actions += 1
                 print(f"{prefix}   Batch action: Closed batch edge '{existing.id[:12]}...' valid_end (in-memory)")
                 _log_resolution(candidate, existing, strategy, confidence, "intra_batch", _conflict_type_label)
