@@ -1,0 +1,1529 @@
+{
+  "config": {
+    "cger_cosine_threshold": 0.686,
+    "cger_candidate_top_k": 3,
+    "cger_phase_b_top_k": 3,
+    "cgrr_cosine_threshold": 0.556,
+    "cgrr_candidate_top_k": 3,
+    "neo4j_vector_dimensions": 3072,
+    "completion_model": "gpt-4.1-mini",
+    "num_runs": 3
+  },
+  "test_data": {
+    "entities": 690,
+    "relationships": 764,
+    "entity_truth_pairs": 33,
+    "relation_truth_pairs": 29
+  },
+  "runs": [
+    {
+      "run": 1,
+      "cger": {
+        "scores": {
+          "true_positives": [
+            [
+              "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+              "BREXIT REFERENDUM 2016"
+            ],
+            [
+              "BRAIN LENIHAN",
+              "BRIAN LENIHAN"
+            ],
+            [
+              "CHARLOTTE EL\u00c9ONORE RABUT",
+              "EL\u00c9ONORE RABUT"
+            ],
+            [
+              "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+              "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD"
+            ],
+            [
+              "DUNCOMBE",
+              "THOMAS SLINGSBY DUNCOMBE"
+            ],
+            [
+              "ED MILIBAND",
+              "MILIBAND"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD",
+              "EUROPEAN PERSON OF THE YEAR AWARD 1988"
+            ],
+            [
+              "FIRST EUROPEAN LAW PRIZE",
+              "THE FIRST EUROPEAN LAW PRIZE PARIS"
+            ],
+            [
+              "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+              "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE"
+            ],
+            [
+              "ICMC",
+              "INTERNATIONAL CATHOLIC MIGRATION COMMISSION"
+            ],
+            [
+              "IESE",
+              "IESE BUSINESS SCHOOL"
+            ],
+            [
+              "IRISH PEOPLE OF THE YEAR AWARD",
+              "THE IRISH PEOPLE OF THE YEAR AWARD 1989"
+            ],
+            [
+              "MARIE",
+              "MARIE FECHTER"
+            ],
+            [
+              "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+              "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)"
+            ],
+            [
+              "NATIONAL EXECUTIVE COMMITTEE",
+              "NEC"
+            ],
+            [
+              "P. W. KINGSFORD",
+              "P.W. KINGSFORD"
+            ],
+            [
+              "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+              "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994"
+            ],
+            [
+              "THE DUKE'S MOTTO",
+              "THE DUKES MOTTO"
+            ],
+            [
+              "THE KING'S BUTTERFLY",
+              "THE KINGS BUTTERFLY"
+            ],
+            [
+              "THOMAS KETTLE AWARD",
+              "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD"
+            ]
+          ],
+          "false_positives": [
+            [
+              "BAR COUNCIL OF IRELAND",
+              "IRISH BAR"
+            ],
+            [
+              "CHARTISM",
+              "PEOPLES CHARTER"
+            ],
+            [
+              "DANDY DEMAGOGUE",
+              "RADICAL DANDY"
+            ],
+            [
+              "DON C\u00c9SAR DE BAZAN",
+              "THE COURT OF CHARLES DE BAZAN"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD",
+              "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD 1988",
+              "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT"
+            ],
+            [
+              "EXPERTS GROUP",
+              "HIGH LEVEL GROUP"
+            ],
+            [
+              "FRENCH VERSION OF THE CORSICAN BROTHERS",
+              "THE CORSICAN BROTHERS"
+            ],
+            [
+              "GLOBAL FORUM ON MIGRATION",
+              "GLOBAL FORUM ON MIGRATION AND DEVELOPMENT"
+            ],
+            [
+              "JEWS",
+              "THE JEWS OF ENGLAND: THEIR HISTORY AND WRONGS"
+            ],
+            [
+              "LE M\u00c9DECIN DES ENFANTS",
+              "LOVES PENANCE"
+            ],
+            [
+              "STUDENT CHRISTIAN MOVEMENT",
+              "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN"
+            ],
+            [
+              "SUTHERLAND SCHOOL OF LAW",
+              "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL"
+            ]
+          ],
+          "false_negatives": [
+            [
+              "ANGELA EAGLE",
+              "EAGLE"
+            ],
+            [
+              "BRAIN CANCER<BR>THROAT CANCER",
+              "THROAT CANCER"
+            ],
+            [
+              "CHARLES FECHTER",
+              "THE ACTOR"
+            ],
+            [
+              "COM\u00c9DIE FRAN\u00c7AISE",
+              "COM\u00c9DIE-FRAN\u00c7AISE"
+            ],
+            [
+              "DUNCOMBE",
+              "TOMMY"
+            ],
+            [
+              "GIRTON COLLEGE",
+              "GIRTON COLLEGE CAMBRIDGE"
+            ],
+            [
+              "PARLIAMENT",
+              "PARLIAMENT OF THE UNITED KINGDOM"
+            ],
+            [
+              "PAUL",
+              "PAUL FECHTER"
+            ],
+            [
+              "PETER SUTHERLAND",
+              "PIERRE SUTHERLAND"
+            ],
+            [
+              "PETER SUTHERLAND",
+              "SUTHERLAND"
+            ],
+            [
+              "PIERRE SUTHERLAND",
+              "SUTHERLAND"
+            ],
+            [
+              "THOMAS SLINGSBY DUNCOMBE",
+              "TOMMY"
+            ],
+            [
+              "UK",
+              "UNITED KINGDOM"
+            ]
+          ],
+          "precision": 0.6060606060606061,
+          "recall": 0.6060606060606061,
+          "f1": 0.6060606060606061
+        },
+        "merge_map": {
+          "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN": "STUDENT CHRISTIAN MOVEMENT",
+          "MILIBAND": "ED MILIBAND",
+          "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM": "BREXIT REFERENDUM 2016",
+          "NEC": "NATIONAL EXECUTIVE COMMITTEE",
+          "THE COURT OF CHARLES DE BAZAN": "DON C\u00c9SAR DE BAZAN",
+          "FRENCH VERSION OF THE CORSICAN BROTHERS": "THE CORSICAN BROTHERS",
+          "THE KINGS BUTTERFLY": "THE KING'S BUTTERFLY",
+          "THE DUKES MOTTO": "THE DUKE'S MOTTO",
+          "LE M\u00c9DECIN DES ENFANTS": "LOVES PENANCE",
+          "CHARLOTTE EL\u00c9ONORE RABUT": "EL\u00c9ONORE RABUT",
+          "MARIE": "MARIE FECHTER",
+          "IRISH BAR": "BAR COUNCIL OF IRELAND",
+          "GLOBAL FORUM ON MIGRATION": "GLOBAL FORUM ON MIGRATION AND DEVELOPMENT",
+          "IESE": "IESE BUSINESS SCHOOL",
+          "BRIAN LENIHAN": "BRAIN LENIHAN",
+          "EXPERTS GROUP": "HIGH LEVEL GROUP",
+          "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE": "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+          "ICMC": "INTERNATIONAL CATHOLIC MIGRATION COMMISSION",
+          "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT": "EUROPEAN PERSON OF THE YEAR AWARD",
+          "THE FIRST EUROPEAN LAW PRIZE PARIS": "FIRST EUROPEAN LAW PRIZE",
+          "EUROPEAN PERSON OF THE YEAR AWARD 1988": "EUROPEAN PERSON OF THE YEAR AWARD",
+          "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD": "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+          "THE IRISH PEOPLE OF THE YEAR AWARD 1989": "IRISH PEOPLE OF THE YEAR AWARD",
+          "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994": "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+          "SUTHERLAND SCHOOL OF LAW": "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL",
+          "THOMAS KETTLE AWARD": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+          "RADICAL DANDY": "DANDY DEMAGOGUE",
+          "DUNCOMBE": "THOMAS SLINGSBY DUNCOMBE",
+          "CHARTISM": "PEOPLES CHARTER",
+          "THE JEWS OF ENGLAND: THEIR HISTORY AND WRONGS": "JEWS",
+          "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)": "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+          "P.W. KINGSFORD": "P. W. KINGSFORD"
+        }
+      },
+      "cgrr": {
+        "scores": {
+          "true_positives": [
+            [
+              "AWARDED",
+              "RECEIVED_AWARD"
+            ],
+            [
+              "BURRIED_AT",
+              "BURRIED_IN"
+            ],
+            [
+              "BURRIED_AT",
+              "INTERRED_AT"
+            ],
+            [
+              "BURRIED_IN",
+              "INTERRED_AT"
+            ],
+            [
+              "CHAIRED",
+              "CHAIRING"
+            ],
+            [
+              "CHAIRED",
+              "CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRED",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRING",
+              "CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRING",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRMAN_OF",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "DIED_AT",
+              "DIED_IN"
+            ],
+            [
+              "EMPLOYED_AT",
+              "WORKED_AT"
+            ],
+            [
+              "HELD_POSITION",
+              "HOLDS_POSITION"
+            ],
+            [
+              "IS_SPOUSE_OF",
+              "MARRIED_TO"
+            ],
+            [
+              "OWNED",
+              "OWNS"
+            ],
+            [
+              "REPRESENTED",
+              "REPRESENTS"
+            ]
+          ],
+          "false_positives": [
+            [
+              "ADVISED_BY",
+              "RECEIVED_ADVICE_FROM"
+            ],
+            [
+              "CHILD_OF",
+              "PARENT_OF"
+            ],
+            [
+              "HONORED_IN",
+              "MEMORIALIZED_AT"
+            ],
+            [
+              "PRESENTED_AT",
+              "PRESENTED_TO"
+            ],
+            [
+              "USED",
+              "USES"
+            ]
+          ],
+          "false_negatives": [
+            [
+              "ADVISED",
+              "ADVISOR_TO"
+            ],
+            [
+              "ALIAS_OF",
+              "SAME_AS"
+            ],
+            [
+              "CHAIRED",
+              "LEADS"
+            ],
+            [
+              "CHAIRING",
+              "LEADS"
+            ],
+            [
+              "CHAIRMAN_OF",
+              "LEADS"
+            ],
+            [
+              "EMPLOYED_AT",
+              "WORKS_FOR"
+            ],
+            [
+              "INFLUENCED",
+              "INFLUENCES"
+            ],
+            [
+              "IS_CEO_OF",
+              "IS_LEADER_OF"
+            ],
+            [
+              "IS_CEO_OF",
+              "IS_PRESIDENT_OF"
+            ],
+            [
+              "IS_CHAIRMAN_OF",
+              "LEADS"
+            ],
+            [
+              "IS_LEADER_OF",
+              "IS_PRESIDENT_OF"
+            ],
+            [
+              "SUPPORTED",
+              "SUPPORTS"
+            ],
+            [
+              "WORKED_AT",
+              "WORKS_FOR"
+            ]
+          ],
+          "precision": 0.7619047619047619,
+          "recall": 0.5517241379310345,
+          "f1": 0.64
+        },
+        "normalize_map": {
+          "RECEIVED_ADVICE_FROM": "ADVISED_BY",
+          "HONORED_IN": "MEMORIALIZED_AT",
+          "INTERRED_AT": "BURRIED_IN",
+          "IS_SPOUSE_OF": "MARRIED_TO",
+          "CHILD_OF": "PARENT_OF",
+          "CHAIRED": "IS_CHAIRMAN_OF",
+          "PRESENTED_TO": "PRESENTED_AT",
+          "CHAIRING": "IS_CHAIRMAN_OF",
+          "HELD_POSITION": "HOLDS_POSITION",
+          "DIED_IN": "DIED_AT",
+          "RECEIVED_AWARD": "AWARDED",
+          "OWNS": "OWNED",
+          "CHAIRMAN_OF": "IS_CHAIRMAN_OF",
+          "USED": "USES",
+          "BURRIED_AT": "BURRIED_IN",
+          "WORKED_AT": "EMPLOYED_AT",
+          "REPRESENTED": "REPRESENTS"
+        }
+      }
+    },
+    {
+      "run": 2,
+      "cger": {
+        "scores": {
+          "true_positives": [
+            [
+              "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+              "BREXIT REFERENDUM 2016"
+            ],
+            [
+              "BRAIN LENIHAN",
+              "BRIAN LENIHAN"
+            ],
+            [
+              "CHARLOTTE EL\u00c9ONORE RABUT",
+              "EL\u00c9ONORE RABUT"
+            ],
+            [
+              "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+              "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD"
+            ],
+            [
+              "DUNCOMBE",
+              "THOMAS SLINGSBY DUNCOMBE"
+            ],
+            [
+              "ED MILIBAND",
+              "MILIBAND"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD",
+              "EUROPEAN PERSON OF THE YEAR AWARD 1988"
+            ],
+            [
+              "FIRST EUROPEAN LAW PRIZE",
+              "THE FIRST EUROPEAN LAW PRIZE PARIS"
+            ],
+            [
+              "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+              "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE"
+            ],
+            [
+              "ICMC",
+              "INTERNATIONAL CATHOLIC MIGRATION COMMISSION"
+            ],
+            [
+              "IESE",
+              "IESE BUSINESS SCHOOL"
+            ],
+            [
+              "IRISH PEOPLE OF THE YEAR AWARD",
+              "THE IRISH PEOPLE OF THE YEAR AWARD 1989"
+            ],
+            [
+              "MARIE",
+              "MARIE FECHTER"
+            ],
+            [
+              "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+              "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)"
+            ],
+            [
+              "NATIONAL EXECUTIVE COMMITTEE",
+              "NEC"
+            ],
+            [
+              "P. W. KINGSFORD",
+              "P.W. KINGSFORD"
+            ],
+            [
+              "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+              "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994"
+            ],
+            [
+              "THE DUKE'S MOTTO",
+              "THE DUKES MOTTO"
+            ],
+            [
+              "THE KING'S BUTTERFLY",
+              "THE KINGS BUTTERFLY"
+            ],
+            [
+              "THOMAS KETTLE AWARD",
+              "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD"
+            ]
+          ],
+          "false_positives": [
+            [
+              "ADVISORY COUNCIL TO THE DIRECTOR GENERAL OF THE WTO",
+              "REPORT ON THE FUTURE OF THE WORLD TRADE ORGANIZATION"
+            ],
+            [
+              "BAR COUNCIL OF IRELAND",
+              "IRISH BAR"
+            ],
+            [
+              "CHARTISM",
+              "PEOPLES CHARTER"
+            ],
+            [
+              "DANDY DEMAGOGUE",
+              "RADICAL DANDY"
+            ],
+            [
+              "DON C\u00c9SAR DE BAZAN",
+              "THE COURT OF CHARLES DE BAZAN"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD",
+              "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD 1988",
+              "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT"
+            ],
+            [
+              "EXPERTS GROUP",
+              "HIGH LEVEL GROUP"
+            ],
+            [
+              "FRENCH VERSION OF THE CORSICAN BROTHERS",
+              "THE CORSICAN BROTHERS"
+            ],
+            [
+              "GLOBAL FORUM ON MIGRATION",
+              "GLOBAL FORUM ON MIGRATION AND DEVELOPMENT"
+            ],
+            [
+              "JEWS",
+              "THE JEWS OF ENGLAND: THEIR HISTORY AND WRONGS"
+            ],
+            [
+              "LE M\u00c9DECIN DES ENFANTS",
+              "LOVES PENANCE"
+            ],
+            [
+              "STUDENT CHRISTIAN MOVEMENT",
+              "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN"
+            ],
+            [
+              "SUTHERLAND SCHOOL OF LAW",
+              "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL"
+            ]
+          ],
+          "false_negatives": [
+            [
+              "ANGELA EAGLE",
+              "EAGLE"
+            ],
+            [
+              "BRAIN CANCER<BR>THROAT CANCER",
+              "THROAT CANCER"
+            ],
+            [
+              "CHARLES FECHTER",
+              "THE ACTOR"
+            ],
+            [
+              "COM\u00c9DIE FRAN\u00c7AISE",
+              "COM\u00c9DIE-FRAN\u00c7AISE"
+            ],
+            [
+              "DUNCOMBE",
+              "TOMMY"
+            ],
+            [
+              "GIRTON COLLEGE",
+              "GIRTON COLLEGE CAMBRIDGE"
+            ],
+            [
+              "PARLIAMENT",
+              "PARLIAMENT OF THE UNITED KINGDOM"
+            ],
+            [
+              "PAUL",
+              "PAUL FECHTER"
+            ],
+            [
+              "PETER SUTHERLAND",
+              "PIERRE SUTHERLAND"
+            ],
+            [
+              "PETER SUTHERLAND",
+              "SUTHERLAND"
+            ],
+            [
+              "PIERRE SUTHERLAND",
+              "SUTHERLAND"
+            ],
+            [
+              "THOMAS SLINGSBY DUNCOMBE",
+              "TOMMY"
+            ],
+            [
+              "UK",
+              "UNITED KINGDOM"
+            ]
+          ],
+          "precision": 0.5882352941176471,
+          "recall": 0.6060606060606061,
+          "f1": 0.5970149253731343
+        },
+        "merge_map": {
+          "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN": "STUDENT CHRISTIAN MOVEMENT",
+          "MILIBAND": "ED MILIBAND",
+          "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM": "BREXIT REFERENDUM 2016",
+          "NEC": "NATIONAL EXECUTIVE COMMITTEE",
+          "THE COURT OF CHARLES DE BAZAN": "DON C\u00c9SAR DE BAZAN",
+          "FRENCH VERSION OF THE CORSICAN BROTHERS": "THE CORSICAN BROTHERS",
+          "THE KINGS BUTTERFLY": "THE KING'S BUTTERFLY",
+          "THE DUKES MOTTO": "THE DUKE'S MOTTO",
+          "LE M\u00c9DECIN DES ENFANTS": "LOVES PENANCE",
+          "CHARLOTTE EL\u00c9ONORE RABUT": "EL\u00c9ONORE RABUT",
+          "MARIE": "MARIE FECHTER",
+          "IRISH BAR": "BAR COUNCIL OF IRELAND",
+          "REPORT ON THE FUTURE OF THE WORLD TRADE ORGANIZATION": "ADVISORY COUNCIL TO THE DIRECTOR GENERAL OF THE WTO",
+          "GLOBAL FORUM ON MIGRATION": "GLOBAL FORUM ON MIGRATION AND DEVELOPMENT",
+          "IESE": "IESE BUSINESS SCHOOL",
+          "BRIAN LENIHAN": "BRAIN LENIHAN",
+          "EXPERTS GROUP": "HIGH LEVEL GROUP",
+          "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE": "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+          "ICMC": "INTERNATIONAL CATHOLIC MIGRATION COMMISSION",
+          "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT": "EUROPEAN PERSON OF THE YEAR AWARD",
+          "THE FIRST EUROPEAN LAW PRIZE PARIS": "FIRST EUROPEAN LAW PRIZE",
+          "EUROPEAN PERSON OF THE YEAR AWARD 1988": "EUROPEAN PERSON OF THE YEAR AWARD",
+          "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD": "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+          "THE IRISH PEOPLE OF THE YEAR AWARD 1989": "IRISH PEOPLE OF THE YEAR AWARD",
+          "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994": "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+          "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL": "SUTHERLAND SCHOOL OF LAW",
+          "SUTHERLAND SCHOOL OF LAW": "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL",
+          "THOMAS KETTLE AWARD": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+          "RADICAL DANDY": "DANDY DEMAGOGUE",
+          "DUNCOMBE": "THOMAS SLINGSBY DUNCOMBE",
+          "CHARTISM": "PEOPLES CHARTER",
+          "THE JEWS OF ENGLAND: THEIR HISTORY AND WRONGS": "JEWS",
+          "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)": "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+          "P.W. KINGSFORD": "P. W. KINGSFORD"
+        }
+      },
+      "cgrr": {
+        "scores": {
+          "true_positives": [
+            [
+              "AWARDED",
+              "RECEIVED_AWARD"
+            ],
+            [
+              "BURRIED_AT",
+              "BURRIED_IN"
+            ],
+            [
+              "BURRIED_AT",
+              "INTERRED_AT"
+            ],
+            [
+              "BURRIED_IN",
+              "INTERRED_AT"
+            ],
+            [
+              "CHAIRED",
+              "CHAIRING"
+            ],
+            [
+              "CHAIRED",
+              "CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRED",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRING",
+              "CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRING",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRMAN_OF",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "DIED_AT",
+              "DIED_IN"
+            ],
+            [
+              "EMPLOYED_AT",
+              "WORKED_AT"
+            ],
+            [
+              "HELD_POSITION",
+              "HOLDS_POSITION"
+            ],
+            [
+              "IS_SPOUSE_OF",
+              "MARRIED_TO"
+            ],
+            [
+              "OWNED",
+              "OWNS"
+            ],
+            [
+              "REPRESENTED",
+              "REPRESENTS"
+            ]
+          ],
+          "false_positives": [
+            [
+              "ADVISED_BY",
+              "RECEIVED_ADVICE_FROM"
+            ],
+            [
+              "CHILD_OF",
+              "PARENT_OF"
+            ],
+            [
+              "HONORED_IN",
+              "MEMORIALIZED_AT"
+            ],
+            [
+              "PRESENTED_AT",
+              "PRESENTED_TO"
+            ],
+            [
+              "USED",
+              "USES"
+            ]
+          ],
+          "false_negatives": [
+            [
+              "ADVISED",
+              "ADVISOR_TO"
+            ],
+            [
+              "ALIAS_OF",
+              "SAME_AS"
+            ],
+            [
+              "CHAIRED",
+              "LEADS"
+            ],
+            [
+              "CHAIRING",
+              "LEADS"
+            ],
+            [
+              "CHAIRMAN_OF",
+              "LEADS"
+            ],
+            [
+              "EMPLOYED_AT",
+              "WORKS_FOR"
+            ],
+            [
+              "INFLUENCED",
+              "INFLUENCES"
+            ],
+            [
+              "IS_CEO_OF",
+              "IS_LEADER_OF"
+            ],
+            [
+              "IS_CEO_OF",
+              "IS_PRESIDENT_OF"
+            ],
+            [
+              "IS_CHAIRMAN_OF",
+              "LEADS"
+            ],
+            [
+              "IS_LEADER_OF",
+              "IS_PRESIDENT_OF"
+            ],
+            [
+              "SUPPORTED",
+              "SUPPORTS"
+            ],
+            [
+              "WORKED_AT",
+              "WORKS_FOR"
+            ]
+          ],
+          "precision": 0.7619047619047619,
+          "recall": 0.5517241379310345,
+          "f1": 0.64
+        },
+        "normalize_map": {
+          "RECEIVED_ADVICE_FROM": "ADVISED_BY",
+          "HONORED_IN": "MEMORIALIZED_AT",
+          "INTERRED_AT": "BURRIED_IN",
+          "IS_SPOUSE_OF": "MARRIED_TO",
+          "CHILD_OF": "PARENT_OF",
+          "CHAIRED": "IS_CHAIRMAN_OF",
+          "PRESENTED_TO": "PRESENTED_AT",
+          "CHAIRING": "IS_CHAIRMAN_OF",
+          "HELD_POSITION": "HOLDS_POSITION",
+          "DIED_IN": "DIED_AT",
+          "RECEIVED_AWARD": "AWARDED",
+          "OWNS": "OWNED",
+          "CHAIRMAN_OF": "IS_CHAIRMAN_OF",
+          "USED": "USES",
+          "BURRIED_AT": "BURRIED_IN",
+          "WORKED_AT": "EMPLOYED_AT",
+          "REPRESENTED": "REPRESENTS"
+        }
+      }
+    },
+    {
+      "run": 3,
+      "cger": {
+        "scores": {
+          "true_positives": [
+            [
+              "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+              "BREXIT REFERENDUM 2016"
+            ],
+            [
+              "BRAIN LENIHAN",
+              "BRIAN LENIHAN"
+            ],
+            [
+              "CHARLOTTE EL\u00c9ONORE RABUT",
+              "EL\u00c9ONORE RABUT"
+            ],
+            [
+              "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+              "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD"
+            ],
+            [
+              "DUNCOMBE",
+              "THOMAS SLINGSBY DUNCOMBE"
+            ],
+            [
+              "ED MILIBAND",
+              "MILIBAND"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD",
+              "EUROPEAN PERSON OF THE YEAR AWARD 1988"
+            ],
+            [
+              "FIRST EUROPEAN LAW PRIZE",
+              "THE FIRST EUROPEAN LAW PRIZE PARIS"
+            ],
+            [
+              "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+              "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE"
+            ],
+            [
+              "ICMC",
+              "INTERNATIONAL CATHOLIC MIGRATION COMMISSION"
+            ],
+            [
+              "IESE",
+              "IESE BUSINESS SCHOOL"
+            ],
+            [
+              "IRISH PEOPLE OF THE YEAR AWARD",
+              "THE IRISH PEOPLE OF THE YEAR AWARD 1989"
+            ],
+            [
+              "MARIE",
+              "MARIE FECHTER"
+            ],
+            [
+              "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+              "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)"
+            ],
+            [
+              "NATIONAL EXECUTIVE COMMITTEE",
+              "NEC"
+            ],
+            [
+              "P. W. KINGSFORD",
+              "P.W. KINGSFORD"
+            ],
+            [
+              "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+              "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994"
+            ],
+            [
+              "THE DUKE'S MOTTO",
+              "THE DUKES MOTTO"
+            ],
+            [
+              "THE KING'S BUTTERFLY",
+              "THE KINGS BUTTERFLY"
+            ],
+            [
+              "THOMAS KETTLE AWARD",
+              "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD"
+            ]
+          ],
+          "false_positives": [
+            [
+              "BAR COUNCIL OF IRELAND",
+              "IRISH BAR"
+            ],
+            [
+              "CHARTISM",
+              "PEOPLES CHARTER"
+            ],
+            [
+              "DANDY DEMAGOGUE",
+              "RADICAL DANDY"
+            ],
+            [
+              "DON C\u00c9SAR DE BAZAN",
+              "THE COURT OF CHARLES DE BAZAN"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD",
+              "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT"
+            ],
+            [
+              "EUROPEAN PERSON OF THE YEAR AWARD 1988",
+              "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT"
+            ],
+            [
+              "EXPERTS GROUP",
+              "HIGH LEVEL GROUP"
+            ],
+            [
+              "FRENCH VERSION OF THE CORSICAN BROTHERS",
+              "THE CORSICAN BROTHERS"
+            ],
+            [
+              "GLOBAL FORUM ON MIGRATION",
+              "GLOBAL FORUM ON MIGRATION AND DEVELOPMENT"
+            ],
+            [
+              "JEWS",
+              "THE JEWS OF ENGLAND: THEIR HISTORY AND WRONGS"
+            ],
+            [
+              "LE M\u00c9DECIN DES ENFANTS",
+              "LOVES PENANCE"
+            ],
+            [
+              "STUDENT CHRISTIAN MOVEMENT",
+              "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN"
+            ],
+            [
+              "SUTHERLAND SCHOOL OF LAW",
+              "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL"
+            ]
+          ],
+          "false_negatives": [
+            [
+              "ANGELA EAGLE",
+              "EAGLE"
+            ],
+            [
+              "BRAIN CANCER<BR>THROAT CANCER",
+              "THROAT CANCER"
+            ],
+            [
+              "CHARLES FECHTER",
+              "THE ACTOR"
+            ],
+            [
+              "COM\u00c9DIE FRAN\u00c7AISE",
+              "COM\u00c9DIE-FRAN\u00c7AISE"
+            ],
+            [
+              "DUNCOMBE",
+              "TOMMY"
+            ],
+            [
+              "GIRTON COLLEGE",
+              "GIRTON COLLEGE CAMBRIDGE"
+            ],
+            [
+              "PARLIAMENT",
+              "PARLIAMENT OF THE UNITED KINGDOM"
+            ],
+            [
+              "PAUL",
+              "PAUL FECHTER"
+            ],
+            [
+              "PETER SUTHERLAND",
+              "PIERRE SUTHERLAND"
+            ],
+            [
+              "PETER SUTHERLAND",
+              "SUTHERLAND"
+            ],
+            [
+              "PIERRE SUTHERLAND",
+              "SUTHERLAND"
+            ],
+            [
+              "THOMAS SLINGSBY DUNCOMBE",
+              "TOMMY"
+            ],
+            [
+              "UK",
+              "UNITED KINGDOM"
+            ]
+          ],
+          "precision": 0.6060606060606061,
+          "recall": 0.6060606060606061,
+          "f1": 0.6060606060606061
+        },
+        "merge_map": {
+          "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN": "STUDENT CHRISTIAN MOVEMENT",
+          "MILIBAND": "ED MILIBAND",
+          "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM": "BREXIT REFERENDUM 2016",
+          "NEC": "NATIONAL EXECUTIVE COMMITTEE",
+          "THE COURT OF CHARLES DE BAZAN": "DON C\u00c9SAR DE BAZAN",
+          "FRENCH VERSION OF THE CORSICAN BROTHERS": "THE CORSICAN BROTHERS",
+          "THE KINGS BUTTERFLY": "THE KING'S BUTTERFLY",
+          "THE DUKES MOTTO": "THE DUKE'S MOTTO",
+          "LE M\u00c9DECIN DES ENFANTS": "LOVES PENANCE",
+          "CHARLOTTE EL\u00c9ONORE RABUT": "EL\u00c9ONORE RABUT",
+          "MARIE": "MARIE FECHTER",
+          "IRISH BAR": "BAR COUNCIL OF IRELAND",
+          "GLOBAL FORUM ON MIGRATION": "GLOBAL FORUM ON MIGRATION AND DEVELOPMENT",
+          "IESE": "IESE BUSINESS SCHOOL",
+          "BRIAN LENIHAN": "BRAIN LENIHAN",
+          "EXPERTS GROUP": "HIGH LEVEL GROUP",
+          "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE": "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+          "ICMC": "INTERNATIONAL CATHOLIC MIGRATION COMMISSION",
+          "THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT": "EUROPEAN PERSON OF THE YEAR AWARD",
+          "THE FIRST EUROPEAN LAW PRIZE PARIS": "FIRST EUROPEAN LAW PRIZE",
+          "EUROPEAN PERSON OF THE YEAR AWARD 1988": "EUROPEAN PERSON OF THE YEAR AWARD",
+          "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD": "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+          "THE IRISH PEOPLE OF THE YEAR AWARD 1989": "IRISH PEOPLE OF THE YEAR AWARD",
+          "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994": "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+          "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL": "SUTHERLAND SCHOOL OF LAW",
+          "THOMAS KETTLE AWARD": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+          "RADICAL DANDY": "DANDY DEMAGOGUE",
+          "DUNCOMBE": "THOMAS SLINGSBY DUNCOMBE",
+          "CHARTISM": "PEOPLES CHARTER",
+          "THE JEWS OF ENGLAND: THEIR HISTORY AND WRONGS": "JEWS",
+          "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)": "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+          "P.W. KINGSFORD": "P. W. KINGSFORD"
+        }
+      },
+      "cgrr": {
+        "scores": {
+          "true_positives": [
+            [
+              "AWARDED",
+              "RECEIVED_AWARD"
+            ],
+            [
+              "BURRIED_AT",
+              "BURRIED_IN"
+            ],
+            [
+              "BURRIED_AT",
+              "INTERRED_AT"
+            ],
+            [
+              "BURRIED_IN",
+              "INTERRED_AT"
+            ],
+            [
+              "CHAIRED",
+              "CHAIRING"
+            ],
+            [
+              "CHAIRED",
+              "CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRED",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRING",
+              "CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRING",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "CHAIRMAN_OF",
+              "IS_CHAIRMAN_OF"
+            ],
+            [
+              "DIED_AT",
+              "DIED_IN"
+            ],
+            [
+              "EMPLOYED_AT",
+              "WORKED_AT"
+            ],
+            [
+              "HELD_POSITION",
+              "HOLDS_POSITION"
+            ],
+            [
+              "IS_SPOUSE_OF",
+              "MARRIED_TO"
+            ],
+            [
+              "OWNED",
+              "OWNS"
+            ],
+            [
+              "REPRESENTED",
+              "REPRESENTS"
+            ],
+            [
+              "SUPPORTED",
+              "SUPPORTS"
+            ]
+          ],
+          "false_positives": [
+            [
+              "ADVISED_BY",
+              "RECEIVED_ADVICE_FROM"
+            ],
+            [
+              "CHILD_OF",
+              "PARENT_OF"
+            ],
+            [
+              "HONORED_IN",
+              "MEMORIALIZED_AT"
+            ],
+            [
+              "INFLUENCED_BY",
+              "INFLUENCES"
+            ],
+            [
+              "PRESENTED_AT",
+              "PRESENTED_TO"
+            ]
+          ],
+          "false_negatives": [
+            [
+              "ADVISED",
+              "ADVISOR_TO"
+            ],
+            [
+              "ALIAS_OF",
+              "SAME_AS"
+            ],
+            [
+              "CHAIRED",
+              "LEADS"
+            ],
+            [
+              "CHAIRING",
+              "LEADS"
+            ],
+            [
+              "CHAIRMAN_OF",
+              "LEADS"
+            ],
+            [
+              "EMPLOYED_AT",
+              "WORKS_FOR"
+            ],
+            [
+              "INFLUENCED",
+              "INFLUENCES"
+            ],
+            [
+              "IS_CEO_OF",
+              "IS_LEADER_OF"
+            ],
+            [
+              "IS_CEO_OF",
+              "IS_PRESIDENT_OF"
+            ],
+            [
+              "IS_CHAIRMAN_OF",
+              "LEADS"
+            ],
+            [
+              "IS_LEADER_OF",
+              "IS_PRESIDENT_OF"
+            ],
+            [
+              "WORKED_AT",
+              "WORKS_FOR"
+            ]
+          ],
+          "precision": 0.7727272727272727,
+          "recall": 0.5862068965517241,
+          "f1": 0.6666666666666667
+        },
+        "normalize_map": {
+          "RECEIVED_ADVICE_FROM": "ADVISED_BY",
+          "HONORED_IN": "MEMORIALIZED_AT",
+          "INTERRED_AT": "BURRIED_IN",
+          "IS_SPOUSE_OF": "MARRIED_TO",
+          "CHILD_OF": "PARENT_OF",
+          "CHAIRED": "IS_CHAIRMAN_OF",
+          "PRESENTED_TO": "PRESENTED_AT",
+          "CHAIRING": "IS_CHAIRMAN_OF",
+          "SUPPORTS": "SUPPORTED",
+          "HELD_POSITION": "HOLDS_POSITION",
+          "DIED_IN": "DIED_AT",
+          "INFLUENCES": "INFLUENCED_BY",
+          "RECEIVED_AWARD": "AWARDED",
+          "OWNS": "OWNED",
+          "CHAIRMAN_OF": "IS_CHAIRMAN_OF",
+          "BURRIED_AT": "BURRIED_IN",
+          "WORKED_AT": "EMPLOYED_AT",
+          "REPRESENTED": "REPRESENTS"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "cger": {
+      "precision_mean": 0.6001188354129531,
+      "precision_std": 0.010291448648656429,
+      "recall_mean": 0.6060606060606061,
+      "recall_std": 0.0,
+      "f1_mean": 0.6030453791647822,
+      "f1_std": 0.005222526179915244
+    },
+    "cgrr": {
+      "precision_mean": 0.7655122655122654,
+      "precision_std": 0.006248379536684274,
+      "recall_mean": 0.5632183908045977,
+      "recall_std": 0.019908629972056037,
+      "f1_mean": 0.648888888888889,
+      "f1_std": 0.015396007178390054
+    }
+  },
+  "same_name_baseline": {
+    "cger": {
+      "predicted_pairs": 0,
+      "truth_pairs_total": 33,
+      "truth_pairs_same_name": 0,
+      "scores": {
+        "true_positives": [],
+        "false_positives": [],
+        "false_negatives": [
+          [
+            "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+            "BREXIT REFERENDUM 2016"
+          ],
+          [
+            "ANGELA EAGLE",
+            "EAGLE"
+          ],
+          [
+            "BRAIN CANCER<BR>THROAT CANCER",
+            "THROAT CANCER"
+          ],
+          [
+            "BRAIN LENIHAN",
+            "BRIAN LENIHAN"
+          ],
+          [
+            "CHARLES FECHTER",
+            "THE ACTOR"
+          ],
+          [
+            "CHARLOTTE EL\u00c9ONORE RABUT",
+            "EL\u00c9ONORE RABUT"
+          ],
+          [
+            "COM\u00c9DIE FRAN\u00c7AISE",
+            "COM\u00c9DIE-FRAN\u00c7AISE"
+          ],
+          [
+            "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+            "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD"
+          ],
+          [
+            "DUNCOMBE",
+            "THOMAS SLINGSBY DUNCOMBE"
+          ],
+          [
+            "DUNCOMBE",
+            "TOMMY"
+          ],
+          [
+            "ED MILIBAND",
+            "MILIBAND"
+          ],
+          [
+            "EUROPEAN PERSON OF THE YEAR AWARD",
+            "EUROPEAN PERSON OF THE YEAR AWARD 1988"
+          ],
+          [
+            "FIRST EUROPEAN LAW PRIZE",
+            "THE FIRST EUROPEAN LAW PRIZE PARIS"
+          ],
+          [
+            "GIRTON COLLEGE",
+            "GIRTON COLLEGE CAMBRIDGE"
+          ],
+          [
+            "HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+            "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE"
+          ],
+          [
+            "ICMC",
+            "INTERNATIONAL CATHOLIC MIGRATION COMMISSION"
+          ],
+          [
+            "IESE",
+            "IESE BUSINESS SCHOOL"
+          ],
+          [
+            "IRISH PEOPLE OF THE YEAR AWARD",
+            "THE IRISH PEOPLE OF THE YEAR AWARD 1989"
+          ],
+          [
+            "MARIE",
+            "MARIE FECHTER"
+          ],
+          [
+            "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR",
+            "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)"
+          ],
+          [
+            "NATIONAL EXECUTIVE COMMITTEE",
+            "NEC"
+          ],
+          [
+            "P. W. KINGSFORD",
+            "P.W. KINGSFORD"
+          ],
+          [
+            "PARLIAMENT",
+            "PARLIAMENT OF THE UNITED KINGDOM"
+          ],
+          [
+            "PAUL",
+            "PAUL FECHTER"
+          ],
+          [
+            "PETER SUTHERLAND",
+            "PIERRE SUTHERLAND"
+          ],
+          [
+            "PETER SUTHERLAND",
+            "SUTHERLAND"
+          ],
+          [
+            "PIERRE SUTHERLAND",
+            "SUTHERLAND"
+          ],
+          [
+            "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD",
+            "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994"
+          ],
+          [
+            "THE DUKE'S MOTTO",
+            "THE DUKES MOTTO"
+          ],
+          [
+            "THE KING'S BUTTERFLY",
+            "THE KINGS BUTTERFLY"
+          ],
+          [
+            "THOMAS KETTLE AWARD",
+            "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD"
+          ],
+          [
+            "THOMAS SLINGSBY DUNCOMBE",
+            "TOMMY"
+          ],
+          [
+            "UK",
+            "UNITED KINGDOM"
+          ]
+        ],
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    },
+    "cgrr": {
+      "predicted_pairs": 0,
+      "truth_pairs_total": 29,
+      "truth_pairs_same_name": 0,
+      "scores": {
+        "true_positives": [],
+        "false_positives": [],
+        "false_negatives": [
+          [
+            "ADVISED",
+            "ADVISOR_TO"
+          ],
+          [
+            "ALIAS_OF",
+            "SAME_AS"
+          ],
+          [
+            "AWARDED",
+            "RECEIVED_AWARD"
+          ],
+          [
+            "BURRIED_AT",
+            "BURRIED_IN"
+          ],
+          [
+            "BURRIED_AT",
+            "INTERRED_AT"
+          ],
+          [
+            "BURRIED_IN",
+            "INTERRED_AT"
+          ],
+          [
+            "CHAIRED",
+            "CHAIRING"
+          ],
+          [
+            "CHAIRED",
+            "CHAIRMAN_OF"
+          ],
+          [
+            "CHAIRED",
+            "IS_CHAIRMAN_OF"
+          ],
+          [
+            "CHAIRED",
+            "LEADS"
+          ],
+          [
+            "CHAIRING",
+            "CHAIRMAN_OF"
+          ],
+          [
+            "CHAIRING",
+            "IS_CHAIRMAN_OF"
+          ],
+          [
+            "CHAIRING",
+            "LEADS"
+          ],
+          [
+            "CHAIRMAN_OF",
+            "IS_CHAIRMAN_OF"
+          ],
+          [
+            "CHAIRMAN_OF",
+            "LEADS"
+          ],
+          [
+            "DIED_AT",
+            "DIED_IN"
+          ],
+          [
+            "EMPLOYED_AT",
+            "WORKED_AT"
+          ],
+          [
+            "EMPLOYED_AT",
+            "WORKS_FOR"
+          ],
+          [
+            "HELD_POSITION",
+            "HOLDS_POSITION"
+          ],
+          [
+            "INFLUENCED",
+            "INFLUENCES"
+          ],
+          [
+            "IS_CEO_OF",
+            "IS_LEADER_OF"
+          ],
+          [
+            "IS_CEO_OF",
+            "IS_PRESIDENT_OF"
+          ],
+          [
+            "IS_CHAIRMAN_OF",
+            "LEADS"
+          ],
+          [
+            "IS_LEADER_OF",
+            "IS_PRESIDENT_OF"
+          ],
+          [
+            "IS_SPOUSE_OF",
+            "MARRIED_TO"
+          ],
+          [
+            "OWNED",
+            "OWNS"
+          ],
+          [
+            "REPRESENTED",
+            "REPRESENTS"
+          ],
+          [
+            "SUPPORTED",
+            "SUPPORTS"
+          ],
+          [
+            "WORKED_AT",
+            "WORKS_FOR"
+          ]
+        ],
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    }
+  }
+}
