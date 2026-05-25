@@ -11,14 +11,149 @@
   },
   "clusters": [
     {
-      "canonical": "META PLATFORMS",
-      "type": "organization",
-      "aliases": ["META PLATFORMS", "META"]
+      "canonical": "ANGELA EAGLE",
+      "type": "person",
+      "aliases": ["ANGELA EAGLE", "EAGLE"]
     },
     {
-      "canonical": "ALPHABET INC.",
+      "canonical": "BRIAN LENIHAN",
+      "type": "person",
+      "aliases": ["BRIAN LENIHAN", "BRAIN LENIHAN"]
+    },
+    {
+      "canonical": "ED MILIBAND",
+      "type": "person",
+      "aliases": ["ED MILIBAND", "MILIBAND"]
+    },
+    {
+      "canonical": "THOMAS SLINGSBY DUNCOMBE",
+      "type": "person",
+      "aliases": ["THOMAS SLINGSBY DUNCOMBE", "DUNCOMBE", "TOMMY"]
+    },
+    {
+      "canonical": "PETER SUTHERLAND",
+      "type": "person",
+      "aliases": ["PETER SUTHERLAND", "PIERRE SUTHERLAND", "SUTHERLAND"]
+    },
+    {
+      "canonical": "P. W. KINGSFORD",
+      "type": "person",
+      "aliases": ["P. W. KINGSFORD", "P.W. KINGSFORD"]
+    },
+    {
+      "canonical": "PAUL FECHTER",
+      "type": "person",
+      "aliases": ["PAUL FECHTER", "PAUL"]
+    },
+    {
+      "canonical": "MARIE FECHTER",
+      "type": "person",
+      "aliases": ["MARIE FECHTER", "MARIE"]
+    },
+    {
+      "canonical": "CHARLOTTE ELÉONORE RABUT",
+      "type": "person",
+      "aliases": ["CHARLOTTE ELÉONORE RABUT", "ELÉONORE RABUT"]
+    },
+    {
+      "canonical": "CHARLES FECHTER",
+      "type": "person",
+      "aliases": ["CHARLES FECHTER", "THE ACTOR"]
+    },
+    {
+      "canonical": "COMÉDIE-FRANÇAISE",
       "type": "organization",
-      "aliases": ["ALPHABET INC.", "ALPHABET"]
+      "aliases": ["COMÉDIE-FRANÇAISE", "COMÉDIE FRANÇAISE"]
+    },
+    {
+      "canonical": "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)",
+      "type": "organization",
+      "aliases": ["NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)", "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR"]
+    },
+    {
+      "canonical": "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+      "type": "organization",
+      "aliases": ["UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE", "HOUSE OF LORDS HOME AFFAIRS COMMITTEE"]
+    },
+    {
+      "canonical": "INTERNATIONAL CATHOLIC MIGRATION COMMISSION",
+      "type": "organization",
+      "aliases": ["INTERNATIONAL CATHOLIC MIGRATION COMMISSION", "ICMC"]
+    },
+    {
+      "canonical": "IESE BUSINESS SCHOOL",
+      "type": "organization",
+      "aliases": ["IESE BUSINESS SCHOOL", "IESE"]
+    },
+    {
+      "canonical": "NATIONAL EXECUTIVE COMMITTEE",
+      "type": "organization",
+      "aliases": ["NATIONAL EXECUTIVE COMMITTEE", "NEC"]
+    },
+    {
+      "canonical": "GIRTON COLLEGE CAMBRIDGE",
+      "type": "organization",
+      "aliases": ["GIRTON COLLEGE CAMBRIDGE", "GIRTON COLLEGE"]
+    },
+    {
+      "canonical": "PARLIAMENT OF THE UNITED KINGDOM",
+      "type": "organization",
+      "aliases": ["PARLIAMENT OF THE UNITED KINGDOM", "PARLIAMENT"]
+    },
+    {
+      "canonical": "UNITED KINGDOM",
+      "type": "geo",
+      "aliases": ["UNITED KINGDOM", "UK"]
+    },
+    {
+      "canonical": "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+      "type": "event",
+      "aliases": ["2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM", "BREXIT REFERENDUM 2016"]
+    },
+    {
+      "canonical": "THE DUKE'S MOTTO",
+      "type": "other",
+      "aliases": ["THE DUKE'S MOTTO", "THE DUKES MOTTO"]
+    },
+    {
+      "canonical": "THE KING'S BUTTERFLY",
+      "type": "other",
+      "aliases": ["THE KING'S BUTTERFLY", "THE KINGS BUTTERFLY"]
+    },
+    {
+      "canonical": "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+      "type": "other",
+      "aliases": ["THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD", "DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD"]
+    },
+    {
+      "canonical": "EUROPEAN PERSON OF THE YEAR AWARD 1988",
+      "type": "other",
+      "aliases": ["EUROPEAN PERSON OF THE YEAR AWARD 1988", "EUROPEAN PERSON OF THE YEAR AWARD"]
+    },
+    {
+      "canonical": "THE IRISH PEOPLE OF THE YEAR AWARD 1989",
+      "type": "other",
+      "aliases": ["THE IRISH PEOPLE OF THE YEAR AWARD 1989", "IRISH PEOPLE OF THE YEAR AWARD"]
+    },
+    {
+      "canonical": "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994",
+      "type": "other",
+      "aliases": ["THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994", "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD"]
+    },
+    {
+      "canonical": "THE FIRST EUROPEAN LAW PRIZE PARIS",
+      "type": "other",
+      "aliases": ["THE FIRST EUROPEAN LAW PRIZE PARIS", "FIRST EUROPEAN LAW PRIZE"]
+    },
+    {
+      "canonical": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+      "type": "other",
+      "aliases": ["UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD", "THOMAS KETTLE AWARD"]
+    },
+    {
+      "canonical": "THROAT CANCER",
+      "type": "other",
+      "aliases": ["THROAT CANCER", "BRAIN CANCER<BR>THROAT CANCER"]
     }
   ]
 }

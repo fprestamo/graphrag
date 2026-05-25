@@ -10,16 +10,60 @@
   },
   "clusters": [
     {
-      "canonical": "IS_CEO_OF",
-      "aliases": ["IS_CEO_OF", "LEADS", "IS_PRESIDENT_OF"]
-    },
-    {
-      "canonical": "FOUNDED",
-      "aliases": ["FOUNDED", "CO_FOUNDED"]
-    },
-    {
       "canonical": "OWNS",
       "aliases": ["OWNS", "OWNED"]
+    },
+    {
+      "canonical": "SUPPORTED",
+      "aliases": ["SUPPORTED", "SUPPORTS"]
+    },
+    {
+      "canonical": "INFLUENCED",
+      "aliases": ["INFLUENCED", "INFLUENCES"]
+    },
+    {
+      "canonical": "REPRESENTS",
+      "aliases": ["REPRESENTS", "REPRESENTED"]
+    },
+    {
+      "canonical": "HOLDS_POSITION",
+      "aliases": ["HOLDS_POSITION", "HELD_POSITION"]
+    },
+    {
+      "canonical": "IS_CHAIRMAN_OF",
+      "aliases": ["IS_CHAIRMAN_OF", "CHAIRMAN_OF", "CHAIRED", "CHAIRING", "LEADS"]
+    },
+    {
+      "canonical": "INTERRED_AT",
+      "aliases": ["INTERRED_AT", "BURRIED_AT", "BURRIED_IN"]
+    },
+    {
+      "canonical": "DIED_IN",
+      "aliases": ["DIED_IN", "DIED_AT"]
+    },
+    {
+      "canonical": "MARRIED_TO",
+      "aliases": ["MARRIED_TO", "IS_SPOUSE_OF"]
+    },
+    {
+      "canonical": "EMPLOYED_AT",
+      "aliases": ["EMPLOYED_AT", "WORKED_AT", "WORKS_FOR"]
+    },
+    {
+      "canonical": "ADVISED",
+      "aliases": ["ADVISED", "ADVISOR_TO"]
+    },
+    {
+      "canonical": "IS_PRESIDENT_OF",
+      "aliases": ["IS_PRESIDENT_OF", "IS_CEO_OF", "IS_LEADER_OF"]
+    },
+    {
+      "canonical": "ALIAS_OF",
+      "aliases": ["ALIAS_OF", "SAME_AS"]
+    },
+    {
+      "canonical": "RECEIVED_AWARD",
+      "aliases": ["RECEIVED_AWARD", "AWARDED"]
     }
   ]
 }
