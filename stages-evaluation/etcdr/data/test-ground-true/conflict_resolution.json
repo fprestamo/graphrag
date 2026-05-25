@@ -14,6 +14,1955 @@
       }
     ]
   },
-  "cardinality_overrides": {},
-  "expected": []
+  "cardinality_overrides": {
+    "IS_PRESIDENT_OF": "OBJECT_EXCLUSIVE",
+    "IS_CHAIRMAN_OF": "OBJECT_EXCLUSIVE",
+    "IS_DIRECTOR_OF": "OBJECT_EXCLUSIVE",
+    "IS_DEPUTY_LEADER_OF": "OBJECT_EXCLUSIVE",
+    "DIED_IN": "SUBJECT_EXCLUSIVE",
+    "INTERRED_AT": "SUBJECT_EXCLUSIVE",
+    "RETIRED_TO": "SUBJECT_EXCLUSIVE",
+    "BORN_IN": "NON_EXCLUSIVE"
+  },
+  "expected": [
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LADY MUIR MEMORIAL COLLEGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "LADY MUIR MEMORIAL COLLEGE",
+      "relation_type": "LOCATED_IN",
+      "target": "ALLAHABAD",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "WESTFIELD COLLEGE",
+      "relation_type": "LOCATED_IN",
+      "target": "LONDON",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ERNEST DE SELINCOURT",
+      "relation_type": "IS_DIRECTOR_OF",
+      "target": "UNIVERSITY OF BIRMINGHAM",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "RELATED_TO",
+      "target": "ERNEST DE SELINCOURT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "RELATED_TO",
+      "target": "CHARLES ALEXANDRE DE SELINCOURT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "RELATED_TO",
+      "target": "THEODORA BRUCE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "BORN_IN",
+      "target": "STREATHAM",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "STUDIED_AT",
+      "target": "NOTTING HILL HIGH SCHOOL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "STUDIED_AT",
+      "target": "GIRTON COLLEGE CAMBRIDGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "GIRTON COLLEGE CAMBRIDGE",
+      "relation_type": "LOCATED_IN",
+      "target": "CAMBRIDGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "STUDIED_AT",
+      "target": "SOMERVILLE COLLEGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "SOMERVILLE COLLEGE",
+      "relation_type": "LOCATED_IN",
+      "target": "OXFORD",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "EMPLOYED_AT",
+      "target": "SHEFFIELD HIGH SCHOOL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "COLLABORATED_WITH",
+      "target": "CLARA RUTH ROUSE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "SUPPORTED",
+      "target": "BRITISH COLLEGE CHRISTIAN UNION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "CLARA RUTH ROUSE",
+      "relation_type": "SUPPORTED",
+      "target": "BRITISH COLLEGE CHRISTIAN UNION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "FOUNDED",
+      "target": "MISSIONARY SETTLEMENT FOR UNIVERSITY WOMEN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "MISSIONARY SETTLEMENT FOR UNIVERSITY WOMEN",
+      "relation_type": "LOCATED_IN",
+      "target": "BOMBAY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "COLLABORATED_WITH",
+      "target": "MARY FRASER",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "VISITED",
+      "target": "KULA VALLEY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "USES",
+      "target": "HINDUSTANI",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "EMPLOYED_AT",
+      "target": "STUDENT CHRISTIAN MOVEMENT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "MANAGES",
+      "target": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "relation_type": "OCCURRED_IN",
+      "target": "LUCKNOW",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "OPERATES_IN",
+      "target": "INDIA",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LADY MUIR MEMORIAL COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "LADY MUIR MEMORIAL COLLEGE",
+      "relation_type": "LOCATED_IN",
+      "target": "ALLAHABAD",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "WESTFIELD COLLEGE",
+      "relation_type": "LOCATED_IN",
+      "target": "LONDON",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "BORN_IN",
+      "target": "STREATHAM",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "RELATED_TO",
+      "target": "ERNEST DE SELINCOURT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ERNEST DE SELINCOURT",
+      "relation_type": "IS_DIRECTOR_OF",
+      "target": "UNIVERSITY OF BIRMINGHAM",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "RELATED_TO",
+      "target": "CHARLES ALEXANDRE DE SELINCOURT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "RELATED_TO",
+      "target": "THEODORA BRUCE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "STUDIED_AT",
+      "target": "NOTTING HILL HIGH SCHOOL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "STUDIED_AT",
+      "target": "GIRTON COLLEGE CAMBRIDGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "GIRTON COLLEGE CAMBRIDGE",
+      "relation_type": "LOCATED_IN",
+      "target": "CAMBRIDGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "STUDIED_AT",
+      "target": "SOMERVILLE COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "SOMERVILLE COLLEGE",
+      "relation_type": "LOCATED_IN",
+      "target": "OXFORD",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "EMPLOYED_AT",
+      "target": "SHEFFIELD HIGH SCHOOL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "COLLABORATED_WITH",
+      "target": "CLARA RUTH ROUSE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "SUPPORTED",
+      "target": "BRITISH COLLEGE CHRISTIAN UNION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "CLARA RUTH ROUSE",
+      "relation_type": "SUPPORTED",
+      "target": "BRITISH COLLEGE CHRISTIAN UNION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "FOUNDED",
+      "target": "MISSIONARY SETTLEMENT FOR UNIVERSITY WOMEN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "MISSIONARY SETTLEMENT FOR UNIVERSITY WOMEN",
+      "relation_type": "LOCATED_IN",
+      "target": "BOMBAY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "COLLABORATED_WITH",
+      "target": "MARY FRASER",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "VISITED",
+      "target": "KULA VALLEY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "USES",
+      "target": "HINDUSTANI",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "EMPLOYED_AT",
+      "target": "STUDENT CHRISTIAN MOVEMENT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "MANAGES",
+      "target": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "relation_type": "OCCURRED_IN",
+      "target": "LUCKNOW",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "OPERATES_IN",
+      "target": "INDIA",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "EMPLOYED_AT",
+      "target": "STUDENT CHRISTIAN MOVEMENT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "relation_type": "OCCURRED_IN",
+      "target": "LUCKNOW",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "PUBLISHED",
+      "target": "INTERNATIONAL REVIEW OF MISSION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "SUCCEEDED_BY",
+      "target": "CONSTANCE MAYNARD",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "WESTFIELD COLLEGE",
+      "relation_type": "AFFILIATED_WITH",
+      "target": "UNIVERSITY OF LONDON",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "DAME MILLICENT FAWCETT",
+      "relation_type": "ATTENDED",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "GREAT WAR",
+      "relation_type": "CAUSED",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "DIED_IN",
+      "target": "WHITBY NURSING HOME",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "INTERRED_AT",
+      "target": "BROMPTON CEMETERY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "WESTFIELD COLLEGE",
+      "relation_type": "OWNS",
+      "target": "KIDDERPORE AVENUE 13",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "SELINCOURT HALL",
+      "relation_type": "NAMED_AFTER",
+      "target": "KIDDERPORE AVENUE 13",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT SCHOLARSHIP IN MATHEMATICS",
+      "relation_type": "ESTABLISHED_AT",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT FUND",
+      "relation_type": "BRANCH_OF",
+      "target": "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "MEMORIALIZED_AT",
+      "target": "GIRTON COLLEGE CAMBRIDGE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "EMPLOYED_AT",
+      "target": "STUDENT CHRISTIAN MOVEMENT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "SECOND MISSION CONFERENCE ON ISLAM 1911",
+      "relation_type": "OCCURRED_IN",
+      "target": "LUCKNOW",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "PUBLISHED",
+      "target": "INTERNATIONAL REVIEW OF MISSION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "SUCCEEDED_BY",
+      "target": "CONSTANCE MAYNARD",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "WESTFIELD COLLEGE",
+      "relation_type": "AFFILIATED_WITH",
+      "target": "UNIVERSITY OF LONDON",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "DAME MILLICENT FAWCETT",
+      "relation_type": "ATTENDED",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "GREAT WAR",
+      "relation_type": "CAUSED",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "DIED_IN",
+      "target": "WHITBY NURSING HOME",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "INTERRED_AT",
+      "target": "BROMPTON CEMETERY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "WESTFIELD COLLEGE",
+      "relation_type": "OWNS",
+      "target": "KIDDERPORE AVENUE 13",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "SELINCOURT HALL",
+      "relation_type": "NAMED_AFTER",
+      "target": "KIDDERPORE AVENUE 13",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT SCHOLARSHIP IN MATHEMATICS",
+      "relation_type": "ESTABLISHED_AT",
+      "target": "WESTFIELD COLLEGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT FUND",
+      "relation_type": "BRANCH_OF",
+      "target": "TRUST ASSOCIATION OF THE STUDENT CHRISTIAN MOVEMENT OF GREAT BRITAIN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "AGNES DE SELINCOURT",
+      "relation_type": "MEMORIALIZED_AT",
+      "target": "GIRTON COLLEGE CAMBRIDGE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ED MILIBAND",
+      "relation_type": "APPOINTED_TO",
+      "target": "ANGELA EAGLE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "TONY BLAIR",
+      "relation_type": "APPOINTED_TO",
+      "target": "ANGELA EAGLE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "EMPLOYED_AT",
+      "target": "DEPARTMENT FOR THE ENVIRONMENT, TRANSPORT AND THE REGIONS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "SHADOW CABINET",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "TONY BLAIR",
+      "relation_type": "APPOINTED_TO",
+      "target": "ANGELA EAGLE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "EMPLOYED_AT",
+      "target": "DEPARTMENT FOR THE ENVIRONMENT, TRANSPORT AND THE REGIONS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ED MILIBAND",
+      "relation_type": "APPOINTED_TO",
+      "target": "ANGELA EAGLE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "CRITICIZED",
+      "target": "GARY BARLOW",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "HOUSE OF COMMONS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "TONY BLAIR",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "GORDON BROWN",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "EVOLUTION",
+      "notes": "Gordon Brown succeeded Tony Blair as Labour Party leader in June 2007"
+    },
+    {
+      "source": "ED MILIBAND",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "EVOLUTION",
+      "notes": "Ed Miliband became Labour Party leader in September 2010, after Brown"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "CRITICIZED",
+      "target": "GARY BARLOW",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ED MILIBAND",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "PARTICIPATED_IN",
+      "target": "LABOUR DEPUTY LEADERSHIP ELECTION 2015",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "PARTICIPATED_IN",
+      "target": "LABOUR DEPUTY LEADERSHIP ELECTION 2015",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "JEREMY CORBYN",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "EVOLUTION",
+      "notes": "Jeremy Corbyn became Labour Party leader in September 2015, after Miliband"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "RESIGNED_FROM",
+      "target": "SHADOW CABINET",
+      "expected_strategy": "EVOLUTION",
+      "notes": "Eagle resigned from the Shadow Cabinet in June 2016, ending her MEMBER_OF tenure (NON_EXCLUSIVE continuation MEMBER_OF -> RESIGNED_FROM)"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "PARTICIPATED_IN",
+      "target": "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "CHALLENGED",
+      "target": "JEREMY CORBYN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "PARTICIPATED_IN",
+      "target": "2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "RESIGNED_FROM",
+      "target": "SHADOW CABINET",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "CHALLENGED",
+      "target": "JEREMY CORBYN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "NATIONAL EXECUTIVE COMMITTEE",
+      "relation_type": "SUSPENDED",
+      "target": "WALLASEY CONSTITUENCY LABOUR PARTY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "HOUSE OF COMMONS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "RELATED_TO",
+      "target": "MARIA EAGLE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "RELATED_TO",
+      "target": "MAUREEN COLQUHOUN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "NATIONAL EXECUTIVE COMMITTEE",
+      "relation_type": "SUSPENDED",
+      "target": "WALLASEY CONSTITUENCY LABOUR PARTY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "RELATED_TO",
+      "target": "MARIA EAGLE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "RELATED_TO",
+      "target": "MAUREEN COLQUHOUN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ANGELA EAGLE",
+      "relation_type": "MEMBER_OF",
+      "target": "LABOUR PARTY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "CHARLES FECHTER",
+      "relation_type": "MARRIED_TO",
+      "target": "CHARLOTTE ELÉONORE RABUT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "CHARLES FECHTER",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE KING'S BUTTERFLY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PAUL FECHTER",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE MOUNTEBANK",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "CHARLES FECHTER",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE KING'S BUTTERFLY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "OTHELLO",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "LEASED",
+      "target": "LYCEUM THEATRE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PAUL FECHTER",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE MOUNTEBANK",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE ROADSIDE INN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE MASTER OF RAVENSWOOD",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE CORSICAN BROTHERS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE LADY OF LYONS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_AT",
+      "target": "ADELPHI THEATRE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "OPERATES_IN",
+      "target": "UNITED STATES",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "VISITED",
+      "target": "LONDON",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "LEASED",
+      "target": "GLOBE THEATRE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PARTNERED_WITH",
+      "target": "WILLIAM STUART",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "CREATED",
+      "target": "LOVES PENANCE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "RETIRED_TO",
+      "target": "ROCKLAND TOWNSHIP",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "MARRIED_TO",
+      "target": "LIZZIE PRICE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "INTERRED_AT",
+      "target": "MOUNT VERNON CEMETERY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "MOUNT VERNON CEMETERY",
+      "relation_type": "LOCATED_IN",
+      "target": "PHILADELPHIA",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "GARRICK CLUB",
+      "relation_type": "LOCATED_IN",
+      "target": "LONDON",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "HONORED_IN",
+      "target": "GARRICK CLUB",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "MARRIED_TO",
+      "target": "CHARLOTTE ELÉONORE RABUT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "COMÉDIE-FRANÇAISE",
+      "relation_type": "LOCATED_IN",
+      "target": "PARIS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PARENT_OF",
+      "target": "PAUL FECHTER",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PARENT_OF",
+      "target": "MARIE FECHTER",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "OTHELLO",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PARENT_OF",
+      "target": "PAUL FECHTER",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PARENT_OF",
+      "target": "MARIE FECHTER",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "MARRIED_TO",
+      "target": "CHARLOTTE ELÉONORE RABUT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "LEASED",
+      "target": "LYCEUM THEATRE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "LEASED",
+      "target": "GLOBE THEATRE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "OPERATES_IN",
+      "target": "UNITED STATES",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "VISITED",
+      "target": "LONDON",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "RETIRED_TO",
+      "target": "ROCKLAND TOWNSHIP",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "MARRIED_TO",
+      "target": "LIZZIE PRICE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "INTERRED_AT",
+      "target": "MOUNT VERNON CEMETERY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "HONORED_IN",
+      "target": "GARRICK CLUB",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE ROADSIDE INN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE MASTER OF RAVENSWOOD",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE CORSICAN BROTHERS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_IN",
+      "target": "THE LADY OF LYONS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PERFORMED_AT",
+      "target": "ADELPHI THEATRE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "PARTNERED_WITH",
+      "target": "WILLIAM STUART",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ACTOR",
+      "relation_type": "CREATED",
+      "target": "LOVES PENANCE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "MOUNT VERNON CEMETERY",
+      "relation_type": "LOCATED_IN",
+      "target": "PHILADELPHIA",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "GARRICK CLUB",
+      "relation_type": "LOCATED_IN",
+      "target": "LONDON",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "CHARLES FECHTER",
+      "relation_type": "MARRIED_TO",
+      "target": "CHARLOTTE ELÉONORE RABUT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "COMÉDIE-FRANÇAISE",
+      "relation_type": "LOCATED_IN",
+      "target": "PARIS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "EMPLOYED_AT",
+      "target": "UNITED NATIONS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "INTERNATIONAL CATHOLIC MIGRATION COMMISSION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "SUTHERLAND REPORT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "EUROPEAN COMMISSION",
+      "relation_type": "COMMISSIONED",
+      "target": "SUTHERLAND REPORT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "GOLDMAN SACHS INTERNATIONAL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_DIRECTOR_OF",
+      "target": "WORLD TRADE ORGANIZATION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "SUTHERLAND REPORT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "EUROPEAN COMMISSION",
+      "relation_type": "COMMISSIONED",
+      "target": "SUTHERLAND REPORT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "EMPLOYED_AT",
+      "target": "EUROPEAN COMMISSION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_DIRECTOR_OF",
+      "target": "WORLD TRADE ORGANIZATION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "ALLIED IRISH BANKS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "ALLIED IRISH BANKS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "GOLDMAN SACHS INTERNATIONAL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "BP",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "CARL-HENRIC SVANBERG",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "BP",
+      "expected_strategy": "EVOLUTION",
+      "notes": "Carl-Henric Svanberg replaced Peter Sutherland as BP Chairman in June 2009"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "TRILATERAL COMMISSION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "TRILATERAL COMMISSION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "LONDON SCHOOL OF ECONOMICS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "SERVES_ON",
+      "target": "IESE BUSINESS SCHOOL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "KOFI ANNAN",
+      "relation_type": "APPOINTED_TO",
+      "target": "PETER SUTHERLAND",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "LONDON SCHOOL OF ECONOMICS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "SERVES_ON",
+      "target": "IESE BUSINESS SCHOOL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "KOFI ANNAN",
+      "relation_type": "APPOINTED_TO",
+      "target": "PETER SUTHERLAND",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "EMPLOYED_AT",
+      "target": "UNITED NATIONS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "BRIAN LENIHAN",
+      "relation_type": "MEMBER_OF",
+      "target": "FIANNA FÁIL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "BRIAN LENIHAN",
+      "relation_type": "MEMBER_OF",
+      "target": "FIANNA FÁIL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_CHAIRMAN_OF",
+      "target": "BP",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "EMPLOYED_AT",
+      "target": "EUROPEAN COMMISSION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "DIED_IN",
+      "target": "DUBLIN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ADVOCATED_FOR",
+      "target": "EUROPEAN UNION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ADVOCATED_FOR",
+      "target": "IMMIGRATION POLICY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "DIED_IN",
+      "target": "DUBLIN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ADVISED",
+      "target": "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ADVOCATED_FOR",
+      "target": "EUROPEAN UNION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "INTERNATIONAL CATHOLIC MIGRATION COMMISSION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF CIVIL MERIT",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ORDER OF CIVIL MERIT",
+      "relation_type": "LOCATED_IN",
+      "target": "SPAIN",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "LEGION OF HONOUR",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "LEGION OF HONOUR",
+      "relation_type": "LOCATED_IN",
+      "target": "FRANCE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF LEOPOLD II",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ORDER OF LEOPOLD II",
+      "relation_type": "LOCATED_IN",
+      "target": "BELGIUM",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF OUISSAM ALAOUITE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ORDER OF OUISSAM ALAOUITE",
+      "relation_type": "LOCATED_IN",
+      "target": "MOROCCO",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF RIO BRANCO",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "ORDER OF RIO BRANCO",
+      "relation_type": "LOCATED_IN",
+      "target": "BRAZIL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ADVOCATED_FOR",
+      "target": "IMMIGRATION POLICY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ADVISED",
+      "target": "UK HOUSE OF LORDS HOME AFFAIRS COMMITTEE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF CIVIL MERIT",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ORDER OF CIVIL MERIT",
+      "relation_type": "LOCATED_IN",
+      "target": "SPAIN",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "LEGION OF HONOUR",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "LEGION OF HONOUR",
+      "relation_type": "LOCATED_IN",
+      "target": "FRANCE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF LEOPOLD II",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ORDER OF LEOPOLD II",
+      "relation_type": "LOCATED_IN",
+      "target": "BELGIUM",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF OUISSAM ALAOUITE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ORDER OF OUISSAM ALAOUITE",
+      "relation_type": "LOCATED_IN",
+      "target": "MOROCCO",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ORDER OF RIO BRANCO",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ORDER OF RIO BRANCO",
+      "relation_type": "LOCATED_IN",
+      "target": "BRAZIL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ROBERT SCHUMAN MEDAL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE FIRST EUROPEAN LAW PRIZE PARIS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "EUROPEAN PERSON OF THE YEAR AWARD 1988",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE IRISH PEOPLE OF THE YEAR AWARD 1989",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "NEW ZEALAND 1990 COMMEMORATION MEDAL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "UNIVERSITY COLLEGE DUBLIN LAW SOCIETY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "ROBERT SCHUMAN MEDAL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE FIRST EUROPEAN LAW PRIZE PARIS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "EUROPEAN PERSON OF THE YEAR AWARD 1988",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE DAVID ROCKEFELLER INTERNATIONAL LEADERSHIP AWARD",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE IRISH PEOPLE OF THE YEAR AWARD 1989",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "NEW ZEALAND 1990 COMMEMORATION MEDAL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "THE CONSUMER FOR WORLD TRADE ANNUAL AWARD 1994",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ST BENETS HALL OXFORD",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "PETER SUTHERLAND",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "FUNDED",
+      "target": "SUTHERLAND SCHOOL OF LAW",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "SUTHERLAND SCHOOL OF LAW",
+      "relation_type": "RENAMED_FROM",
+      "target": "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "PETER SUTHERLAND",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "LORD WOOLF",
+      "relation_type": "CONDUCTED_INQUIRY",
+      "target": "LONDON SCHOOL OF ECONOMICS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "LORD WOOLF",
+      "relation_type": "INVESTIGATED_RELATION_WITH",
+      "target": "LIBYA",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ARCHIVED_IN",
+      "target": "HISTORICAL ARCHIVES OF THE EUROPEAN UNION",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "UNIVERSITY COLLEGE DUBLIN LAW SOCIETY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "ST BENETS HALL OXFORD",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "PETER SUTHERLAND",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "FUNDED",
+      "target": "SUTHERLAND SCHOOL OF LAW",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "SUTHERLAND SCHOOL OF LAW",
+      "relation_type": "RENAMED_FROM",
+      "target": "UNIVERSITY COLLEGE DUBLIN LAW SCHOOL",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "UCD ECONOMICS SOCIETY THOMAS KETTLE AWARD",
+      "relation_type": "RECEIVED_AWARD",
+      "target": "PETER SUTHERLAND",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "LORD WOOLF",
+      "relation_type": "CONDUCTED_INQUIRY",
+      "target": "LONDON SCHOOL OF ECONOMICS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "LORD WOOLF",
+      "relation_type": "INVESTIGATED_RELATION_WITH",
+      "target": "LIBYA",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "PETER SUTHERLAND",
+      "relation_type": "ARCHIVED_IN",
+      "target": "HISTORICAL ARCHIVES OF THE EUROPEAN UNION",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "REPRESENTS",
+      "target": "FINSBURY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "AFFILIATED_WITH",
+      "target": "MADAME VESTRIS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "REPRESENTS",
+      "target": "FINSBURY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "AFFILIATED_WITH",
+      "target": "MADAME VESTRIS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "EMPLOYED_AT",
+      "target": "HOUSE OF COMMONS",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "CHARLES DICKENS",
+      "relation_type": "AUTHORED",
+      "target": "NICHOLAS NICKLEBY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "REPRESENTS",
+      "target": "FINSBURY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "IS_PRESIDENT_OF",
+      "target": "NATIONAL ASSOCIATION OF UNITED TRADES FOR THE PROTECTION OF LABOUR (NAUT)",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "CHARLES DICKENS",
+      "relation_type": "AUTHORED",
+      "target": "NICHOLAS NICKLEBY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "P. W. KINGSFORD",
+      "relation_type": "AUTHORED",
+      "target": "HISTORY TODAY",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "EMPLOYED_AT",
+      "target": "HOUSE OF COMMONS",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "P. W. KINGSFORD",
+      "relation_type": "AUTHORED",
+      "target": "HISTORY TODAY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THE LIFE AND CORRESPONDENCE OF THOMAS SLINGSBY DUNCOMBE VOLUME I",
+      "relation_type": "FEATURED_IN",
+      "target": "THOMAS SLINGSBY DUNCOMBE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THE LIFE AND CORRESPONDENCE OF THOMAS SLINGSBY DUNCOMBE VOLUME II",
+      "relation_type": "FEATURED_IN",
+      "target": "THOMAS SLINGSBY DUNCOMBE",
+      "expected_strategy": "NEW_EDGE",
+      "notes": "first occurrence; no prior conflicting row in the batch"
+    },
+    {
+      "source": "THOMAS SLINGSBY DUNCOMBE",
+      "relation_type": "REPRESENTS",
+      "target": "FINSBURY",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THE LIFE AND CORRESPONDENCE OF THOMAS SLINGSBY DUNCOMBE VOLUME I",
+      "relation_type": "FEATURED_IN",
+      "target": "THOMAS SLINGSBY DUNCOMBE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    },
+    {
+      "source": "THE LIFE AND CORRESPONDENCE OF THOMAS SLINGSBY DUNCOMBE VOLUME II",
+      "relation_type": "FEATURED_IN",
+      "target": "THOMAS SLINGSBY DUNCOMBE",
+      "expected_strategy": "CORROBORATION",
+      "notes": "restates the previously accepted fact"
+    }
+  ]
 }
