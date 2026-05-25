@@ -99,20 +99,32 @@ def _top_k_by_embedding(
 
 CGRR_VERIFICATION_PROMPT = """You are a knowledge-graph expert. Two candidate relationship types are presented below, each with a short description and one sample endpoint pair. Decide whether they denote the **same predicate**.
 
-Focus on the *predicate* — what kind of relationship the label expresses — NOT on the specific entities mentioned in the description or example. Each description and example is just one instance of the relation; different instances naturally mention different people, companies, places or dates. Two predicates are SAME when, applied to any pair of entities, they would assert the same kind of fact, even if the example shown happens to involve unrelated entities.
+Focus on the *predicate* — what kind of relationship the label expresses — NOT on the specific entities mentioned in the description or example. Each description and example is just one instance of the relation; different instances naturally mention different people, companies, places or dates. Two predicates are SAME only when, applied to any pair of entities, they would assert the exact same kind of fact.
 
-Answer SAME when both labels denote the same predicate. Examples of SAME:
-- "IS_CEO_OF" / "LEADS" / "IS_PRESIDENT_OF" — all assert the top-executive-of relation between a person and an organisation, regardless of which specific person or company appears in either example.
-- "WORKS_FOR" / "EMPLOYED_AT" / "EMPLOYED_BY" — all assert the employment relation between a person and an employer.
-- "BORN_IN" / "PLACE_OF_BIRTH" — both assert the birthplace relation between a person and a location.
+**Default to DIFFERENT.** Only answer SAME when the two labels are interchangeable synonyms (tense/voice/word-order variants, or one is a strict paraphrase of the other). When in doubt — when the predicates are merely related, overlapping, or in the same general domain — answer DIFFERENT. Merging distinct predicates loses information; keeping near-synonyms separate is a small, recoverable cost.
 
-Answer DIFFERENT when the predicates differ in meaning, direction, or the kind of fact they assert. Examples of DIFFERENT:
+Answer SAME only when both labels denote the exact same predicate. Examples of SAME:
+- "WORKS_FOR" / "EMPLOYED_AT" / "EMPLOYED_BY" — tense/voice variants of the employment relation.
+- "BORN_IN" / "PLACE_OF_BIRTH" — direct paraphrase of the birthplace relation.
+- "MARRIED_TO" / "IS_MARRIED_TO" / "SPOUSE_OF" — interchangeable expressions of the spousal relation.
+- "FOUNDED" / "ESTABLISHED" / "CO_FOUNDED" — variants of the founding/creation relation between a person and an organisation.
+
+Answer DIFFERENT when the predicates differ in meaning, scope, direction, specificity, or the kind of fact they assert. Examples of DIFFERENT:
 - "IS_CEO_OF" vs "FOUNDED" — both involve a person and a company, but one asserts leadership and the other asserts creation.
 - "ACQUIRED" vs "MERGED_WITH" — both involve two companies, but acquisition is directional whereas merger is symmetric.
 - "SUCCEEDED_BY" vs "IS_PRESIDENT_OF" — succession links two presidents whereas IS_PRESIDENT_OF links a president to an organisation.
 - "OWNS" vs "SUBSIDIARY_OF" — opposite directions of ownership.
+- "LOCATED_IN" vs "PART_OF" — geographic containment is not the same as structural/organisational membership.
+- "BORN_IN" vs "LIVED_IN" — birthplace is a one-time fact; residence is an ongoing/repeatable fact.
+- "WORKS_FOR" vs "FOUNDED" — both link a person to an organisation, but employment ≠ creation.
+- "SERVES" vs "PROVIDES_ACCESS_TO" — overlapping but distinct: serving an area is broader than granting access.
+- "PART_OF" vs "MEMBER_OF" — structural inclusion is not the same as membership/affiliation.
+- "INFLUENCED" vs "TAUGHT" — teaching is one mechanism of influence, not a synonym for it.
+- "DIED_IN" vs "BURIED_IN" — death location and burial location are distinct facts.
 
 Do NOT answer DIFFERENT just because the two examples mention unrelated entities or domains. The examples are illustrative; the predicate is what matters.
+
+Do NOT answer SAME just because the two predicates touch the same general topic (employment, family, geography, leadership). Same topic ≠ same predicate.
 
 Relationship A:
 - Relation Type: {type_a}
@@ -290,6 +302,20 @@ async def resolve_relationships(
     if "relation_type" not in relationships_df.columns:
         print("    [CGRR] Skipping — no 'relation_type' column present")
         return relationships_df, normalize_map, phase_b_log
+
+    # Drop rows with missing/empty relation_type so they don't poison
+    # unique()/iloc[0] lookups downstream. Such rows can't be resolved
+    # against canonical predicates anyway — they have no label to match.
+    null_mask = relationships_df["relation_type"].isna() | (
+        relationships_df["relation_type"].astype(str).str.strip() == ""
+    )
+    null_count = int(null_mask.sum())
+    if null_count:
+        print(f"    [CGRR] Skipping {null_count} row(s) with missing/empty relation_type")
+        relationships_df = relationships_df.loc[~null_mask].copy()
+        if relationships_df.empty:
+            print("    [CGRR] Skipping — no relationships left after dropping null types")
+            return relationships_df, normalize_map, phase_b_log
 
     llm_merges = 0
     llm_rejections = 0
