@@ -42,6 +42,7 @@ from evaluation.core.metrics import (
     truthfulness,
 )
 from evaluation.core.runners import BTConfig, VanillaConfig, bt_answer, vanilla_answer
+from evaluation.timeqa.load import main as load_main
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +535,27 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Directory holding the corpus *.txt files produced by load.py.",
     )
     parser.add_argument(
+        "--max-entities",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of unique Wikipedia entities (corpus *.txt files) "
+            "the load step should keep. Forwarded to "
+            "`python -m evaluation.timeqa.load --max-entities`."
+        ),
+    )
+    parser.add_argument(
+        "--load-seed",
+        type=int,
+        default=None,
+        help="Seed for --max-entities sampling in the load step.",
+    )
+    parser.add_argument(
+        "--skip-load",
+        action="store_true",
+        help="Skip the load step (assumes the corpus + JSONL already exist).",
+    )
+    parser.add_argument(
         "--init-model",
         type=str,
         default=os.getenv("BTG_MODEL_ID", "gpt-4.1-mini"),
@@ -565,6 +587,25 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 async def _amain(args: argparse.Namespace) -> int:
+    # Load step: regenerate <args.dataset> and <args.corpus> from hard.json.
+    # Always runs unless --skip-load; --max-entities caps the corpus size.
+    if not args.skip_load:
+        logger.info("=" * 72)
+        logger.info("[load] regenerating dataset + corpus")
+        logger.info("=" * 72)
+        load_argv: list[str] = [
+            "--out-jsonl", str(args.dataset),
+            "--out-corpus", str(args.corpus),
+        ]
+        if args.max_entities is not None:
+            load_argv += ["--max-entities", str(args.max_entities)]
+        if args.load_seed is not None:
+            load_argv += ["--seed", str(args.load_seed)]
+        rc = load_main(load_argv)
+        if rc != 0:
+            logger.error("Load step failed (exit code %d)", rc)
+            return rc
+
     if not args.dataset.exists():
         logger.error("Dataset not found: %s", args.dataset)
         return 2
