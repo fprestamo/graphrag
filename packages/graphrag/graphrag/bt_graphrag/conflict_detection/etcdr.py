@@ -253,12 +253,14 @@ async def run_subject_side_query(
             t_event=t_event.isoformat(),
         )
     else:
-        # Normal path: query current state (end times = INFINITY sentinel)
+        # Normal path: every non-retracted edge (t_tx_end = INFINITY) is a
+        # candidate for conflict. Valid-time overlap with the candidate is
+        # judged downstream by the resolver so closed historical intervals
+        # remain eligible for CORROBORATION / EVOLUTION / CORRECTION.
         query = """
         MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity)
         WHERE e.relation_type = $relation_type
           AND e.t_tx_end = $infinity
-          AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, o.title AS object_title
         """
         result = await session.run(
@@ -305,12 +307,13 @@ async def run_object_side_query(
             t_event=t_event.isoformat(),
         )
     else:
+        # Normal path: see run_subject_side_query — valid-time overlap is
+        # delegated to the resolver so historical edges stay visible.
         query = """
         MATCH (s:Entity)-[e:RELATIONSHIP]->(o:Entity {title: $obj})
         WHERE e.relation_type = $relation_type
           AND s.title <> $subject
           AND e.t_tx_end = $infinity
-          AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, s.title AS subject_title
         """
         result = await session.run(
@@ -357,11 +360,12 @@ async def run_same_pair_query(
             t_event=t_event.isoformat(),
         )
     else:
+        # Normal path: see run_subject_side_query — valid-time overlap is
+        # delegated to the resolver so historical edges stay visible.
         query = """
         MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity {title: $obj})
         WHERE e.relation_type = $relation_type
           AND e.t_tx_end = $infinity
-          AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, o.title AS object_title
         """
         result = await session.run(
@@ -421,12 +425,13 @@ async def run_subject_any_type_query(
             t_event=t_event.isoformat(),
         )
     else:
+        # Normal path: see run_subject_side_query — valid-time overlap is
+        # delegated to the resolver so historical edges stay visible.
         query = """
         MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity)
         WHERE e.relation_type <> $candidate_relation_type
           AND e.cardinality IN $exclusive_cardinalities
           AND e.t_tx_end = $infinity
-          AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, o.title AS object_title
         """
         result = await session.run(
@@ -492,13 +497,14 @@ async def run_object_any_type_query(
             t_event=t_event.isoformat(),
         )
     else:
+        # Normal path: see run_subject_side_query — valid-time overlap is
+        # delegated to the resolver so historical edges stay visible.
         query = """
         MATCH (s:Entity)-[e:RELATIONSHIP]->(o:Entity {title: $obj})
         WHERE e.relation_type <> $candidate_relation_type
           AND e.cardinality IN $exclusive_cardinalities
           AND s.title <> $subject
           AND e.t_tx_end = $infinity
-          AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, s.title AS subject_title
         """
         result = await session.run(
@@ -553,11 +559,12 @@ async def run_source_target_query(
             t_event=t_event.isoformat(),
         )
     else:
+        # Normal path: see run_subject_side_query — valid-time overlap is
+        # delegated to the resolver so historical edges stay visible.
         query = """
         MATCH (s:Entity {title: $subject})-[e:RELATIONSHIP]->(o:Entity {title: $obj})
         WHERE e.relation_type <> $candidate_relation_type
           AND e.t_tx_end = $infinity
-          AND e.t_valid_end = $infinity
         RETURN properties(e) AS e, o.title AS object_title
         """
         result = await session.run(
@@ -598,8 +605,11 @@ def _is_temporally_active(
             and quad.t_tx_start <= t_event
             and quad.t_tx_end > t_event
         )
-    # Normal: check if currently active (end times = INFINITY)
-    return quad.t_valid_end >= INFINITY and quad.t_tx_end >= INFINITY
+    # Normal: edge is transactionally current (not retracted). Valid-time
+    # overlap with the candidate is judged downstream by the resolver, so
+    # historical edges (t_valid_end < INFINITY) remain visible as candidates
+    # for CORROBORATION / EVOLUTION / CORRECTION over closed intervals.
+    return quad.t_tx_end >= INFINITY
 
 
 def find_intra_batch_subject_conflicts(
