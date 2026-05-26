@@ -9,6 +9,7 @@ They never raise: any failure is logged and returned in ``raw['error']``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -196,43 +197,55 @@ class VanillaConfig:
 
 
 # Module-level cache: parquet reads are expensive; we want them once per process.
-# Key: (str(root_dir), str(data_dir or "")).
+# Key: (str(abs root_dir), str(abs data_dir or "")).
 _VANILLA_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+# Serialize concurrent loads: graphrag.config.load_config does os.chdir() and
+# resolves paths relative to CWD, so two concurrent loads from a relative root
+# race on the chdir and the second sees ".ragtest/.ragtest".
+_VANILLA_LOAD_LOCK = asyncio.Lock()
 
 
 async def _load_vanilla_state(cfg: VanillaConfig) -> dict[str, Any]:
-    key = (str(cfg.root_dir), str(cfg.data_dir or ""))
+    # Resolve to absolute paths so the cache key is stable and load_config's
+    # internal chdir cannot corrupt subsequent path resolution.
+    root_abs = Path(cfg.root_dir).resolve()
+    data_abs = Path(cfg.data_dir).resolve() if cfg.data_dir else None
+    key = (str(root_abs), str(data_abs or ""))
     if key in _VANILLA_CACHE:
         return _VANILLA_CACHE[key]
 
-    from graphrag.config.load_config import load_config
-    from graphrag.data_model.data_reader import DataReader
-    from graphrag_storage import create_storage
-    from graphrag_storage.tables.table_provider_factory import create_table_provider
+    async with _VANILLA_LOAD_LOCK:
+        if key in _VANILLA_CACHE:
+            return _VANILLA_CACHE[key]
 
-    overrides: dict[str, Any] = {}
-    if cfg.data_dir:
-        overrides["output_storage"] = {"base_dir": str(cfg.data_dir)}
-    graphrag_config = load_config(root_dir=cfg.root_dir, cli_overrides=overrides)
+        from graphrag.config.load_config import load_config
+        from graphrag.data_model.data_reader import DataReader
+        from graphrag_storage import create_storage
+        from graphrag_storage.tables.table_provider_factory import create_table_provider
 
-    storage_obj = create_storage(graphrag_config.output_storage)
-    table_provider = create_table_provider(
-        graphrag_config.table_provider, storage=storage_obj
-    )
-    reader = DataReader(table_provider)
+        overrides: dict[str, Any] = {}
+        if data_abs is not None:
+            overrides["output_storage"] = {"base_dir": str(data_abs)}
+        graphrag_config = load_config(root_dir=root_abs, cli_overrides=overrides)
 
-    state: dict[str, Any] = {"config": graphrag_config}
-    needed = ["entities", "communities", "community_reports"]
-    if cfg.search_mode == "local":
-        needed += ["text_units", "relationships"]
-    for name in needed:
-        state[name] = await getattr(reader, name)()
-    state["covariates"] = (
-        await reader.covariates() if await table_provider.has("covariates") else None
-    )
+        storage_obj = create_storage(graphrag_config.output_storage)
+        table_provider = create_table_provider(
+            graphrag_config.table_provider, storage=storage_obj
+        )
+        reader = DataReader(table_provider)
 
-    _VANILLA_CACHE[key] = state
-    return state
+        state: dict[str, Any] = {"config": graphrag_config}
+        needed = ["entities", "communities", "community_reports"]
+        if cfg.search_mode == "local":
+            needed += ["text_units", "relationships"]
+        for name in needed:
+            state[name] = await getattr(reader, name)()
+        state["covariates"] = (
+            await reader.covariates() if await table_provider.has("covariates") else None
+        )
+
+        _VANILLA_CACHE[key] = state
+        return state
 
 
 async def vanilla_answer(
