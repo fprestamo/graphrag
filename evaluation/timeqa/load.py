@@ -95,11 +95,28 @@ def _corpus_text(raw: dict[str, Any]) -> str:
     return "\n\n".join(parts).strip() + "\n" if parts else ""
 
 
+def _collect_excluded_filenames(dirs: Iterable[Path]) -> set[str]:
+    """Set of .txt filenames present under any of `dirs`.
+
+    Used to keep the TimeQA pool disjoint from the CGER/CGRR train+test corpora
+    so the same Wikipedia pages don't end up in both evaluation tracks.
+    """
+    excluded: set[str] = set()
+    for d in dirs:
+        if not d.is_dir():
+            logger.warning("Exclusion dir not found, skipping: %s", d)
+            continue
+        for p in d.glob("*.txt"):
+            excluded.add(p.name)
+    return excluded
+
+
 def _build_records(
     raws: Iterable[dict[str, Any]],
     corpus_dir: Path,
     max_entities: int | None = None,
     seed: int | None = None,
+    excluded_filenames: set[str] | None = None,
 ) -> tuple[list[EvalRecord], int]:
     """Emit one EvalRecord per question and write the unified corpus.
 
@@ -107,6 +124,7 @@ def _build_records(
     questions share that single pool — there is no per-entity corpus.
     """
     raws = list(raws)
+    excluded = excluded_filenames or set()
 
     selected: set[str] | None = None
     if max_entities is not None:
@@ -117,9 +135,12 @@ def _build_records(
             if not idx:
                 continue
             eid = _entity_id(idx)
-            if eid and eid not in seen_entities:
-                seen_entities.add(eid)
-                all_entities.append(eid)
+            if not eid or eid in seen_entities:
+                continue
+            if _filename_for(eid) in excluded:
+                continue
+            seen_entities.add(eid)
+            all_entities.append(eid)
         rng = random.Random(seed)
         if max_entities < len(all_entities):
             selected = set(rng.sample(all_entities, max_entities))
@@ -128,6 +149,7 @@ def _build_records(
 
     records: list[EvalRecord] = []
     seen: dict[str, str] = {}  # entity_id -> filename
+    skipped_entities: set[str] = set()
 
     for raw in raws:
         idx = str(raw.get("idx") or raw.get("id") or "")
@@ -143,11 +165,17 @@ def _build_records(
         # belong in the open-domain retrieval pool as distractors.
         filename = seen.get(entity_id)
         if filename is None:
-            filename = _filename_for(entity_id)
+            candidate = _filename_for(entity_id)
+            if candidate in excluded:
+                skipped_entities.add(entity_id)
+                continue
+            filename = candidate
             text = _corpus_text(raw)
             if text:
                 (corpus_dir / filename).write_text(text, encoding="utf-8")
             seen[entity_id] = filename
+        elif entity_id in skipped_entities:
+            continue
 
         # Records: only answerable items (targets != [""] after flattening).
         question = (raw.get("question") or "").strip()
@@ -205,6 +233,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Seed for --max-entities sampling. Omit for nondeterministic.",
     )
+    parser.add_argument(
+        "--exclude-from",
+        type=Path,
+        nargs="+",
+        default=[
+            Path("stages-evaluation/cger_cgrr/data/train-corpus"),
+            Path("stages-evaluation/cger_cgrr/data/test-corpus"),
+        ],
+        help=(
+            "Directories whose *.txt filenames must be excluded from the "
+            "generated TimeQA corpus (keeps the TimeQA pool disjoint from the "
+            "CGER/CGRR train+test corpora). Pass an empty list to disable."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -215,9 +257,21 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out_corpus.mkdir(parents=True, exist_ok=True)
 
+    excluded = _collect_excluded_filenames(args.exclude_from)
+    if excluded:
+        logger.info(
+            "Excluding %d entity filenames from %d source dir(s)",
+            len(excluded),
+            len(args.exclude_from),
+        )
+
     raws = _read_raw(args.input_hard)
     records, doc_count = _build_records(
-        raws, args.out_corpus, args.max_entities, args.seed
+        raws,
+        args.out_corpus,
+        args.max_entities,
+        args.seed,
+        excluded_filenames=excluded,
     )
 
     if args.limit is not None and args.limit >= 0:
