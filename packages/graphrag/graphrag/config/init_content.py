@@ -109,7 +109,7 @@ community_reports:
   max_input_length: {graphrag_config_defaults.community_reports.max_input_length}
 
 snapshots:
-  graphml: false
+  graphml: true
   embeddings: false
 
 ### Query settings ###
@@ -152,7 +152,7 @@ bt_graphrag:
   # Neo4j connection
   neo4j_uri: "neo4j://127.0.0.1:7687"
   neo4j_user: "neo4j"
-  neo4j_password: "changeme"
+  neo4j_password: "12345678"
   neo4j_database: "btgraphrag"
   # Stage 1: Temporal Extraction
   late_arrival_threshold_days: 30
