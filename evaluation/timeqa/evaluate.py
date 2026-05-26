@@ -13,6 +13,8 @@ import csv
 import json
 import logging
 import re
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +55,88 @@ class _RunOpts:
     concurrency: int
     bt_cfg: BTConfig
     vanilla_cfg: VanillaConfig
+
+
+# ---------------------------------------------------------------------------
+# Ragtest setup (init → env → corpus → index) — runs before the query phase.
+# ---------------------------------------------------------------------------
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_poe(task: str, *extra: str) -> None:
+    """Invoke `uv run poe <task> -- <extra>` from the repo root, streaming output."""
+    cmd = ["uv", "run", "poe", task]
+    if extra:
+        cmd.append("--")
+        cmd.extend(extra)
+    logger.info("$ %s", " ".join(cmd))
+    proc = subprocess.run(cmd, cwd=_REPO_ROOT, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"`{' '.join(cmd)}` exited with code {proc.returncode}"
+        )
+
+
+def _write_ragtest_env(ragtest_root: Path) -> None:
+    """Overwrite <ragtest_root>/.env with GRAPHRAG_API_KEY from the global env."""
+    api_key = os.environ.get("GRAPHRAG_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "GRAPHRAG_API_KEY (or OPENAI_API_KEY) is not set in the environment; "
+            "cannot configure the ragtest .env file."
+        )
+    env_path = ragtest_root / ".env"
+    env_path.write_text(f"GRAPHRAG_API_KEY={api_key}\n", encoding="utf-8")
+    logger.info("Wrote %s (api key from global env)", env_path)
+
+
+def _copy_corpus(corpus_dir: Path, ragtest_root: Path) -> int:
+    """Copy every *.txt under `corpus_dir` into <ragtest_root>/input/."""
+    if not corpus_dir.is_dir():
+        raise RuntimeError(
+            f"Corpus directory not found: {corpus_dir}. "
+            "Run `python -m evaluation.timeqa.load` first."
+        )
+    input_dir = ragtest_root / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for src in corpus_dir.glob("*.txt"):
+        shutil.copy2(src, input_dir / src.name)
+        n += 1
+    if n == 0:
+        raise RuntimeError(f"No .txt documents found under {corpus_dir}.")
+    logger.info("Copied %d documents from %s to %s", n, corpus_dir, input_dir)
+    return n
+
+
+def _setup_ragtest(
+    ragtest_root: Path,
+    corpus_dir: Path,
+    init_model: str,
+    init_embedding: str,
+) -> None:
+    """Wipe the ragtest dir, run `poe init`, write env + corpus, run `poe index`."""
+    logger.info("=" * 72)
+    logger.info("[setup] preparing ragtest at %s", ragtest_root)
+    logger.info("=" * 72)
+
+    if ragtest_root.exists():
+        logger.info("[setup] removing existing %s", ragtest_root)
+        shutil.rmtree(ragtest_root)
+
+    _run_poe(
+        "init",
+        "--root", str(ragtest_root),
+        "-m", init_model,
+        "-e", init_embedding,
+        "--force",
+    )
+    _write_ragtest_env(ragtest_root)
+    _copy_corpus(corpus_dir, ragtest_root)
+    _run_poe("index", "--root", str(ragtest_root))
+    logger.info("[setup] ragtest ready at %s", ragtest_root)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +528,29 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--graphrag-search", choices=["local", "global"], default=None
     )
     parser.add_argument(
+        "--corpus",
+        type=Path,
+        default=Path("evaluation/timeqa/data/corpus"),
+        help="Directory holding the corpus *.txt files produced by load.py.",
+    )
+    parser.add_argument(
+        "--init-model",
+        type=str,
+        default=os.getenv("BTG_MODEL_ID", "gpt-4.1-mini"),
+        help="Chat model to write into settings.yaml during `poe init`.",
+    )
+    parser.add_argument(
+        "--init-embedding",
+        type=str,
+        default=os.getenv("BTG_EMBEDDING_MODEL_ID", "text-embedding-3-small"),
+        help="Embedding model to write into settings.yaml during `poe init`.",
+    )
+    parser.add_argument(
+        "--skip-setup",
+        action="store_true",
+        help="Skip ragtest wipe + init + corpus copy + index (use existing index).",
+    )
+    parser.add_argument(
         "--tag",
         type=str,
         default="",
@@ -477,6 +584,24 @@ async def _amain(args: argparse.Namespace) -> int:
         vanilla_cfg.data_dir = args.graphrag_data
     if args.graphrag_search is not None:
         vanilla_cfg.search_mode = args.graphrag_search
+
+    # Setup phase: wipe the ragtest dir, run `poe init`, drop in the global
+    # API key, copy the corpus produced by load.py, then `poe index`. The
+    # bitemporal indexing pipeline emits both the parquet outputs vanilla
+    # GraphRAG queries and the Neo4j graph BT-GraphRAG queries, so a single
+    # index run powers both systems in the query phase below.
+    if not args.skip_setup and not args.dry_run:
+        ragtest_root = Path(vanilla_cfg.root_dir).resolve()
+        try:
+            _setup_ragtest(
+                ragtest_root=ragtest_root,
+                corpus_dir=args.corpus.resolve(),
+                init_model=args.init_model,
+                init_embedding=args.init_embedding,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Setup failed: %s", exc)
+            return 2
 
     opts = _RunOpts(
         use_judge=not args.no_judge,
