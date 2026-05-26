@@ -163,7 +163,7 @@ bt_graphrag:
   neo4j_vector_dimensions: 3072      # embedding dimensions (must match model)
   # Stage 2b: CGRR (Cross-Graph Relationship Resolution)
   cgrr_enabled: true
-  cgrr_cosine_threshold: 0.556       # description-cosine at/above which LLM decides SAME/DIFFERENT
+  cgrr_cosine_threshold: 0.4         # description-cosine at/above which LLM decides SAME/DIFFERENT
   cgrr_candidate_top_k: 3            # top-K by description embedding similarity
   # Stage 3: ETCDR (Conflict Detection)
   etcdr_enabled: true

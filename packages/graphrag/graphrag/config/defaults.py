@@ -147,7 +147,7 @@ class ExtractGraphDefaults:
     entity_types: list[str] = field(
         default_factory=lambda: ["organization", "person", "geo", "event", "other"]
     )
-    max_gleanings: int = 1
+    max_gleanings: int = 0
     completion_model_id: str = DEFAULT_COMPLETION_MODEL_ID
     model_instance_name: str = "extract_graph"
 
@@ -186,7 +186,7 @@ class ExtractGraphNLPDefaults:
 
     normalize_edge_weights: bool = True
     text_analyzer: TextAnalyzerDefaults = field(default_factory=TextAnalyzerDefaults)
-    concurrent_requests: int = 25
+    concurrent_requests: int = 200
     async_mode: AsyncType = AsyncType.Threaded
 
 
@@ -364,7 +364,7 @@ class GraphRagConfigDefaults:
     models: dict = field(default_factory=dict)
     completion_models: dict = field(default_factory=dict)
     embedding_models: dict = field(default_factory=dict)
-    concurrent_requests: int = 25
+    concurrent_requests: int = 200
     async_mode: AsyncType = AsyncType.Threaded
     reporting: ReportingDefaults = field(default_factory=ReportingDefaults)
     input_storage: InputStorageDefaults = field(default_factory=InputStorageDefaults)
