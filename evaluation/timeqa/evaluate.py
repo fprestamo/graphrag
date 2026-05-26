@@ -43,6 +43,8 @@ from evaluation.core.metrics import (
 )
 from evaluation.core.runners import BTConfig, VanillaConfig, bt_answer, vanilla_answer
 from evaluation.timeqa.load import main as load_main
+from scripts.wipe_neo4j_dbs import DEFAULT_DBS as WIPE_DEFAULT_DBS
+from scripts.wipe_neo4j_dbs import main as wipe_neo4j_main
 
 logger = logging.getLogger(__name__)
 
@@ -556,6 +558,22 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Skip the load step (assumes the corpus + JSONL already exist).",
     )
     parser.add_argument(
+        "--wipe-dbs",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated Neo4j databases to DROP+CREATE before indexing. "
+            f"Defaults to all six known DBs ({','.join(WIPE_DEFAULT_DBS)}). "
+            "Pass an empty string to disable, or a subset like "
+            "'btgraphrag,etcdreval'."
+        ),
+    )
+    parser.add_argument(
+        "--skip-wipe-dbs",
+        action="store_true",
+        help="Skip the Neo4j wipe step entirely.",
+    )
+    parser.add_argument(
         "--init-model",
         type=str,
         default=os.getenv("BTG_MODEL_ID", "gpt-4.1-mini"),
@@ -625,6 +643,27 @@ async def _amain(args: argparse.Namespace) -> int:
         vanilla_cfg.data_dir = args.graphrag_data
     if args.graphrag_search is not None:
         vanilla_cfg.search_mode = args.graphrag_search
+
+    # Neo4j wipe: DROP+CREATE the target databases so `poe index` writes into
+    # a clean store. Defaults to just the BT-GraphRAG database this eval uses.
+    if not args.skip_wipe_dbs and not args.dry_run:
+        if args.wipe_dbs is None:
+            wipe_targets = list(WIPE_DEFAULT_DBS)
+        else:
+            wipe_targets = [d.strip() for d in args.wipe_dbs.split(",") if d.strip()]
+        if wipe_targets:
+            logger.info("=" * 72)
+            logger.info("[wipe] resetting Neo4j databases: %s", wipe_targets)
+            logger.info("=" * 72)
+            rc = await wipe_neo4j_main(
+                uri=bt_cfg.neo4j_uri,
+                user=bt_cfg.neo4j_user,
+                password=bt_cfg.neo4j_password,
+                dbs=wipe_targets,
+                dry_run=False,
+            )
+            if rc != 0:
+                logger.warning("Neo4j wipe finished with warnings (rc=%d)", rc)
 
     # Setup phase: wipe the ragtest dir, run `poe init`, drop in the global
     # API key, copy the corpus produced by load.py, then `poe index`. The
