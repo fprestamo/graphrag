@@ -616,6 +616,8 @@ async def _run_etcdr(
 def _match_expected(
     outcomes: list[dict[str, Any]],
     expected: list[dict[str, Any]],
+    merge_map: dict[str, str] | None = None,
+    normalize_map: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Pair each expected entry with the n-th matching outcome triple.
 
@@ -623,7 +625,24 @@ def _match_expected(
     with a given triple is paired with the k-th outcome row carrying
     that same triple. Expected entries with no matching outcome are
     reported as 'unmatched'.
+
+    ``merge_map`` / ``normalize_map`` are CGER/CGRR's alias→canonical
+    maps. Outcomes are emitted post-canonicalisation, so the GT triples
+    (authored against extractor-original strings) must be translated
+    through the same maps before the lookup, or any cluster whose CGRR
+    canonical differs from the GT canonical (e.g. EMPLOYED_AT → WORKS_FOR)
+    silently goes unmatched.
     """
+    merge_map = merge_map or {}
+    normalize_map = normalize_map or {}
+
+    def _canon(source: str, rel: str, target: str) -> tuple[str, str, str]:
+        return (
+            merge_map.get(source, source),
+            normalize_map.get(rel, rel),
+            merge_map.get(target, target),
+        )
+
     triple_to_outcome_indices: dict[tuple[str, str, str], list[int]] = defaultdict(list)
     for idx, o in enumerate(outcomes):
         key = (o["source"], o["relation_type"], o["target"])
@@ -632,11 +651,12 @@ def _match_expected(
     cursors: dict[tuple[str, str, str], int] = defaultdict(int)
     pairs: list[dict[str, Any]] = []
     for exp in expected:
-        key = (
+        raw_key = (
             str(exp.get("source", "")),
             str(exp.get("relation_type", "")),
             str(exp.get("target", "")),
         )
+        key = _canon(*raw_key)
         candidates = triple_to_outcome_indices.get(key, [])
         cursor = cursors[key]
         if cursor < len(candidates):
@@ -644,12 +664,22 @@ def _match_expected(
             cursors[key] = cursor + 1
             pairs.append({
                 "expected": exp,
+                "expected_canonical": {
+                    "source": key[0],
+                    "relation_type": key[1],
+                    "target": key[2],
+                },
                 "outcome": outcome,
                 "matched": True,
             })
         else:
             pairs.append({
                 "expected": exp,
+                "expected_canonical": {
+                    "source": key[0],
+                    "relation_type": key[1],
+                    "target": key[2],
+                },
                 "outcome": None,
                 "matched": False,
             })
@@ -835,8 +865,15 @@ async def main() -> None:
     if flushed:
         print(f"\n[LOG] ETCDR resolution log -> {flushed}")
 
-    # 4) Score against ground truth.
-    pairs = _match_expected(outcomes, conflict_gt["expected"])
+    # 4) Score against ground truth. The GT is authored against the
+    #    extractor-original triples; the outcomes are emitted post-CGER/CGRR,
+    #    so we canonicalise the GT side through the same maps before matching.
+    pairs = _match_expected(
+        outcomes,
+        conflict_gt["expected"],
+        merge_map=merge_map,
+        normalize_map=normalize_map,
+    )
     scores = _score(pairs)
     _print_report(pairs, scores, outcomes)
 
@@ -877,6 +914,7 @@ async def main() -> None:
             "pairs": [
                 {
                     "expected": p["expected"],
+                    "expected_canonical": p.get("expected_canonical"),
                     "outcome": p["outcome"],
                     "matched": p["matched"],
                 }

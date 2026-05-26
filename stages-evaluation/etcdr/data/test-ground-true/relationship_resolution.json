@@ -64,6 +64,10 @@
     {
       "canonical": "RECEIVED_AWARD",
       "aliases": ["RECEIVED_AWARD", "AWARDED"]
+    },
+    {
+      "canonical": "CHALLENGED",
+      "aliases": ["CHALLENGED", "OPPOSED"]
     }
   ]
 }

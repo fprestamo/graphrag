@@ -1331,8 +1331,8 @@
       "source": "PETER SUTHERLAND",
       "relation_type": "IS_CHAIRMAN_OF",
       "target": "TRILATERAL COMMISSION",
-      "expected_strategy": "CORROBORATION",
-      "notes": "restates the previously accepted fact"
+      "expected_strategy": "EVOLUTION",
+      "notes": "role transition from Chairman (2001-2010) to Honorary Chairman (2010+)"
     },
     {
       "source": "PETER SUTHERLAND",

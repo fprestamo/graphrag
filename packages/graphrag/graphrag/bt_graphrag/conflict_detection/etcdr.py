@@ -197,18 +197,29 @@ DECISION_ROUTER_PROMPT = """You are a temporal knowledge graph expert tasked wit
 ## Task
 Based on the evidence above, select the most appropriate resolution strategy:
 
-1. **EVOLUTION** - The world genuinely changed. The existing edge was true for its period, and the candidate edge represents a new true state. Close the existing edge's valid-time end at the candidate's start time and insert the candidate.
+1. **EVOLUTION** - The world genuinely changed. The existing edge was true for its period, and the candidate edge represents a new true state that strictly succeeds it (e.g. role transition from Chairman to Honorary Chairman; constituency change from Hertford to Finsbury). Close the existing edge's valid-time end at the candidate's start time and insert the candidate.
 
-2. **CORRECTION** - The existing edge was wrong (factual error, hallucination, or bad source). Retroactively invalidate it (close transaction time) and insert the corrected candidate, inheriting the old edge's valid-time period.
+2. **CORRECTION** - The existing edge was wrong (factual error, hallucination, or bad source). Retroactively invalidate it (close transaction time) and insert the corrected candidate, inheriting the old edge's valid-time period. Reserve this for cases where one edge clearly contradicts the other; do NOT use it for trivial differences (≤ a few days in event dates, name-spelling variants, or interval refinement).
 
 3. **CORROBORATION** - The candidate says the same thing as the existing edge. No new edge needed; just update the support count and provenance.
+   Choose CORROBORATION whenever any of these hold:
+   - Same fact paraphrased: descriptions paraphrase the same event/role even if one is more verbose or uses synonyms.
+   - Trivial date drift: dates differ by ≤ a few days for a brief event, or by ≤ a few months for a multi-year role with otherwise matching boundaries.
+   - Interval refinement: one side has ``unknown``/``present`` where the other has a concrete date that does not contradict it (e.g. existing ``unknown → present`` and candidate ``2015 → 2018`` for the same role).
+   - Spelling variants of the same name after canonicalisation (e.g. "Peter" vs "Pierre" for the same merged entity).
 
 4. **DISAGREEMENT** - There is genuine ambiguity or conflicting evidence with no clear resolution. Insert the candidate as "disputed" without modifying the existing edge.
 
-Note: if the two relations are different types but describe the same pair (NON_EXCLUSIVE), first judge whether the descriptions are semantically compatible (both can be true simultaneously) or conflicting (one negates the other). If compatible, prefer DISAGREEMENT so both edges are preserved. If one clearly negates the other, choose EVOLUTION or CORRECTION based on temporal ordering.
+5. **NEW_EDGE** - The two edges describe **independent facts that do not share an exclusivity slot**, even though they were retrieved by the cardinality query. The candidate should be inserted as a fresh, independent edge with no change to the existing one.
+   Choose NEW_EDGE whenever any of these hold:
+   - The two relation types are different and describe non-overlapping roles for the same subject (e.g. ``LEADS conference`` in 1911 vs ``SUCCEEDED_BY person`` in 1913 — leading an event and being succeeded as principal are different exclusivity slots).
+   - The objects differ and the two facts can coexist for the subject without violating cardinality (e.g. ``MEMBER_OF House of Commons`` as a continuous role vs ``PARTICIPATED_IN House of Commons`` for a specific event in 2012).
+   - The candidate adds a new dimension of the subject's biography that does not contradict, replace, or restate the existing edge.
+
+Note: if the two relations are different types but describe the same pair (NON_EXCLUSIVE), first judge whether the descriptions are semantically compatible (both can be true simultaneously) or conflicting (one negates the other). If compatible and they describe distinct sub-facts, prefer NEW_EDGE. If they describe the same underlying fact via synonymous relation types (e.g. ``CHALLENGED`` vs ``OPPOSED`` for the same leadership contest in the same week), prefer CORROBORATION. If one clearly negates the other, choose EVOLUTION or CORRECTION based on temporal ordering.
 
 Respond in this exact format:
-STRATEGY: <one of EVOLUTION, CORRECTION, CORROBORATION, DISAGREEMENT>
+STRATEGY: <one of EVOLUTION, CORRECTION, CORROBORATION, DISAGREEMENT, NEW_EDGE>
 CONFIDENCE: <0.0 to 1.0>
 REASONING: <one sentence explaining the choice>
 """
@@ -1854,7 +1865,19 @@ async def detect_and_resolve(
             )
             print(f"{prefix}     Action: candidate marked DISPUTED")
 
-        # NEW_EDGE: no mutation, continue.
+        elif strategy == ResolutionStrategy.NEW_EDGE:
+            # Router decided the retrieved edge is an independent fact
+            # (different exclusivity slot, non-overlapping role, …). No
+            # mutation to either side; record it so the log shows the
+            # Router actively dismissed the conflict.
+            _log_resolution(
+                candidate, existing, strategy, confidence,
+                origin, conflict_type_label,
+            )
+            print(
+                f"{prefix}     Action: Router judged independent — "
+                f"no mutation to '{(existing.id or '')[:12]}...'"
+            )
 
     # Candidate inherits valid-time from the first CORRECTED existing edge
     # (skipped if a CORROBORATION absorbed the candidate earlier).
