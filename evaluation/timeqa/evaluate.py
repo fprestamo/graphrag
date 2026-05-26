@@ -69,11 +69,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_poe(task: str, *extra: str) -> None:
-    """Invoke `uv run poe <task> -- <extra>` from the repo root, streaming output."""
-    cmd = ["uv", "run", "poe", task]
-    if extra:
-        cmd.append("--")
-        cmd.extend(extra)
+    """Invoke `uv run poe <task> <extra>` from the repo root, streaming output."""
+    cmd = ["uv", "run", "poe", task, *extra]
     logger.info("$ %s", " ".join(cmd))
     proc = subprocess.run(cmd, cwd=_REPO_ROOT, check=False)
     if proc.returncode != 0:
@@ -582,7 +579,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--init-embedding",
         type=str,
-        default=os.getenv("BTG_EMBEDDING_MODEL_ID", "text-embedding-3-small"),
+        default=os.getenv("BTG_EMBEDDING_MODEL_ID", "text-embedding-3-large"),
         help="Embedding model to write into settings.yaml during `poe init`.",
     )
     parser.add_argument(

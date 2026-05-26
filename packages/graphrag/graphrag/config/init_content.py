@@ -158,16 +158,17 @@ bt_graphrag:
   late_arrival_threshold_days: 30
   # Stage 2: CGER (Cross-Graph Entity Resolution)
   cger_enabled: true
-  cger_cosine_threshold: 0.85        # description-cosine at/above which LLM decides the merge
-  cger_candidate_top_k: 10           # top-K candidates via Neo4j vector search
+  cger_cosine_threshold: 0.686       # description-cosine at/above which LLM decides the merge
+  cger_candidate_top_k: 3            # top-K candidates via Neo4j vector search
   neo4j_vector_dimensions: 3072      # embedding dimensions (must match model)
   # Stage 2b: CGRR (Cross-Graph Relationship Resolution)
   cgrr_enabled: true
-  cgrr_cosine_threshold: 0.85        # description-cosine at/above which LLM decides SAME/DIFFERENT
-  cgrr_candidate_top_k: 10           # top-K by description embedding similarity
+  cgrr_cosine_threshold: 0.556       # description-cosine at/above which LLM decides SAME/DIFFERENT
+  cgrr_candidate_top_k: 3            # top-K by description embedding similarity
   # Stage 3: ETCDR (Conflict Detection)
   etcdr_enabled: true
   etcdr_confidence_threshold: 0.7
+  etcdr_topk: 5                      # top-K existing edges routed to Decision Router per phase
   # Debug: save per-stage CSV/JSON files for CGER, CGRR, ETCDR
   debug_output_dir: "output/bt_debug"
   # Stages 5-6: Incremental Community Update
