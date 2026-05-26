@@ -1842,8 +1842,8 @@
       "source": "THOMAS SLINGSBY DUNCOMBE",
       "relation_type": "REPRESENTS",
       "target": "FINSBURY",
-      "expected_strategy": "NEW_EDGE",
-      "notes": "first occurrence; no prior conflicting row in the batch"
+      "expected_strategy": "EVOLUTION",
+      "notes": "constituency change after the prior REPRESENTS HERTFORD edge (1826-1832 → 1834-1861); REPRESENTS is SUBJECT_EXCLUSIVE"
     },
     {
       "source": "THOMAS SLINGSBY DUNCOMBE",
