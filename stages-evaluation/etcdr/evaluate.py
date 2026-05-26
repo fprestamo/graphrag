@@ -94,7 +94,7 @@ from graphrag.bt_graphrag.models.temporal_types import (
     TemporalStateQuad,
     utcnow,
 )
-from graphrag.bt_graphrag.neo4j_store import init_schema
+from graphrag.bt_graphrag.neo4j_store import ETCDRBatchDB, init_schema
 from graphrag_llm.completion import create_completion
 from graphrag_llm.config import ModelConfig
 from graphrag_llm.config.types import LLMProviderType
@@ -119,6 +119,7 @@ NEO4J_PASSWORD = "12345678"
 TEST_DB = "etcdreval"
 CGER_TEMP_DB = "cgerbatch"
 CGRR_TEMP_DB = "cgrrbatch"
+ETCDR_TEMP_DB = "etcdrbatch"
 
 COMPLETION_MODEL = "gpt-4.1-mini"
 
@@ -135,6 +136,14 @@ CANON_PHASE_B_TOP_K = 10000
 NEO4J_VECTOR_DIMENSIONS = 3072
 
 ETCDR_CONFIDENCE_THRESHOLD = 0.7
+ETCDR_TOPK = 5
+"""Per candidate, how many top-cosine existing edges get routed through the
+Decision Router. See ``BTGraphRAGConfig.etcdr_topk``."""
+
+ETCDR_COSINE_THRESHOLD = 0.5
+"""Cosine floor below which existing edges are filtered out before top-K
+(same-pair entries bypass this floor — they are duplicate checks). See
+``BTGraphRAGConfig.etcdr_cosine_threshold``."""
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +393,15 @@ def _build_temporal_relationship(row: dict[str, Any]) -> TemporalRelationship:
             trust_score=1.0,
         )
     ]
+    raw_emb = row.get("description_embedding")
+    description_embedding: list[float] | None
+    if raw_emb is None:
+        description_embedding = None
+    else:
+        # extract.py persists the embedding as a list / numpy array depending
+        # on the pandas roundtrip; coerce to plain list[float] so it serialises
+        # cleanly through Neo4j vector indexes.
+        description_embedding = [float(v) for v in raw_emb]
     return TemporalRelationship(
         id=str(uuid4()),
         source=str(row.get("source", "")),
@@ -392,6 +410,7 @@ def _build_temporal_relationship(row: dict[str, Any]) -> TemporalRelationship:
         description=row.get("description") or "",
         weight=float(row.get("weight") or 1.0),
         confidence=1.0,
+        description_embedding=description_embedding,
         temporal_quad=quad,
         provenance=provenance,
     )
@@ -526,8 +545,11 @@ async def _run_etcdr(
 ) -> list[dict[str, Any]]:
     """Feed every canonicalised relationship through detect_and_resolve.
 
-    Neo4j is held empty for the whole pass; all conflicts surface as
-    intra-batch conflicts against the running ``accepted_batch``.
+    The main ``etcdreval`` DB is held empty for the whole pass; all
+    conflicts surface as intra-batch conflicts against the running batch.
+    Intra-batch retrieval and mutations flow through the scratch
+    ``etcdrbatch`` DB (an ``ETCDRBatchDB`` context) so Phase B uses the
+    same Neo4j-backed top-K path as Phase A.
 
     Returns a list of {triple, strategy, confidence} dicts in the same
     order as the input DataFrame, ready for scoring.
@@ -539,41 +561,50 @@ async def _run_etcdr(
     accepted: list[TemporalRelationship] = []
     outcomes: list[dict[str, Any]] = []
 
-    # ETCDR's detect_and_resolve runs Neo4j queries against `session` even
-    # when the DB is empty (e.g. for cardinality-aware sub-queries). We
-    # therefore open a single session for the whole pass and wipe the DB
-    # up front so Phase A surfaces zero conflicts.
+    # detect_and_resolve runs the cardinality-aware Cypher against the main
+    # DB even when it's empty (Phase A returns zero hits but the queries
+    # still execute). The scratch DB receives every accepted batch edge so
+    # Phase B can do its own indexed lookup + top-K cosine retrieval.
     async with driver.session(database=TEST_DB) as session:
         await session.run("MATCH (n) DETACH DELETE n")
-        for i, row in enumerate(relationships_df.to_dict("records")):
-            candidate = _build_temporal_relationship(row)
-            result = await detect_and_resolve(
-                candidate=candidate,
-                session=session,
-                config=config,
-                model=model,
-                edge_index=i,
-                accepted_batch=accepted,
-            )
-            strategy = (
-                result.strategy.value
-                if result.strategy is not None else "UNKNOWN"
-            )
-            outcomes.append({
-                "index": i,
-                "source": candidate.source,
-                "relation_type": candidate.relation_type,
-                "target": candidate.target,
-                "strategy": strategy,
-                "confidence": round(result.confidence, 4),
-                "has_neo4j_conflicts": result.has_neo4j_conflicts,
-                "has_intra_batch_conflicts": result.has_intra_batch_conflicts,
-            })
-            # Only accept non-retracted, non-disputed candidates into the
-            # rolling batch so future conflict queries reflect the
-            # post-resolution state.
-            if candidate.status != "retracted":
-                accepted.append(candidate)
+        async with ETCDRBatchDB(
+            driver=driver,
+            db_name=config.etcdr_phase_b_temp_db,
+            vector_dimensions=config.neo4j_vector_dimensions,
+        ) as batch_db:
+            for i, row in enumerate(relationships_df.to_dict("records")):
+                candidate = _build_temporal_relationship(row)
+                result = await detect_and_resolve(
+                    candidate=candidate,
+                    session=session,
+                    config=config,
+                    model=model,
+                    edge_index=i,
+                    accepted_batch=accepted,
+                    batch_db=batch_db,
+                )
+                strategy = (
+                    result.strategy.value
+                    if result.strategy is not None else "UNKNOWN"
+                )
+                outcomes.append({
+                    "index": i,
+                    "source": candidate.source,
+                    "relation_type": candidate.relation_type,
+                    "target": candidate.target,
+                    "strategy": strategy,
+                    "confidence": round(result.confidence, 4),
+                    "has_neo4j_conflicts": result.has_neo4j_conflicts,
+                    "has_intra_batch_conflicts": result.has_intra_batch_conflicts,
+                })
+                # Only accept non-retracted candidates into the rolling
+                # batch so future conflict queries reflect the
+                # post-resolution state. Add to BOTH the in-memory list
+                # (for downstream reporting) and the scratch DB (so Phase
+                # B's Cypher actually sees them on the next iteration).
+                if candidate.status != "retracted":
+                    accepted.append(candidate)
+                    await batch_db.add_relationship(candidate)
 
     return outcomes
 
@@ -759,6 +790,9 @@ async def main() -> None:
         # ETCDR
         etcdr_enabled=True,
         etcdr_confidence_threshold=ETCDR_CONFIDENCE_THRESHOLD,
+        etcdr_topk=ETCDR_TOPK,
+        etcdr_cosine_threshold=ETCDR_COSINE_THRESHOLD,
+        etcdr_phase_b_temp_db=ETCDR_TEMP_DB,
         relation_cardinality_overrides={
             k.upper().replace(" ", "_"): v
             for k, v in (conflict_gt.get("cardinality_overrides") or {}).items()

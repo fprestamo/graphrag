@@ -351,11 +351,18 @@ Write the file. Do not modify anything else.
 
 The script auto-loads `GRAPHRAG_API_KEY` (or `OPENAI_API_KEY`) from the
 project-root `.env`. It requires Neo4j running at
-`neo4j://127.0.0.1:7687` with three databases:
+`neo4j://127.0.0.1:7687` with four databases:
 
     CREATE DATABASE etcdreval;
+    CREATE DATABASE etcdrbatch;  -- scratch DB for ETCDR Phase B top-K
     CREATE DATABASE cgerbatch;   -- if not already created by cger_cgrr eval
     CREATE DATABASE cgrrbatch;   -- if not already created by cger_cgrr eval
+
+`etcdrbatch` mirrors the schema of the main DB and holds every accepted
+intra-batch edge with a relationship vector index on
+`description_embedding`. ETCDR opens an `ETCDRBatchDB` context against it
+so Phase B retrieval and apply-mutations run through Cypher (fast,
+cardinality-filtered) instead of the in-memory `accepted_batch` list.
 
 `evaluate.py` does the following:
 
@@ -377,10 +384,19 @@ project-root `.env`. It requires Neo4j running at
 
 3. **ETCDR pass.** Iterates the canonicalised relationships in the
    order they appear in `relationships.json`, calling
-   `detect_and_resolve(candidate, session, accepted_batch=...)` for
-   each one with the running `accepted_batch` accumulator. Neo4j is
-   wiped at the start so all conflicts surface as intra-batch
-   conflicts; the strategy chosen for each candidate is recorded.
+   `detect_and_resolve(candidate, session, accepted_batch=...,
+   batch_db=...)` for each one. The main DB (`etcdreval`) is wiped at
+   the start; intra-batch state lives in the scratch `etcdrbatch` DB
+   which receives every accepted edge with its `description_embedding`.
+   For each candidate the conflict pools from Phase A (Neo4j-persisted)
+   and Phase B (intra-batch via the scratch DB) are ranked **independently**
+   by cosine on description embeddings, each truncated to `etcdr_topk`
+   (default 5) with a `etcdr_cosine_threshold` floor (default 0.5;
+   bypassed for same-pair duplicate checks). The combined top-K (Phase A
+   first, then Phase B) is routed *sequentially* through the Decision
+   Router — a CORROBORATION breaks the loop (candidate absorbed);
+   EVOLUTION / CORRECTION / DISAGREEMENT mutate per-existing and continue.
+   The reduced strategy is reported.
 
 4. **Scoring.** Pairs each entry in `conflict_resolution.json
    .expected` with the appropriate batch outcome by triple+occurrence
@@ -402,12 +418,12 @@ ETCDR audit trail (one entry per resolution) lands in
   `extract.py` writes (document-sorted, then chunk-sequential). If the
   extractor changes its emission order, re-author `conflict_resolution
   .json` accordingly.
-- **Intra-batch only.** The harness keeps the `etcdreval` Neo4j
-  database empty for the whole run, so the *strategy* chosen by ETCDR
-  is what we score. The persistence actions (`apply_evolution`,
-  `apply_correction`, …) only fire when there are Neo4j conflicts;
-  intra-batch resolutions hit the in-memory `apply_intra_batch_*`
-  variants. The chosen strategy is identical in either path.
+- **Intra-batch only.** The harness keeps the `etcdreval` (main) Neo4j
+  database empty for the whole run, so all conflicts surface via the
+  `etcdrbatch` scratch DB. The same `apply_evolution` / `apply_correction`
+  / `apply_corroboration` Cypher fires in either case — only the session
+  changes — so the per-candidate strategy is what we score regardless of
+  origin.
 - **Oracle blind spots.** CGER/CGRR only ask the LLM about the
   *best-cosine* candidate per new entity/type. If the cluster member
   with the highest cosine is in a different cluster, the merge is

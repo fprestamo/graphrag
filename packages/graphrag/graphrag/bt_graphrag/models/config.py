@@ -114,6 +114,33 @@ class BTGraphRAGConfig:
     etcdr_confidence_threshold: float = 0.7
     """Below this confidence, Decision Router defaults to DISAGREEMENT."""
 
+    etcdr_topk: int = 5
+    """Per candidate **per phase**, the maximum number of structurally-eligible
+    existing edges that get routed through the Decision Router. Phase A
+    (Neo4j-persisted) and Phase B (intra-batch via the scratch DB) each get
+    their own ``etcdr_topk`` budget — a dense main graph cannot crowd
+    intra-batch contradictions out of the router. The pool returned by the
+    cardinality-aware Cypher (subject-side ∪ object-side ∪ cross-type) is
+    sorted by (same relation_type first, then cosine on description
+    embeddings desc, then edge id asc) and truncated to this many per phase."""
+
+    etcdr_cosine_threshold: float = 0.5
+    """Minimum cosine similarity between the candidate's
+    ``description_embedding`` and an existing edge's to be considered for
+    routing. Members of the structural pool below this floor are dropped
+    before top-K. Same-pair duplicate checks bypass this floor — the
+    candidate and existing edge share the exact (source, relation_type,
+    target) triple, so they're always routed regardless of description
+    similarity."""
+
+    etcdr_phase_b_temp_db: str = "etcdrbatch"
+    """Name of a pre-existing Neo4j database used by ETCDR Phase B as a
+    scratch area holding accepted intra-batch edges with a relationship
+    vector index for fast top-K. The database must be created manually
+    (CREATE DATABASE <name>); the pipeline wipes its contents on entry
+    and exit. If empty, ETCDR falls back to the in-memory
+    ``accepted_batch`` list and skips the Neo4j-backed top-K."""
+
     # Relation cardinality overrides: maps relation_type -> cardinality
     relation_cardinality_overrides: dict[str, str] = field(default_factory=dict)
     """Manual overrides for relation cardinality classification.

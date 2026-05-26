@@ -1256,3 +1256,140 @@ class CGRRBatchDB:
                     "_vector_score": rec["score"],
                 })
         return records
+
+
+# ---------------------------------------------------------------------------
+# ETCDR Phase B: temporary database for intra-batch candidate retrieval
+# ---------------------------------------------------------------------------
+
+
+class ETCDRBatchDB:
+    """Scratch Neo4j database scoping ETCDR Phase B candidate retrieval.
+
+    Holds every relationship already accepted into the current batch as a
+    real ``(:Entity)-[:RELATIONSHIP]->(:Entity)`` graph mirroring the main
+    BT-GraphRAG schema. ETCDR reuses the exact Cypher of
+    :func:`run_subject_side_query`, :func:`run_object_side_query`, etc. by
+    opening a session against this scratch DB instead of the main one.
+
+    A vector index on ``r.description_embedding`` is created so the top-K
+    cosine pass over a structurally-filtered candidate pool stays cheap.
+
+    Mutations triggered by ETCDR (EVOLUTION / CORRECTION / CORROBORATION)
+    apply through the same :func:`apply_evolution` / :func:`apply_correction`
+    / :func:`apply_corroboration` functions used for the main DB, by
+    binding their ``session`` argument to one of this scratch DB.
+
+    The backing database must already exist (``CREATE DATABASE <name>``
+    run manually); this helper only wipes its contents on entry/exit and
+    (re)creates the indexes it needs.
+
+    Use as an async context manager — the workspace is cleaned on exit
+    even if an exception fires.
+    """
+
+    def __init__(
+        self,
+        driver: "AsyncDriver",
+        db_name: str,
+        vector_dimensions: int,
+    ) -> None:
+        self.driver = driver
+        self.db_name = db_name
+        self.dimensions = vector_dimensions
+        self.rel_vector_index = "etcdr_batch_rel_description_embedding"
+
+    async def __aenter__(self) -> "ETCDRBatchDB":
+        await self._wipe_workspace()
+        await self._create_indexes()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        try:
+            await self._wipe_workspace()
+        except Exception as wipe_err:
+            logger.warning(
+                "ETCDRBatchDB: failed to wipe scratch database '%s': %s",
+                self.db_name, wipe_err,
+            )
+
+    async def _wipe_workspace(self) -> None:
+        """Drop our vector index and delete every node/edge in the scratch DB."""
+        async with self.driver.session(database=self.db_name) as session:
+            try:
+                await session.run(f"DROP INDEX {self.rel_vector_index} IF EXISTS")
+            except Exception:
+                logger.debug(
+                    "ETCDRBatchDB: drop index '%s' no-op", self.rel_vector_index
+                )
+            await session.run("MATCH (n) DETACH DELETE n")
+        logger.info("ETCDRBatchDB: wiped scratch workspace in '%s'", self.db_name)
+
+    async def _create_indexes(self) -> None:
+        """Create the indexes ETCDR's structural + vector Cypher needs here."""
+        vec_cypher = f"""
+        CREATE VECTOR INDEX {self.rel_vector_index} IF NOT EXISTS
+        FOR ()-[r:RELATIONSHIP]-() ON (r.description_embedding)
+        OPTIONS {{
+          indexConfig: {{
+            `vector.dimensions`: {self.dimensions},
+            `vector.similarity_function`: 'cosine'
+          }}
+        }}
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            await session.run(
+                "CREATE INDEX IF NOT EXISTS FOR (n:Entity) ON (n.title)"
+            )
+            await session.run(
+                "CREATE INDEX IF NOT EXISTS "
+                "FOR ()-[r:RELATIONSHIP]-() ON (r.relation_type)"
+            )
+            await session.run(
+                "CREATE INDEX IF NOT EXISTS "
+                "FOR ()-[r:RELATIONSHIP]-() ON (r.t_tx_end)"
+            )
+            await session.run(
+                "CREATE INDEX IF NOT EXISTS "
+                "FOR ()-[r:RELATIONSHIP]-() ON (r.id)"
+            )
+            try:
+                await session.run(vec_cypher)
+            except Exception:
+                logger.debug(
+                    "ETCDRBatchDB: relationship vector index may already exist "
+                    "or Neo4j version does not support it"
+                )
+
+    async def add_relationship(self, rel: TemporalRelationship) -> None:
+        """Insert one accepted batch edge into the scratch DB.
+
+        MERGEs the endpoint ``:Entity {title}`` nodes (so the structural
+        Cypher in ETCDR can MATCH them) and CREATEs the ``:RELATIONSHIP``
+        edge with the full property bag from ``rel.to_neo4j_properties()``,
+        including ``description_embedding`` for the vector index.
+        """
+        if not rel.id:
+            return
+        props = rel.to_neo4j_properties()
+        cypher = """
+        MERGE (s:Entity {title: $source})
+        MERGE (t:Entity {title: $target})
+        CREATE (s)-[r:RELATIONSHIP]->(t)
+        SET r = $props
+        """
+        async with self.driver.session(database=self.db_name) as session:
+            await session.run(
+                cypher,
+                source=rel.source,
+                target=rel.target,
+                props=props,
+            )
+
+    def session(self):
+        """Return an async session bound to this scratch database.
+
+        Callers use it with the same ``run_*_query`` / ``apply_*`` functions
+        that target the main DB.
+        """
+        return self.driver.session(database=self.db_name)
