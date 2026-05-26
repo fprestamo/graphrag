@@ -12,6 +12,7 @@ Target databases (mirrors what train.py, evaluate.py and
   - cgrreval       # CGER+CGRR evaluation harness
   - cgerbatch      # CGER Phase B scratch DB
   - cgrrbatch      # CGRR Phase B scratch DB
+  - etcdreval      # ETCDR evaluation harness
 
 Usage:
     python scripts/wipe_neo4j_dbs.py               # wipe all four
@@ -37,7 +38,7 @@ from typing import Iterable
 from neo4j import AsyncGraphDatabase
 
 
-DEFAULT_DBS = ["btgraphrag", "cgrreval", "cgerbatch", "cgrrbatch"]
+DEFAULT_DBS = ["btgraphrag", "cgrreval", "cgerbatch", "cgrrbatch", "etcdreval"]
 DEFAULT_URI = "neo4j://127.0.0.1:7687"
 DEFAULT_USER = "neo4j"
 DEFAULT_PASSWORD = "12345678"
