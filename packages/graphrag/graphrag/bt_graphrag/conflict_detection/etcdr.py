@@ -207,6 +207,7 @@ Based on the evidence above, select the most appropriate resolution strategy:
    - Trivial date drift: dates differ by ≤ a few days for a brief event, or by ≤ a few months for a multi-year role with otherwise matching boundaries.
    - Interval refinement: one side has ``unknown``/``present`` where the other has a concrete date that does not contradict it (e.g. existing ``unknown → present`` and candidate ``2015 → 2018`` for the same role).
    - Spelling variants of the same name after canonicalisation (e.g. "Peter" vs "Pierre" for the same merged entity).
+   - **Point-event relations** (e.g. ``AWARDED``, ``RECEIVED_AWARD``, ``APPOINTED_TO``, ``NOMINATED``, ``BORN_IN``, ``DIED_IN``, ``DIED_AT``, ``MARRIED_TO``, ``FOUNDED``): both edges describe the same one-time event whenever their anchor date (the start year/month/day) matches; the shape of the right endpoint (``present``, a year-end like ``1996-12-31``, or a later closure date) is just bookkeeping noise and must NOT trigger EVOLUTION/CORRECTION. Prefer CORROBORATION even if one side shows ``present`` and the other a concrete end date.
 
 4. **DISAGREEMENT** - There is genuine ambiguity or conflicting evidence with no clear resolution. Insert the candidate as "disputed" without modifying the existing edge.
 
