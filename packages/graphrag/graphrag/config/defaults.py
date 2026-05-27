@@ -364,7 +364,7 @@ class GraphRagConfigDefaults:
     models: dict = field(default_factory=dict)
     completion_models: dict = field(default_factory=dict)
     embedding_models: dict = field(default_factory=dict)
-    concurrent_requests: int = 200
+    concurrent_requests: int = 500
     async_mode: AsyncType = AsyncType.Threaded
     reporting: ReportingDefaults = field(default_factory=ReportingDefaults)
     input_storage: InputStorageDefaults = field(default_factory=InputStorageDefaults)
