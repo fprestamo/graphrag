@@ -178,6 +178,26 @@ async def run_workflow(
         logger.error(error_msg)
         raise ValueError(error_msg)
 
+    # Round LLM-emitted entity types to the configured enum. Anything that
+    # isn't an exact match gets re-classified by the LLM (one call per
+    # unique offender, cached).
+    if "type" in extracted_entities.columns:
+        from graphrag.bt_graphrag.temporal_extraction.temporal_extractor import (
+            llm_resolve_entity_type,
+        )
+        allowed = list(config.extract_graph.entity_types or [])
+        allowed_upper = {a.strip().upper() for a in allowed}
+        types_col = extracted_entities["type"].fillna("").astype(str).str.strip().str.upper()
+        invalid = [t for t in types_col.unique() if t and t not in allowed_upper]
+        if invalid and allowed_upper:
+            type_map: dict[str, str] = {}
+            for raw in invalid:
+                type_map[raw] = await llm_resolve_entity_type(raw, allowed, extraction_model)
+                print(f"  [Type Normalize] {raw!r} -> {type_map[raw]!r}")
+            extracted_entities["type"] = types_col.map(lambda t: type_map.get(t, t))
+        else:
+            extracted_entities["type"] = types_col
+
     # Report extraction results
     print(f"\n  ✓ Stage 1 Complete:")
     print(f"    Entities extracted:      {len(extracted_entities)}")

@@ -73,6 +73,28 @@ Output:
 """
 
 
+async def llm_resolve_entity_type(
+    raw_type: str,
+    allowed_types: list[str],
+    model: "LLMCompletion",
+) -> str:
+    """Ask the LLM to map an out-of-enum type label into the allowed list."""
+    from graphrag_llm.utils import CompletionMessagesBuilder
+
+    allowed_upper = [a.strip().upper() for a in allowed_types]
+    prompt = (
+        f"Map the entity type label '{raw_type}' to one of: "
+        f"{', '.join(allowed_upper)}.\n"
+        f"Reply with exactly one of those words."
+    )
+    messages = CompletionMessagesBuilder().add_user_message(prompt).build()
+    response = await model.completion_async(messages=messages)  # type: ignore[assignment]
+    answer = (response.content or "").strip().upper()  # type: ignore[union-attr]
+    if answer in allowed_upper:
+        return answer
+    return "OTHER" if "OTHER" in allowed_upper else allowed_upper[0]
+
+
 def parse_temporal_extraction_result(
     result: str,
     source_id: str,
@@ -82,6 +104,8 @@ def parse_temporal_extraction_result(
     """Parse LLM output into entity and relationship DataFrames with temporal data.
 
     Extends the standard GraphRAG parser to handle valid_time_start/end fields.
+    Type normalization against the configured enum is handled by the
+    bt_extract_graph workflow after extraction, where the LLM is in scope.
     """
     from graphrag.index.utils.string import clean_str
 
@@ -237,7 +261,10 @@ async def temporal_extract_graph(
                 break
 
     entities_df, relationships_df = parse_temporal_extraction_result(
-        results, source_id, document_t_valid, document_t_tx,
+        results,
+        source_id,
+        document_t_valid,
+        document_t_tx,
     )
 
     if embedding_model is not None:

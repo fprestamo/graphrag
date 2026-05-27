@@ -147,7 +147,7 @@ class ExtractGraphDefaults:
     entity_types: list[str] = field(
         default_factory=lambda: ["organization", "person", "geo", "event", "other"]
     )
-    max_gleanings: int = 0
+    max_gleanings: int = 1
     completion_model_id: str = DEFAULT_COMPLETION_MODEL_ID
     model_instance_name: str = "extract_graph"
 

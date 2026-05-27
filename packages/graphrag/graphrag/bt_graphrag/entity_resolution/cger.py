@@ -75,30 +75,36 @@ def _types_match(a: Any, b: Any) -> bool:
 # LLM verification with temporal context
 # ---------------------------------------------------------------------------
 
-CGER_VERIFICATION_PROMPT = """You are a strict entity-resolution expert. Two candidate entities are presented below, together with their **active periods**. Decide whether they should be merged.
+CGER_VERIFICATION_PROMPT = """You are a strict entity-resolution expert. Two candidate entities are presented below, together with their **active periods**. Decide whether they should be merged AND, if so, which of the two names should survive as the canonical one.
 
-Your default answer is DIFFERENT_ENTITY. Only answer SAME when the evidence is unambiguous (abbreviation/alias of the same thing, alternate spelling, transliteration, punctuation/casing variant, or the same proper noun across languages — e.g. CATALUNYA = CATALONIA, BYU = BRIGHAM YOUNG UNIVERSITY, SOEHARTO = SUHARTO).
+Your default answer is DIFFERENT_ENTITY. Only answer a SAME_* verdict when the evidence is unambiguous (abbreviation/alias of the same thing, alternate spelling, transliteration, punctuation/casing variant, or the same proper noun across languages — e.g. CATALUNYA = CATALONIA, BYU = BRIGHAM YOUNG UNIVERSITY, SOEHARTO = SUHARTO).
 
-There are three possible verdicts:
+There are four possible verdicts:
 
-1. **SAME** — they refer to the same real-world entity AND their active periods are close enough that fusing them does not erase meaningful state. Merge them.
-2. **DIFFERENT_ENTITY** — they refer to **different real-world things**. Keep them separate. Examples:
+1. **SAME_A** — they refer to the same real-world entity; merge them and keep **Entity A's name** as the canonical title.
+2. **SAME_B** — they refer to the same real-world entity; merge them and keep **Entity B's name** as the canonical title.
+3. **DIFFERENT_ENTITY** — they refer to **different real-world things**. Keep them separate. Examples:
    - Generic vs specific ("HIGH SCHOOL" vs "SOUTHWEST HIGH SCHOOL").
    - Events/seasons/editions naming distinct years ("1996 NFL SEASON" vs "1997 NFL SEASON").
    - Shared tokens, different organizations ("KRUNG THAI BANK F.C." vs "KRUNG THAI BANK").
    - Country vs nationality/language ("ENGLAND" vs "ENGLISH").
    - Different scope/qualifier that changes the referent ("MINISTER OF CULTURE" vs "MINISTER OF CULTURE, SPORTS AND TOURISM").
    - Disagreeing entity types.
-3. **DIFFERENT_TEMPORAL** — they describe the **same referent** but their active periods are separated by a temporally significant gap, such that merging them would destroy the distinction between two states of that referent. Use this verdict when:
+4. **DIFFERENT_TEMPORAL** — they describe the **same referent** but their active periods are separated by a temporally significant gap, such that merging them would destroy the distinction between two states of that referent. Use this verdict when:
    - The two periods do not overlap and the gap between them is on the order of years or longer for slow-changing referents (e.g. organisations, countries, roles), or on the order of months for fast-changing ones (e.g. sports squads, governments).
    - The descriptions describe states that are clearly inconsistent with being a single snapshot (e.g. "APPLE 1985: home-computer company led by Steve Jobs" vs "APPLE 2024: trillion-dollar consumer-electronics multinational led by Tim Cook").
-   - In doubt about whether the gap is significant, prefer DIFFERENT_TEMPORAL over SAME — keeping the two states separate is recoverable; merging them is not.
+   - In doubt about whether the gap is significant, prefer DIFFERENT_TEMPORAL over a SAME_* verdict — keeping the two states separate is recoverable; merging them is not.
 
-It IS safe to answer SAME when:
+It IS safe to answer SAME_A or SAME_B when:
 - One name is an abbreviation/acronym of the other and active periods overlap or are adjacent.
 - They differ only in punctuation, casing, accents, apostrophe style, or whitespace.
 - They are the same proper noun in different languages/transliterations and descriptions agree.
 - The active periods overlap and descriptions corroborate the same referent.
+
+**Choosing the canonical (SAME_A vs SAME_B):**
+- Prefer the spelling that appears LITERALLY in the descriptions (i.e. faithful to source text). If one of the two names never appears in either description, that name is almost certainly an extractor hallucination/typo — prefer the other.
+- If both spellings appear, prefer the more specific / fuller name (e.g. "JAN KROMKAMP" over "KROMKAMP", "BANK OF AMERICA, N.A." over "BANK OF AMERICA").
+- If both are equally specific, prefer the standard / non-abbreviated form ("CATALONIA" over "CATALUNYA" when the source is English; "BRIGHAM YOUNG UNIVERSITY" over "BYU").
 
 Entity A:
 - Name: {name_a}
@@ -113,7 +119,8 @@ Entity B:
 - Active Period: {period_b}
 
 Answer with EXACTLY ONE of the following tokens and nothing else:
-- SAME
+- SAME_A
+- SAME_B
 - DIFFERENT_ENTITY
 - DIFFERENT_TEMPORAL
 
@@ -127,10 +134,17 @@ async def llm_verify_entity_match(
 ) -> str:
     """Use the LLM to decide whether two entities should be merged.
 
-    Returns one of ``"SAME"``, ``"DIFFERENT_ENTITY"`` or
-    ``"DIFFERENT_TEMPORAL"``. Any unrecognised response is treated as
-    ``"DIFFERENT_ENTITY"`` (conservative default — never merge on
-    ambiguous evidence).
+    Returns one of:
+      - ``"SAME_A"``         — merge, A's name is canonical
+      - ``"SAME_B"``         — merge, B's name is canonical
+      - ``"DIFFERENT_ENTITY"``
+      - ``"DIFFERENT_TEMPORAL"``
+
+    Any unrecognised response is treated as ``"DIFFERENT_ENTITY"`` (conservative
+    default — never merge on ambiguous evidence). A bare ``"SAME"`` response
+    (older prompt behaviour) is treated as ``"SAME_B"`` for backward
+    compatibility, so callers that previously aliased SAME → "merge into
+    best_match" still work.
     """
     from graphrag_llm.utils import CompletionMessagesBuilder
 
@@ -156,13 +170,15 @@ async def llm_verify_entity_match(
     response = await model.completion_async(messages=messages)
     answer = response.content.strip().upper()
 
-    valid = {"SAME", "DIFFERENT_ENTITY", "DIFFERENT_TEMPORAL"}
-    first_verdict = next(
-        (tok for tok in answer.replace(":", " ").replace(",", " ").split()
-         if tok in valid),
-        "",
-    )
-    return first_verdict if first_verdict in valid else "DIFFERENT_ENTITY"
+    valid = {"SAME_A", "SAME_B", "DIFFERENT_ENTITY", "DIFFERENT_TEMPORAL"}
+    tokens = answer.replace(":", " ").replace(",", " ").split()
+    first_verdict = next((tok for tok in tokens if tok in valid), "")
+    if first_verdict:
+        return first_verdict
+    # Backward compat: bare SAME → assume B is canonical (legacy behavior)
+    if "SAME" in tokens:
+        return "SAME_B"
+    return "DIFFERENT_ENTITY"
 
 
 # ---------------------------------------------------------------------------
@@ -275,13 +291,25 @@ async def resolve_entities(
 
             if best_score >= config.cger_cosine_threshold and model is not None:
                 verdict = await llm_verify_entity_match(new_entity, best_match, model)
-                if verdict == "SAME":
+                if verdict in ("SAME_A", "SAME_B"):
+                    # Phase A always merges the new entity INTO the existing
+                    # one — best_match's title is fixed because it is already
+                    # persisted in Neo4j. If the LLM thinks A (the new one)
+                    # holds the better name, we log it but keep the existing
+                    # title as canonical for this cross-graph step.
                     merge_map[new_entity["title"]] = best_match["title"]
                     llm_merges += 1
-                    logger.info(
-                        "CGER: LLM-confirmed merge '%s' -> '%s' (cosine=%.3f)",
-                        new_entity["title"], best_match["title"], best_score,
-                    )
+                    if verdict == "SAME_A":
+                        logger.info(
+                            "CGER: LLM-confirmed merge '%s' -> '%s' "
+                            "(cosine=%.3f, LLM preferred new name but kept existing)",
+                            new_entity["title"], best_match["title"], best_score,
+                        )
+                    else:
+                        logger.info(
+                            "CGER: LLM-confirmed merge '%s' -> '%s' (cosine=%.3f)",
+                            new_entity["title"], best_match["title"], best_score,
+                        )
                 elif verdict == "DIFFERENT_TEMPORAL":
                     llm_diff_temporal += 1
                     logger.info(
@@ -422,8 +450,32 @@ async def resolve_entities(
                         and best_score >= config.cger_cosine_threshold
                         and model is not None):
                     verdict = await llm_verify_entity_match(entity, best_match, model)
-                    if verdict == "SAME":
-                        intra_merge_map[entity_title] = match_title
+                    if verdict in ("SAME_A", "SAME_B"):
+                        # The LLM picks the canonical at decision time:
+                        #   SAME_A → current entity's title wins
+                        #   SAME_B → previously-seen entity's title wins
+                        canonical = entity_title if verdict == "SAME_A" else match_title
+
+                        if canonical == match_title:
+                            intra_merge_map[entity_title] = match_title
+                        else:
+                            # Flip: incoming entity holds the canonical title.
+                            intra_merge_map[match_title] = canonical
+                            for prev_src, prev_dst in list(intra_merge_map.items()):
+                                if prev_dst == match_title and prev_src != prev_dst:
+                                    intra_merge_map[prev_src] = canonical
+                            if canonical != entity_title:
+                                intra_merge_map[entity_title] = canonical
+                            if match_title in seen_by_title:
+                                renamed = dict(seen_by_title.pop(match_title))
+                                renamed["title"] = canonical
+                                seen_by_title[canonical] = renamed
+                            kept_titles.discard(match_title)
+                            kept_titles.add(canonical)
+                            for i, s in enumerate(seen_entities):
+                                if str(s.get("title", "")) == match_title:
+                                    seen_entities[i] = {**s, "title": canonical}
+                                    break
                         intra_llm_merges += 1
                         phase_b_log.append({
                             "phase": "B_intra_batch",
@@ -431,13 +483,14 @@ async def resolve_entities(
                             "type": str(entity.get("type", "?")),
                             "best_match": match_title,
                             "best_score": round(best_score, 4),
-                            "decision": "LLM_MERGE",
+                            "decision": verdict,
+                            "canonical": canonical,
                             "candidate_pool_size": len(candidate_pool),
                             "top_comparisons": [],
                         })
                         logger.info(
-                            "CGER: Intra-batch LLM merge '%s' -> '%s' (cosine=%.3f)",
-                            entity_title, match_title, best_score,
+                            "CGER: Intra-batch LLM %s '%s' + '%s' -> '%s' (cosine=%.3f)",
+                            verdict, entity_title, match_title, canonical, best_score,
                         )
                     elif verdict == "DIFFERENT_TEMPORAL":
                         intra_diff_temporal += 1
