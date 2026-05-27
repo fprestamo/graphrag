@@ -573,10 +573,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--init-model",
         type=str,
-        default="gpt-4.1-mini",
+        default="gpt-4.1",
         help=(
             "Chat model to write into settings.yaml during `poe init`. "
-            "Hardcoded to gpt-4.1-mini so vanilla GraphRAG's model is "
+            "Hardcoded to gpt-4.1 so vanilla GraphRAG's model is "
             "independent of BTG_MODEL_ID; override explicitly if needed."
         ),
     )
