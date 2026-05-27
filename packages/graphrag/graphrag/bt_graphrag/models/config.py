@@ -87,14 +87,19 @@ class BTGraphRAGConfig:
     cgrr_enabled: bool = True
     """Enable Cross-Graph Relationship Resolution."""
 
-    cgrr_cosine_threshold: float = 0.85
+    cgrr_cosine_threshold: float = 1.01
     """Description-embedding cosine similarity at or above which CGRR
     defers the merge decision to the LLM. Pairs with cosine below this
     value are never normalised; the LLM is the only component that ever
     triggers a normalisation, and it answers SAME or DIFFERENT using
     the two relation types' names, descriptions and a sample endpoint
     pair (no temporal context — relation types have no active period
-    of their own)."""
+    of their own).
+
+    Set to 1.01 (above the cosine ceiling of 1.0) to disable CGRR
+    label normalisation: ETCDR's cross-type queries already detect
+    synonym conflicts, so the only remaining role of CGRR was ontology
+    consolidation, which can be handled out-of-band."""
 
     cgrr_candidate_top_k: int = 10
     """Number of top-K existing relation types to compare per candidate,
