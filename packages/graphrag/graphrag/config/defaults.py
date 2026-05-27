@@ -186,7 +186,7 @@ class ExtractGraphNLPDefaults:
 
     normalize_edge_weights: bool = True
     text_analyzer: TextAnalyzerDefaults = field(default_factory=TextAnalyzerDefaults)
-    concurrent_requests: int = 200
+    concurrent_requests: int = 500
     async_mode: AsyncType = AsyncType.Threaded
 
 
