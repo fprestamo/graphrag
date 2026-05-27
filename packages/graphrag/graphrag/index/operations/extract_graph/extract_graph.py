@@ -3,9 +3,7 @@
 
 """A module containing extract_graph method."""
 
-import asyncio
 import logging
-import os
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -20,12 +18,6 @@ if TYPE_CHECKING:
     from graphrag_llm.completion import LLMCompletion
 
 logger = logging.getLogger(__name__)
-
-# Per-text-unit timeout in seconds. If a single text unit's LLM extraction
-# takes longer than this, it's skipped (returns empty results) so the rest
-# of the pipeline can continue instead of stalling forever on one stuck
-# request. Configurable via GRAPHRAG_EXTRACT_TIMEOUT.
-_PER_UNIT_TIMEOUT_S = float(os.environ.get("GRAPHRAG_EXTRACT_TIMEOUT", "300"))
 
 
 async def extract_graph(
@@ -55,26 +47,14 @@ async def extract_graph(
         logger.info(msg_start)
         text = row[text_column]
         id = row[id_column]
-        try:
-            result = await asyncio.wait_for(
-                _run_extract_graph(
-                    text=text,
-                    source_id=id,
-                    entity_types=entity_types,
-                    model=model,
-                    prompt=prompt,
-                    max_gleanings=max_gleanings,
-                ),
-                timeout=_PER_UNIT_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            msg_timeout = (
-                f"  [Stage 1] TIMEOUT after {_PER_UNIT_TIMEOUT_S:.0f}s on text unit "
-                f"{id} — skipping (empty result)"
-            )
-            print(msg_timeout, flush=True)
-            logger.warning(msg_timeout)
-            result = (_empty_entities_df(), _empty_relationships_df())
+        result = await _run_extract_graph(
+            text=text,
+            source_id=id,
+            entity_types=entity_types,
+            model=model,
+            prompt=prompt,
+            max_gleanings=max_gleanings,
+        )
         num_done += 1
         msg_done = f"  [Stage 1] Extracted {num_done}/{total_units} text units"
         print(msg_done, flush=True)
@@ -130,16 +110,6 @@ async def _run_extract_graph(
     )
 
     return (entities_df, relationships_df)
-
-
-def _empty_entities_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=["title", "type", "description", "source_id"])
-
-
-def _empty_relationships_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        columns=["source", "target", "weight", "description", "source_id"]
-    )
 
 
 def _merge_entities(entity_dfs) -> pd.DataFrame:
