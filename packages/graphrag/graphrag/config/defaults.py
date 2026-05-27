@@ -134,7 +134,7 @@ class ExtractClaimsDefaults:
     description: str = (
         "Any claims or facts that could be relevant to information discovery."
     )
-    max_gleanings: int = 1
+    max_gleanings: int = 0
     completion_model_id: str = DEFAULT_COMPLETION_MODEL_ID
     model_instance_name: str = "extract_claims"
 
@@ -147,7 +147,7 @@ class ExtractGraphDefaults:
     entity_types: list[str] = field(
         default_factory=lambda: ["organization", "person", "geo", "event", "other"]
     )
-    max_gleanings: int = 1
+    max_gleanings: int = 0
     completion_model_id: str = DEFAULT_COMPLETION_MODEL_ID
     model_instance_name: str = "extract_graph"
 
