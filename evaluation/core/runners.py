@@ -203,13 +203,26 @@ _VANILLA_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 # resolves paths relative to CWD, so two concurrent loads from a relative root
 # race on the chdir and the second sees ".ragtest/.ragtest".
 _VANILLA_LOAD_LOCK = asyncio.Lock()
+# Snapshot the CWD at import time. Tasks that resolve a relative root_dir
+# AFTER load_config's internal chdir would otherwise build paths like
+# ".ragtest/.ragtest"; resolving against this base instead keeps every call
+# in agreement on the absolute path, regardless of what load_config did to CWD.
+_VANILLA_BASE_CWD = Path.cwd()
+
+
+def _resolve_against_base(p: str | Path) -> Path:
+    path = Path(p)
+    if not path.is_absolute():
+        path = _VANILLA_BASE_CWD / path
+    return path.resolve()
 
 
 async def _load_vanilla_state(cfg: VanillaConfig) -> dict[str, Any]:
-    # Resolve to absolute paths so the cache key is stable and load_config's
-    # internal chdir cannot corrupt subsequent path resolution.
-    root_abs = Path(cfg.root_dir).resolve()
-    data_abs = Path(cfg.data_dir).resolve() if cfg.data_dir else None
+    # Resolve against the snapshotted base CWD, not the live one — see
+    # _VANILLA_BASE_CWD above. Using Path(...).resolve() directly here would
+    # double-prefix the root after load_config's chdir, even with the lock.
+    root_abs = _resolve_against_base(cfg.root_dir)
+    data_abs = _resolve_against_base(cfg.data_dir) if cfg.data_dir else None
     key = (str(root_abs), str(data_abs or ""))
     if key in _VANILLA_CACHE:
         return _VANILLA_CACHE[key]
@@ -226,7 +239,11 @@ async def _load_vanilla_state(cfg: VanillaConfig) -> dict[str, Any]:
         overrides: dict[str, Any] = {}
         if data_abs is not None:
             overrides["output_storage"] = {"base_dir": str(data_abs)}
-        graphrag_config = load_config(root_dir=root_abs, cli_overrides=overrides)
+        saved_cwd = Path.cwd()
+        try:
+            graphrag_config = load_config(root_dir=root_abs, cli_overrides=overrides)
+        finally:
+            os.chdir(saved_cwd)
 
         storage_obj = create_storage(graphrag_config.output_storage)
         table_provider = create_table_provider(
