@@ -33,14 +33,20 @@ STEP 1: ENTITY EXTRACTION
 Read the entire text carefully. Identify every entity that matches one of the allowed types: [{entity_types}]
 
 For each entity, extract:
-- entity_name: The canonical, most widely recognized name for this entity, IN ALL CAPS. Prefer short common names over full legal/formal names (e.g., "GOOGLE" not "ALPHABET INC. SUBSIDIARY GOOGLE LLC"; "ELON MUSK" not "ELON REEVE MUSK"). If the text uses an abbreviation and the full name, use whichever is more recognizable.
+- entity_name: The canonical, most widely recognized name for this entity, IN ALL CAPS. Prefer short common names over full legal/formal names (e.g., "GOOGLE" not "ALPHABET INC. SUBSIDIARY GOOGLE LLC"; "ELON MUSK" not "ELON REEVE MUSK"). If the text uses an abbreviation and the full name, use whichever is more recognizable. SPELL THE NAME EXACTLY AS IT APPEARS IN THE TEXT — copy character-by-character (then uppercase). Never insert, drop, or substitute letters; never anglicize, transliterate, or "correct" the spelling. If the text says "Kromkamp" the entity_name is "KROMKAMP" — never "KROMPKAMP", "KROMKAM", or any other variant.
 - entity_type: Exactly one type from the allowed list above. Each entity MUST have exactly one type — do not assign the same entity to multiple types.
 - entity_description: A concise but comprehensive description (1–3 sentences) covering the entity's key attributes, roles, and relevance as described in the text. Include context that would help a reader understand why this entity matters in the document.
 
 Format: ("entity"<|><entity_name><|><entity_type><|><entity_description>)
 
 ENTITY EXTRACTION RULES:
-1. De-duplicate: If the same entity is mentioned by different names or aliases (e.g., "the company" referring to "Acme Corp"), extract it only once under its canonical name.
+1. De-duplicate aggressively: the same real-world entity must appear exactly ONCE, regardless of how the text refers to it. Collapse all of the following into a single entity:
+   - Pronouns ("he", "she", "they", "it") referring back to a previously named entity.
+   - Bare surname / last-name references after a full name was given (e.g. "Tabetha S. Boyajian" introduced in sentence 1, "Boyajian" used in later sentences → ONE entity "TABETHA BOYAJIAN", never two).
+   - First-name-only references after a full name was given.
+   - Definite-noun references ("the company", "the team", "the president") that point to a previously named entity.
+   - Abbreviations and acronyms when the full form is also given (e.g. "PSV" and "PSV Eindhoven" → one entity).
+   Choose the most complete form attested in the text as the canonical entity_name; do NOT mint a separate entity for every surface form.
 2. One type per entity: Never create the same entity under two different types.
 3. Be inclusive: Extract entities even if they appear only once, as long as they participate in a relationship.
 4. Named entities only — NEVER extract bare generic terms. Do NOT extract common nouns like "HIGH SCHOOL", "CORPORATION", "PUBLISHING COMPANY", "ELECTION CAMPAIGN", "MULTINATIONAL INSURANCE COMPANY", "FOOD WRITER", "THE ECONOMY", or "TECHNOLOGY" on their own. Extract only the specific named instance (e.g. "SOUTHWEST HIGH SCHOOL", "COLCHESTER CORPORATION", "AXA"). If the text only refers to the entity by a generic noun and never names it, do not extract it.
@@ -582,6 +588,36 @@ A:
     ]
 }}
 
+Q: "Who was the occupant of Anmer Hall before Mar 1897?"
+A:
+{{
+    "entities": ["Anmer Hall"],
+    "sub_queries": [
+        {{
+            "sub_query": "Who was the occupant of Anmer Hall before March 1897?",
+            "entities": ["Anmer Hall"],
+            "query_type": "RANGE",
+            "t_start": "UNKNOWN",
+            "t_end":   "1897-03-01"
+        }}
+    ]
+}}
+
+Q: "Tabetha S. Boyajian went to which school after Aug 2005?"
+A:
+{{
+    "entities": ["Tabetha S. Boyajian"],
+    "sub_queries": [
+        {{
+            "sub_query": "Which school did Tabetha S. Boyajian attend after August 2005?",
+            "entities": ["Tabetha S. Boyajian"],
+            "query_type": "RANGE",
+            "t_start": "2005-08-01",
+            "t_end":   "CURRENT"
+        }}
+    ]
+}}
+
 Now analyse the question above and return the JSON object.
 """
 
@@ -593,16 +629,18 @@ TEMPORAL_QUERY_DECOMPOSITION_PROMPT = TEMPORAL_QUERY_ANALYSIS_PROMPT
 # Stage 7: Temporal Answer Synthesis
 # ---------------------------------------------------------------------------
 
-TEMPORAL_ANSWER_SYNTHESIS_PROMPT = """You are a temporal knowledge synthesis expert. Answer the user's question using ONLY the bitemporal graph edges provided as context.
+TEMPORAL_ANSWER_SYNTHESIS_PROMPT = """You are a temporal knowledge synthesis expert. Answer the user's question using the bitemporal graph edges provided as context.
 
 Each edge is shown as:
   (SOURCE) -[RELATION]-> (TARGET) [valid_start → valid_end] {{status, support_count, confidence}}: description
 
 Where:
-- valid_start / valid_end mark when the fact held in the world. An "infinity" or "ONGOING" end means the fact is still ongoing.
-- "status" is one of: active, disputed, retracted.
-- "support_count" counts how many independent sources corroborate the edge.
-- Higher confidence and higher support_count make an edge more reliable.
+- valid_start / valid_end mark when the fact held in the world.
+- "UNKNOWN" on valid_start means the fact was already true earlier than the graph records — treat it as "since at least <valid_end or query time>", NOT as missing information.
+- "ONGOING" on valid_end means the fact is still active — treat it as extending up to the present, NOT as ambiguous.
+- "status" is one of: active, disputed, retracted. Retracted edges should be ignored unless the question explicitly asks about history.
+- "support_count" counts independent corroborating sources; higher is more reliable.
+- The "description" field often contains rich detail (positions, roles, dates, places) that is the most reliable source for the answer — read it carefully.
 
 Original Question: {query}
 
@@ -610,17 +648,20 @@ Retrieved temporal context:
 {sub_results}
 
 INSTRUCTIONS
-1. Answer the user's question directly and concisely. Lead with the answer.
-2. Use ONLY information present in the retrieved context. Do not invent facts.
-3. Respect the temporal scope of the question:
-   - For a SPECIFIC time (POINT_IN_TIME), pick the edge whose [valid_start, valid_end) covers that time.
-   - For a RANGE, prefer edges whose validity overlaps that range; if several overlap, list them with their periods.
-   - For EVOLUTION questions, present the edges in chronological order.
-   - For COMPARISON questions, contrast the two time points explicitly.
-4. For DISPUTED edges, briefly acknowledge the conflict and prefer the claim with the highest support_count x confidence; use the most recent t_tx_start as a tiebreaker.
-5. If no edge in the context satisfies the temporal constraint, say so explicitly. Do not guess.
-6. Quote dates exactly as they appear in the context (no rounding, no rephrasing).
-7. Keep the answer short — one short sentence or phrase when the question has a single factual answer.
+1. Answer directly and concisely. Lead with the answer.
+2. Ground your answer in the retrieved context — both the edge tuples AND their descriptions. Do not invent facts that are absent from both.
+3. Match the temporal scope of the question, applying these rules:
+   - POINT_IN_TIME ("in March 2014", "when X happened"): pick the edge whose [valid_start, valid_end] contains that point. An edge with UNKNOWN start covers all dates before its valid_end. An ONGOING end covers all dates after its valid_start.
+   - RANGE ("between Apr 1987 and Nov 1988"): prefer edges whose validity overlaps the range.
+   - "BEFORE X": prefer edges whose valid_end is at or before X, OR whose description references a period before X. An edge ending exactly on X (e.g. valid_end = X) still satisfies "before X".
+   - "AFTER X": prefer edges whose valid_start is at or after X, OR an ONGOING edge whose valid_start ≤ X. Edges with UNKNOWN start and valid_end > X also satisfy "after X" since their support extends past X.
+   - EVOLUTION: present edges in chronological order.
+   - COMPARISON: contrast the two time points explicitly.
+4. For DISPUTED edges, briefly acknowledge the conflict and prefer the claim with the highest support_count × confidence; use the most recent t_tx_start as a tiebreaker.
+5. Be willing to infer the answer from the edge's description when the relation type or endpoint is approximate but the description clearly contains the answer. Do not refuse just because no edge name literally matches the question's phrasing.
+6. Only respond that the information is missing when no edge — neither by tuple shape nor by description content — plausibly addresses the question. Do not refuse for minor temporal-boundary mismatches (off-by-day or off-by-month boundaries on multi-year facts) or for "UNKNOWN"/"ONGOING" sentinel values.
+7. Quote dates as they appear in the context (no rounding).
+8. Keep the answer short — one short sentence or phrase when the question has a single factual answer.
 
 ANSWER:
 """
