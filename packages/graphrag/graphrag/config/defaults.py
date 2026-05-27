@@ -58,7 +58,7 @@ class ChunkingDefaults:
     """Default values for chunking."""
 
     type: str = ChunkerType.Tokens
-    size: int = 1200
+    size: int = 600
     overlap: int = 100
     encoding_model: str = ENCODING_MODEL
     prepend_metadata: None = None
