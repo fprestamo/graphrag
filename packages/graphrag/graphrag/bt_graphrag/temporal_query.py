@@ -1,39 +1,41 @@
 # Copyright (c) 2024 Microsoft Corporation.
 # Licensed under the MIT License
 
-"""BT-GraphRAG Stage 6(b): Temporal Query Pipeline.
+"""BT-GraphRAG Stage 6(b): Temporal Query as a helper to ``local_search``.
 
-This module implements the query side of the proposal
-(see ``Proposal.tex``, sec. *Integración con el pipeline de GraphRAG y
-consulta temporal*, and ``Implementation.tex``, sec. *Etapa 6 (b):
-Consulta temporal*). The pipeline has the five canonical steps:
+This module no longer owns the answer synthesis. Instead, it plugs the
+temporal knowledge it has (a bitemporal Neo4j graph + LLM-driven query
+decomposition) into the *stages* of graphrag's vanilla ``local_search``:
 
-    1. ``decompose_temporal_query``        — analyse + decompose
-    2. ``resolve_seed_entities``           — title + embedding lookup
-    3. ``local_temporal_search``           — bitemporal as-of retrieval
-    4. ``dispute_resolution_search``       — re-rank ``disputed`` edges
-    5. ``synthesize_temporal_answer``      — final answer (LLM)
+  1. **Query → entities mapping** (stage 1 of ``LocalSearchMixedContext``):
+     - Decompose the query into sub-queries with explicit time windows.
+     - Resolve seed entities for each sub-query against the bitemporal
+       graph (title + embedding NN). Hand the resolved titles to
+       ``local_search`` as ``include_entity_names`` so its context
+       builder is biased toward temporally-relevant candidates.
+     - Reformulate the sub-query text with the window inline so the LLM
+       at the synthesis step has the date anchor in the user prompt.
 
-The orchestrator is ``temporal_query_pipeline`` (and ``temporal_search``
-as the legacy entry that also dispatches the audit/dispute modes).
+  2. **LLM synthesis** (stage 5):
+     - When the decomposition produced a SINGLE sub-query, the answer
+       from ``local_search`` *is* the final answer.
+     - When it produced multiple, a small LLM call combines them.
+     - When the final answer hedges / refuses, a refusal-recovery branch
+       re-synthesizes using as-of evidence from the bitemporal graph
+       (the legacy "PRIMARY / BACKGROUND" rendering, kept for this path).
 
-The key implementation choices that distinguish the rewritten pipeline
-from the first iteration — driven by the diagnosis on the TimeQA
-``hard`` split, where 77 % of incorrect answers had the supporting edge
-present in Neo4j with the correct validity window:
+The two graph-side stages of vanilla ``local_search`` (relationship
+context, text-unit context) are not hookable from the outside without
+either rewriting the parquet at index time or reaching into graphrag's
+internal builder. That work is out of scope here; the decomposition +
+seed-injection lift on stage 1 is what the bitemporal graph can
+contribute today.
 
-  * **Two-bucket retrieval, not a single ranked list.** Each sub-query
-    produces a PRIMARY bucket (edges whose ``t_valid_*`` intersects the
-    sub-query window) and a BACKGROUND bucket (the rest). The buckets
-    are shown to the LLM in *separate* blocks; PRIMARY is the only
-    bucket the model is allowed to answer from when it is non-empty.
-  * **Ranking inside PRIMARY** prefers, in order: edges whose interval
-    contains the sub-query anchor; narrower intervals (specific facts
-    beat generic 0001→9999 ones); ``temporal_decay_score`` against the
-    anchor; ``confidence × log(1+support_count)``.
-  * **Community reports** are only added when *all* sub-queries returned
-    an empty PRIMARY bucket — they otherwise dilute atomic answers with
-    the entity's "most prominent" associations.
+Public surface (kept stable for ``runners.bt_answer``):
+
+    decompose_temporal_query, resolve_seed_entities, local_temporal_search
+    rank_disputed_edges, temporal_decay_score, dispute_resolution_search
+    temporal_query_pipeline, temporal_search
 """
 
 from __future__ import annotations
@@ -56,8 +58,9 @@ from graphrag.bt_graphrag.models.temporal_types import (
 )
 from graphrag.bt_graphrag.prompts import (
     DISPUTE_RESOLUTION_PROMPT,
-    TEMPORAL_ANSWER_SYNTHESIS_PROMPT,
     TEMPORAL_QUERY_ANALYSIS_PROMPT,
+    TEMPORAL_REFUSAL_RECOVERY_PROMPT,
+    TEMPORAL_SUBANSWER_SYNTHESIS_PROMPT,
 )
 
 if TYPE_CHECKING:
@@ -66,6 +69,12 @@ if TYPE_CHECKING:
     from neo4j import AsyncDriver, AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+# Signature for the local_search adapter the runner injects. Returning
+# ``None`` is treated as a "retriever failed / empty answer" — the
+# pipeline routes those into the refusal-recovery branch.
+LocalSearchProvider = Callable[..., Awaitable["str | None"]]
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +236,6 @@ async def analyze_and_decompose_query(
     return _coerce_analysis(payload, query, current_date)
 
 
-# Thesis-traceability alias (Implementation.tex names the function this way).
 async def decompose_temporal_query(
     query: str,
     model: "LLMCompletion",
@@ -239,7 +247,7 @@ async def decompose_temporal_query(
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Resolve seed entities against the graph
+# Step 2: Resolve seed entities against the bitemporal graph
 # ---------------------------------------------------------------------------
 
 
@@ -255,12 +263,11 @@ async def resolve_seed_entities(
 
     Two strategies are unioned and de-duped by title:
 
-    1. **Title match** — exact / case-insensitive / substring matches
-       (cheap, precise).
+    1. **Title match** — exact / case-insensitive / substring matches.
     2. **Description-embedding NN** — vector search on
-       ``Entity.description_embedding``, mirroring CGER's cosine
-       pre-filter from indexing time. Provides recall when the
-       LLM-extracted name doesn't appear verbatim in the graph.
+       ``Entity.description_embedding``, mirroring CGER's pre-filter from
+       indexing time. Provides recall when the LLM-extracted name
+       doesn't appear verbatim in the graph.
 
     Title matches always win the tiebreak; embedding hits fill up to
     ``top_k`` *additional* titles when ``prefer_title_match`` is set.
@@ -327,7 +334,111 @@ async def resolve_seed_entities(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Local temporal search (per sub-query)
+# Step 3: Sub-query rendering (window-aware reformulation)
+# ---------------------------------------------------------------------------
+
+
+_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def _pretty_date(s: str | None) -> str | None:
+    """Render an ISO date as a human-friendly month/year string."""
+    if not s:
+        return None
+    up = s.upper()
+    if up in {"CURRENT", "ONGOING"}:
+        return "today"
+    if up in {"UNKNOWN", "NONE", "NULL"}:
+        return None
+    dt = _parse_iso_date(s)
+    if dt is None:
+        return s
+    return f"{_MONTHS[dt.month - 1]} {dt.year}"
+
+
+def _window_collapses_to_year(start_iso: str | None, end_iso: str | None) -> str | None:
+    """If the window covers exactly a calendar year (YYYY-01-01 → YYYY-12-31),
+    return ``"YYYY"`` so the caller can render "in 1992" instead of the
+    verbose "between January 1992 and December 1992"."""
+    if not start_iso or not end_iso:
+        return None
+    s = _parse_iso_date(start_iso)
+    e = _parse_iso_date(end_iso)
+    if s is None or e is None:
+        return None
+    if s.year != e.year:
+        return None
+    if (s.month, s.day) == (1, 1) and (e.month, e.day) == (12, 31):
+        return str(s.year)
+    return None
+
+
+def _render_subquery_with_window(sub_query: dict[str, Any]) -> str:
+    """Reformulate the sub-query so the time window is visible in the user
+    prompt that ``local_search`` sees.
+
+    The vanilla retriever ranks text chunks by entity match — it does not
+    understand abstract temporal windows. Putting the window inline in
+    the user query is the cheapest way to bias the synthesis LLM (and the
+    embedding lookup of the question) toward time-relevant material.
+    """
+    base = (sub_query.get("sub_query") or "").strip()
+    qtype = str(sub_query.get("query_type") or "POINT_IN_TIME").upper()
+    raw_start = sub_query.get("t_start")
+    raw_end = sub_query.get("t_end")
+    start = _pretty_date(raw_start)
+    end = _pretty_date(raw_end)
+    year_collapse = _window_collapses_to_year(raw_start, raw_end)
+
+    if qtype == "EVOLUTION":
+        window: str | None = "across its full timeline"
+    elif qtype == "COMPARISON" and start and end and start != end:
+        window = f"comparing {start} and {end}"
+    elif qtype == "RANGE":
+        if year_collapse:
+            window = f"during {year_collapse}"
+        elif start and end == "today" and start != "today":
+            window = f"from {start} onward"
+        elif start == "today" and end and end != "today":
+            window = f"up to {end}"
+        elif start and end and start != end:
+            window = f"between {start} and {end}"
+        elif start and not end:
+            window = f"from {start} onward"
+        elif end and not start:
+            window = f"up to {end}"
+        else:
+            window = None
+    else:  # POINT_IN_TIME
+        if year_collapse:
+            window = f"in {year_collapse}"
+        elif start and end and start != end:
+            window = f"between {start} and {end}"
+        elif start:
+            window = f"in {start}"
+        elif end:
+            window = f"in {end}"
+        else:
+            window = None
+
+    if not window:
+        return base
+    # If the base sub-query already restates the same window, skip the
+    # suffix to avoid duplicates.
+    if start and start.lower() in base.lower():
+        return base
+    if end and end.lower() in base.lower():
+        return base
+    if year_collapse and year_collapse in base:
+        return base
+    return f"{base} (time anchor: {window})"
+
+
+# ---------------------------------------------------------------------------
+# Step 4: As-of subgraph retrieval (refusal-recovery branch only)
 # ---------------------------------------------------------------------------
 
 
@@ -335,18 +446,7 @@ def _sub_query_window(
     sub_query: dict[str, Any],
     query_time: datetime,
 ) -> tuple[datetime | None, tuple[datetime, datetime] | None, datetime | None]:
-    """Return ``(valid_at, valid_range, anchor)`` for a sub-query.
-
-    - POINT_IN_TIME: ``valid_at`` is set to the explicit point;
-      ``anchor`` = that same point.
-    - RANGE / COMPARISON: ``valid_range`` covers ``[t_start, t_end]``;
-      ``anchor`` is ``t_start`` (the typical TimeQA "after / between /
-      from X" phrasing keys off the start), falling back to ``t_end``.
-    - EVOLUTION: no temporal restriction (``None, None``); ``anchor`` is
-      ``None`` and ranking ignores temporal proximity.
-    - ``CURRENT`` / ``ONGOING`` resolve to ``query_time``; ``UNKNOWN``
-      becomes ``None``.
-    """
+    """Return ``(valid_at, valid_range, anchor)`` for a sub-query."""
     qtype = sub_query.get("query_type", "POINT_IN_TIME").upper()
     raw_start = sub_query.get("t_start", "CURRENT")
     raw_end = sub_query.get("t_end", raw_start)
@@ -372,7 +472,6 @@ def _sub_query_window(
             rs, re_ = re_, rs
         anchor = t_start or t_end
         return None, (rs, re_), anchor
-    # POINT_IN_TIME
     point = t_start or t_end or query_time
     return point, None, point
 
@@ -382,10 +481,6 @@ def _edge_in_window(
     valid_at: datetime | None,
     valid_range: tuple[datetime, datetime] | None,
 ) -> bool:
-    """``True`` iff the edge's validity intersects the requested window.
-
-    Unknown bounds are treated as open-ended on their side.
-    """
     es, ee = _edge_bounds(edge)
     if valid_at is not None:
         return es <= valid_at <= ee
@@ -396,37 +491,16 @@ def _edge_in_window(
 
 
 def _edge_specificity(edge: dict[str, Any]) -> float:
-    """``1 / span_days`` — narrower intervals are more specific.
-
-    Open intervals (``0001-01-01`` → ``9999-12-31``) collapse to a tiny
-    score. Edges with at least one unknown bound get a *small* but
-    non-zero score so they don't get dropped completely — they just lose
-    to any narrower competitor.
-    """
     es, ee = _edge_bounds(edge)
     if es == MINUS_INFINITY and ee == INFINITY:
         return 1e-9
     if es == MINUS_INFINITY or ee == INFINITY:
-        # Half-open interval: treat as moderately generic.
         return 1e-6
     span_days = max(1.0, (ee - es).total_seconds() / 86400.0)
     return 1.0 / span_days
 
 
 def _edge_contains(edge: dict[str, Any], anchor: datetime | None) -> bool:
-    """Does the edge's validity contain the sub-query anchor?
-
-    The anchor is the question's most representative timestamp
-    (``t_start`` for "after / between", ``t_end`` for "before",
-    the point itself for POINT_IN_TIME). Edges whose validity covers
-    that instant — i.e. the edge was *true at the anchor* — get a
-    boolean boost in the ranker.
-
-    We deliberately do NOT require the edge to cover the whole
-    requested range. A "after 2002-10" question whose gold edge is
-    ``[2001, 2003]`` is a fact that was true AT the anchor; demanding
-    coverage of ``[2002-10, NOW]`` would discard exactly that gold.
-    """
     if anchor is None:
         return False
     es, ee = _edge_bounds(edge)
@@ -438,12 +512,6 @@ def temporal_decay_score(
     edge_time: datetime,
     alpha: float = 0.1,
 ) -> float:
-    """Exponential decay on temporal proximity (days).
-
-    Preserved with the thesis-mentioned name (Implementation.tex,
-    sec. 6b). The orchestrator passes ``alpha`` from
-    ``BTGraphRAGConfig.temporal_decay_alpha``.
-    """
     delta_days = abs((query_time - edge_time).total_seconds()) / 86400.0
     return math.exp(-alpha * delta_days)
 
@@ -453,23 +521,17 @@ def _edge_decay(
     anchor: datetime | None,
     alpha: float,
 ) -> float:
-    """Per-edge decay against the sub-query anchor.
-
-    Uses the edge's midpoint when both bounds are known; falls back to
-    whichever bound exists; returns ``1.0`` when no anchor is set.
-    """
     if anchor is None:
         return 1.0
     es, ee = _edge_bounds(edge)
     if es == MINUS_INFINITY and ee == INFINITY:
-        edge_time = anchor  # generic edge: don't penalise on decay
+        edge_time = anchor
     elif es == MINUS_INFINITY:
         edge_time = ee
     elif ee == INFINITY:
         edge_time = es
     else:
-        mid = es + (ee - es) / 2
-        edge_time = mid
+        edge_time = es + (ee - es) / 2
     return temporal_decay_score(anchor, edge_time, alpha)
 
 
@@ -490,17 +552,6 @@ def _edge_start_proximity(
     anchor: datetime | None,
     alpha: float,
 ) -> float:
-    """Decay on ``|t_valid_start − anchor|``.
-
-    For POINT_IN_TIME "joined / became / appointed in X" questions, the
-    intended answer is an edge whose validity *started* at the anchor —
-    not one that merely contains it. This score lets the ranker prefer
-    "joined in 1908" (start = 1908) over "was member 1900–1915" (start
-    far from the anchor) even though both contain the anchor.
-
-    Edges with an UNKNOWN start get ``0.0`` so they cannot outrank a
-    well-anchored edge on this dimension.
-    """
     if anchor is None:
         return 0.0
     es, _ = _edge_bounds(edge)
@@ -512,22 +563,10 @@ def _edge_start_proximity(
 def _rank_primary(
     edges: list[dict[str, Any]],
     anchor: datetime | None,
-    valid_range: tuple[datetime, datetime] | None,  # kept for back-compat
+    valid_range: tuple[datetime, datetime] | None,  # noqa: ARG001 — kept for back-compat
     alpha: float,
     qtype: str = "POINT_IN_TIME",
 ) -> list[dict[str, Any]]:
-    """Sort PRIMARY edges by the priority list documented at module top.
-
-    Priority (all descending):
-      1. edge interval contains the anchor (was the fact true *at* the anchor?)
-      2. (POINT_IN_TIME only) start proximity — edges whose ``t_valid_start``
-         is close to the anchor beat edges that merely contain it, so
-         "joined in 1908" outranks "was member during 1900–1915".
-      3. specificity (narrower interval beats a generic 0001 → 9999 one)
-      4. temporal decay (edge midpoint closer to the anchor)
-      5. reliability (confidence × log(1+support_count))
-    """
-    del valid_range  # unused, retained for API compatibility
     point_in_time = (qtype or "POINT_IN_TIME").upper() == "POINT_IN_TIME"
 
     def _key(edge: dict[str, Any]) -> tuple[float, ...]:
@@ -548,21 +587,12 @@ def _rank_background(
     anchor: datetime | None,
     alpha: float,
 ) -> list[dict[str, Any]]:
-    """Sort BACKGROUND edges by decay then reliability.
-
-    Background edges are out-of-window, so specificity / containment
-    don't apply. Closer (in time) and more reliable beats farther and
-    weaker. Generic 0001→9999 edges retain a neutral decay so they can
-    still surface when nothing else exists.
-    """
     def _key(edge: dict[str, Any]) -> tuple[float, float]:
         return (_edge_decay(edge, anchor, alpha), _edge_reliability(edge))
-
     return sorted(edges, key=_key, reverse=True)
 
 
 def _strip_embeddings(edge: dict[str, Any]) -> dict[str, Any]:
-    """Drop heavy embedding fields before keeping the edge in memory."""
     return {k: v for k, v in edge.items() if not k.endswith("_embedding")}
 
 
@@ -576,25 +606,11 @@ async def local_temporal_search(
     primary_limit: int = 30,
     background_limit: int = 10,
 ) -> dict[str, Any]:
-    """Run the as-of subgraph retrieval for a single sub-query.
+    """As-of subgraph retrieval for a single sub-query.
 
-    Returns::
-
-        {
-          "sub_query": <input sub_query>,
-          "seeds": [...],
-          "valid_at": datetime | None,
-          "valid_range": (datetime, datetime) | None,
-          "anchor": datetime | None,
-          "edges": [...],            # PRIMARY (in-window), ranked
-          "background_edges": [...], # out-of-window context
-        }
-
-    Stage A fetches in-window edges only (``valid_at`` /
-    ``valid_range`` constraint + ``t_tx_end = INFINITY``). If Stage A
-    returns nothing — or no seeds resolved — Stage B widens the search
-    to all currently-believed edges around the seeds, and the rank pulls
-    the most temporally-relevant ones into the primary bucket.
+    Only used in the refusal-recovery branch of the new pipeline. The
+    PRIMARY / BACKGROUND distinction is kept because the recovery prompt
+    consumes that exact rendering.
     """
     from graphrag.bt_graphrag.neo4j_store import (
         get_active_edges,
@@ -617,8 +633,6 @@ async def local_temporal_search(
     }
 
     if not seed_titles:
-        # No seed entities: scan currently-active edges at the requested
-        # time so the LLM can still respond "no record around <X>".
         edges = await get_active_edges(
             session, at_time=valid_at if valid_at is not None else None,
         )
@@ -626,8 +640,6 @@ async def local_temporal_search(
         result["edges"] = _rank_primary(edges, anchor, valid_range, alpha, qtype)[:primary_limit]
         return result
 
-    # Stage A: strict in-window retrieval. We ask for a generous
-    # over-fetch so the Python rerank has material to work with.
     over_fetch = max(primary_limit * 4, 80)
     primary_sub: dict[str, Any] = {"edges": []}
     if valid_at is not None or valid_range is not None:
@@ -637,15 +649,12 @@ async def local_temporal_search(
             k_hop=k_hop,
             valid_at=valid_at,
             valid_range=valid_range,
-            tx_at=None,  # t_tx_end = INFINITY (currently-believed)
+            tx_at=None,
             include_disputed=True,
             limit=over_fetch,
         )
     primary_edges = [_strip_embeddings(e) for e in primary_sub.get("edges", [])]
 
-    # Stage B: widen — all currently-believed edges around the seeds,
-    # regardless of validity. Used both as background for the LLM and as
-    # the fallback pool when Stage A is empty.
     wide_sub = await get_subgraph_around_entities(
         session,
         entity_titles=seed_titles,
@@ -659,9 +668,6 @@ async def local_temporal_search(
     wide_edges = [_strip_embeddings(e) for e in wide_sub.get("edges", [])]
 
     if primary_edges:
-        # We have in-window edges. Rank them; the BACKGROUND bucket gets
-        # whatever wide edges are NOT in the primary bucket (by id, or
-        # by tuple shape as a fallback).
         primary_edges = _rank_primary(primary_edges, anchor, valid_range, alpha, qtype)
         prim_ids = {e.get("id") for e in primary_edges if e.get("id")}
         prim_keys = {
@@ -682,10 +688,6 @@ async def local_temporal_search(
         result["background_edges"] = bg[:background_limit]
         return result
 
-    # Stage A empty: promote the most temporally-relevant wide edges as
-    # primary so the LLM has *something* to answer from. The rest stays
-    # as background. Mark each promoted edge so the prompt can warn the
-    # LLM that the window did not actually overlap.
     ranked = _rank_background(wide_edges, anchor, alpha)
     promoted = ranked[:primary_limit]
     for e in promoted:
@@ -695,7 +697,6 @@ async def local_temporal_search(
     return result
 
 
-# Thesis name kept as a thin wrapper; older callers used this signature.
 async def retrieve_temporal_subgraph(
     session: "AsyncSession",
     sub_query: dict[str, Any],
@@ -718,12 +719,11 @@ async def retrieve_temporal_subgraph(
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Dispute weighting
+# Step 5: Dispute weighting (kept for the legacy dispute_resolution_search)
 # ---------------------------------------------------------------------------
 
 
 def _dispute_score(edge: dict[str, Any], query_time: datetime) -> float:
-    """``confidence × log(1+support_count) × recency-of-belief``."""
     rel = _edge_reliability(edge)
     tx_start_dt = _parse_iso_date(edge.get("t_tx_start"))
     if tx_start_dt is None:
@@ -738,19 +738,11 @@ def rank_disputed_edges(
     edges: list[dict[str, Any]],
     query_time: datetime,
 ) -> list[dict[str, Any]]:
-    """Annotate ``disputed`` edges with ``_dispute_score`` and re-sort.
-
-    Non-disputed edges keep their relative order. Disputed edges are
-    sorted by score descending. The annotated list is the same edges
-    re-ordered: disputed ones first (highest-score first), then the
-    non-disputed in their original order.
-    """
     for edge in edges:
         if str(edge.get("status", "")).lower() == "disputed":
             edge["_dispute_score"] = _dispute_score(edge, query_time)
         else:
             edge["_dispute_score"] = None
-
     disputed = [e for e in edges if e.get("_dispute_score") is not None]
     others = [e for e in edges if e.get("_dispute_score") is None]
     disputed.sort(key=lambda e: e.get("_dispute_score") or 0.0, reverse=True)
@@ -758,12 +750,43 @@ def rank_disputed_edges(
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Format edges + synthesise the answer
+# Step 6: Refusal detection (shared with the recovery branch)
+# ---------------------------------------------------------------------------
+
+
+_REFUSAL_RE = re.compile(
+    r"(no (record|information|data|specific(ally)?|specified|known|details|"
+    r"direct (information|evidence)|mention|indication|evidence|sign)|"
+    r"not (specified|provided|available|present|directly|in (the|this)|"
+    r"explicitly|recorded|mentioned|listed|stated|found|clear|known|"
+    r"indicated|documented|reported)|"
+    r"did not (hold|join|belong|play|work|attend|live|specify|appear|have|"
+    r"serve|study|teach|lead|run|manage|coach|sign|become)|"
+    r"there is no|there's no|"
+    r"information.*missing|cannot be (determined|confirmed|identified|"
+    r"verified|established|ascertained)|"
+    r"unable to (determine|confirm|identify|verify|find)|"
+    r"data does not (provide|specify|contain|include|mention|indicate|"
+    r"show|state|reveal)|"
+    r"according to the (provided|available|given) (data|information|sources)|"
+    r"based on the (provided|available|given) (data|information|sources)|"
+    r"fails to (mention|specify|provide|include|indicate)|"
+    r"is not (mentioned|specified|provided|recorded|listed|documented|"
+    r"detailed|available))",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    return bool(_REFUSAL_RE.search(text or ""))
+
+
+# ---------------------------------------------------------------------------
+# Step 7: Edge formatting (used in the refusal-recovery prompt)
 # ---------------------------------------------------------------------------
 
 
 def _format_edge_line(edge: dict[str, Any]) -> str:
-    """Render a single edge as one Markdown-ish bullet for the LLM."""
     src = edge.get("source") or edge.get("source_title") or "?"
     tgt = edge.get("target") or edge.get("target_title") or "?"
     rel = edge.get("relation_type") or edge.get("type") or "RELATED_TO"
@@ -807,7 +830,6 @@ def _format_sub_result_block(
     max_primary: int,
     max_background: int,
 ) -> str:
-    """Render one sub-query block with PRIMARY and BACKGROUND sections."""
     lines = [f"Sub-query: {sub_query.get('sub_query', '')}"]
     qtype = sub_query.get("query_type", "POINT_IN_TIME")
     t_start = sub_query.get("t_start", "?")
@@ -836,9 +858,7 @@ def _format_sub_result_block(
     if background and max_background > 0:
         lines.append("")
         lines.append(
-            "BACKGROUND edges (out of window — use only to disambiguate "
-            "entities or as a last-resort tiebreak; never as the primary "
-            "source of the answer):"
+            "BACKGROUND edges (out of window — disambiguation only):"
         )
         lines.extend(_format_edge_line(e) for e in background[:max_background])
         if len(background) > max_background:
@@ -853,16 +873,12 @@ def format_subgraph_for_llm(
     sub_query: dict[str, Any],
     edges: list[dict[str, Any]],
     max_edges: int,
-    valid_at: datetime | None = None,
-    valid_range: tuple[datetime, datetime] | None = None,
+    valid_at: datetime | None = None,  # noqa: ARG001
+    valid_range: tuple[datetime, datetime] | None = None,  # noqa: ARG001
     background_edges: list[dict[str, Any]] | None = None,
     max_background: int = 10,
 ) -> str:
-    """Backwards-compatible wrapper for callers that pass a single list.
-
-    New callers should use ``_format_sub_result_block`` directly with
-    explicit PRIMARY / BACKGROUND lists.
-    """
+    """Backwards-compatible wrapper used by some legacy callers."""
     return _format_sub_result_block(
         sub_query=sub_query,
         primary=edges,
@@ -872,105 +888,157 @@ def format_subgraph_for_llm(
     )
 
 
-def _format_baseline_block(baseline_evidence: str | None) -> str:
-    """Render the optional BASELINE EVIDENCE block for the synthesis prompt.
-
-    ``baseline_evidence`` is a short text-grounded answer produced by a
-    non-temporal retriever (e.g. vanilla local_search) — see the
-    ``baseline_provider`` plumbing in ``temporal_query_pipeline``. We
-    render it as a clearly-delimited block so the LLM can apply the
-    cross-check rules in the prompt's instructions section.
-    """
-    if not baseline_evidence:
-        return ""
-    text = baseline_evidence.strip()
-    if not text:
-        return ""
-    return (
-        "BASELINE EVIDENCE (text-grounded answer from non-temporal "
-        "retrieval — use as a cross-check on PRIMARY; see instructions):\n"
-        f"{text}\n\n"
-    )
+# ---------------------------------------------------------------------------
+# Step 8: Sub-answer synthesis (compound queries only)
+# ---------------------------------------------------------------------------
 
 
-async def synthesize_temporal_answer(
+def _format_subanswers_block(sub_results: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for i, sr in enumerate(sub_results, start=1):
+        sq = sr.get("sub_query") or {}
+        qt = sq.get("query_type", "POINT_IN_TIME")
+        ts, te = sq.get("t_start", "?"), sq.get("t_end", "?")
+        text = (sq.get("sub_query") or "").strip()
+        answer = (sr.get("answer") or "").strip() or "(no answer)"
+        seeds = ", ".join(
+            s.get("title", "?") for s in (sr.get("seeds") or [])[:5]
+        ) or "(no seeds resolved)"
+        lines.append(
+            f"### Sub-question {i}\n"
+            f"Window: {qt}  [{ts} → {te}]\n"
+            f"Text: {text}\n"
+            f"Seed entities biased into retrieval: {seeds}\n"
+            f"Sub-answer: {answer}\n"
+        )
+    return "\n".join(lines)
+
+
+async def _synthesize_subanswers(
     query: str,
     sub_results: list[dict[str, Any]],
     model: "LLMCompletion",
-    max_edges_per_sub: int = 30,
-    max_background_per_sub: int = 10,
-    community_reports: list[dict[str, Any]] | None = None,
-    community_max_chars_per_report: int = 1500,
-    baseline_evidence: str | None = None,
 ) -> str:
-    """Render each sub-query as a block and ask the LLM for one answer.
-
-    Communities, when supplied, are prepended as background context
-    (DRIFT-style primer). The orchestrator decides whether to include
-    them at all.
-
-    ``baseline_evidence`` is an optional text-grounded answer from a
-    non-temporal retriever (e.g. vanilla local_search). When provided,
-    it is rendered as a third bucket the prompt's instructions teach
-    the LLM to cross-check against PRIMARY — the goal is to recover
-    refusals and correct wrong-picks driven by noisy date extraction.
-    """
     from graphrag_llm.utils import CompletionMessagesBuilder
 
-    from graphrag.bt_graphrag.temporal_communities import (
-        format_community_reports_for_llm,
+    prompt = TEMPORAL_SUBANSWER_SYNTHESIS_PROMPT.format(
+        query=query,
+        sub_answers_block=_format_subanswers_block(sub_results),
     )
+    messages = CompletionMessagesBuilder().add_user_message(prompt).build()
+    try:
+        response = await model.completion_async(messages=messages)
+        return (getattr(response, "content", "") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Sub-answer synthesis failed: %s", exc)
+        # Fall back to the first non-empty sub-answer so we never return ""
+        for sr in sub_results:
+            ans = (sr.get("answer") or "").strip()
+            if ans:
+                return ans
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Step 9: Refusal recovery via bitemporal graph evidence
+# ---------------------------------------------------------------------------
+
+
+async def _gather_graph_evidence(
+    sub_results: list[dict[str, Any]],
+    driver: "AsyncDriver",
+    config: BTGraphRAGConfig,
+    query_time: datetime,
+    k_hop: int = 1,
+    primary_limit: int = 12,
+    background_limit: int = 8,
+) -> list[dict[str, Any]]:
+    """For each sub-query, run as-of retrieval on the graph using the
+    seeds that the local_search call already resolved. Returns the same
+    shape ``local_temporal_search`` does, one dict per sub-query.
+    """
+    out: list[dict[str, Any]] = []
+    for sr in sub_results:
+        sq = sr.get("sub_query") or {}
+        seeds = sr.get("seeds") or []
+        try:
+            async with driver.session(database=config.neo4j_database) as session:
+                graph_sub = await local_temporal_search(
+                    session=session,
+                    sub_query=sq,
+                    seed_entities=seeds,
+                    config=config,
+                    query_time=query_time,
+                    k_hop=k_hop,
+                    primary_limit=primary_limit,
+                    background_limit=background_limit,
+                )
+                graph_sub["edges"] = rank_disputed_edges(graph_sub["edges"], query_time)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("graph evidence retrieval failed: %s", exc)
+            graph_sub = {
+                "sub_query": sq,
+                "seeds": seeds,
+                "edges": [],
+                "background_edges": [],
+            }
+        out.append(graph_sub)
+    return out
+
+
+async def _refusal_recovery_with_graph(
+    query: str,
+    prior_answer: str,
+    graph_evidence: list[dict[str, Any]],
+    model: "LLMCompletion",
+    max_edges_per_sub: int = 12,
+    max_background_per_sub: int = 8,
+) -> str:
+    from graphrag_llm.utils import CompletionMessagesBuilder
 
     blocks = [
         _format_sub_result_block(
-            sub_query=r.get("sub_query", {}),
-            primary=r.get("edges", []),
-            background=r.get("background_edges", []),
+            sub_query=g.get("sub_query", {}),
+            primary=g.get("edges", []),
+            background=g.get("background_edges", []),
             max_primary=max_edges_per_sub,
             max_background=max_background_per_sub,
         )
-        for r in sub_results
+        for g in graph_evidence
     ]
-    sub_results_text = "\n\n".join(blocks) if blocks else "(no context retrieved)"
+    sub_evidence = "\n\n".join(blocks) if blocks else "(no graph evidence retrieved)"
 
-    community_block = ""
-    if community_reports:
-        rendered = format_community_reports_for_llm(
-            community_reports,
-            max_chars_per_report=community_max_chars_per_report,
-        )
-        if rendered:
-            community_block = (
-                "Community reports (use only to disambiguate when PRIMARY "
-                "edges are absent or ambiguous):\n"
-                f"{rendered}\n\n"
-            )
-
-    baseline_block = _format_baseline_block(baseline_evidence)
-
-    prompt = TEMPORAL_ANSWER_SYNTHESIS_PROMPT.format(
+    prompt = TEMPORAL_REFUSAL_RECOVERY_PROMPT.format(
         query=query,
-        sub_results=sub_results_text,
-        community_context=community_block,
-        baseline_block=baseline_block,
+        prior_answer=(prior_answer or "")[:600],
+        sub_evidence_block=sub_evidence,
     )
     messages = CompletionMessagesBuilder().add_user_message(prompt).build()
-    response = await model.completion_async(messages=messages)
-    return (getattr(response, "content", "") or "").strip()
-
-
-# Legacy alias preserved for older callers.
-async def synthesize_temporal_answers(
-    query: str,
-    sub_results: list[dict[str, Any]],
-    model: "LLMCompletion",
-) -> str:
-    return await synthesize_temporal_answer(query, sub_results, model)
+    try:
+        response = await model.completion_async(messages=messages)
+        return (getattr(response, "content", "") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Refusal recovery LLM call failed: %s", exc)
+        return prior_answer
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Step 10: Orchestrator — temporal helpers around local_search
 # ---------------------------------------------------------------------------
+
+
+def _empty_pipeline_result(
+    query: str, query_time: datetime, reason: str = "no model"
+) -> dict[str, Any]:
+    return {
+        "answer": "",
+        "sub_queries": [],
+        "edges_used": 0,
+        "query_time": query_time.isoformat(),
+        "analysis": {"entities": [], "sub_queries": [], "error": reason},
+        "community_reports": [],
+        "baseline_evidence": None,
+    }
 
 
 async def temporal_query_pipeline(
@@ -980,113 +1048,161 @@ async def temporal_query_pipeline(
     model: "LLMCompletion | None" = None,
     embedding_model: "LLMEmbedding | None" = None,
     query_time: datetime | None = None,
-    k_hop: int = 1,  # noqa: ARG001 — kept for signature back-compat
-    max_edges_per_sub: int = 30,  # noqa: ARG001
-    max_background_per_sub: int = 10,  # noqa: ARG001
-    max_total_edges: int = 200,  # noqa: ARG001
+    local_search_provider: LocalSearchProvider | None = None,
+    k_hop: int = 1,
+    max_edges_per_sub: int = 12,  # noqa: ARG001 — kept for signature back-compat
+    max_background_per_sub: int = 8,  # noqa: ARG001 — same
+    semantic_top_k: int = 0,  # noqa: ARG001 — removed channel
+    community_top_k: int = 0,  # noqa: ARG001 — removed channel
+    max_total_edges: int = 200,  # noqa: ARG001 — kept for signature back-compat
     baseline_provider: Callable[[str], Awaitable[str | None]] | None = None,
-    max_agent_iters: int = 8,
+    max_agent_iters: int = 5,  # noqa: ARG001 — kept for signature back-compat
 ) -> dict[str, Any]:
-    """Run the agent-based BT-GraphRAG temporal query pipeline.
+    """Temporal helper around graphrag's ``local_search``.
 
-    The model is given a toolbox (resolve_entities, time_window_search,
-    wide_search, text_search, final_answer) and drives its own search
-    loop until it decides it has enough to answer (or hits
-    ``max_agent_iters``).
+    Pipeline:
 
-    Returns the same dict shape the legacy pipeline produced so callers
-    (eg. ``runners.bt_answer``) keep working unchanged. The agent trace
-    is surfaced under ``analysis['agent_trace']`` and the LLM-collected
-    edges are exposed via a single synthetic sub_result entry — the
-    old PRIMARY/BACKGROUND buckets are no longer meaningful in the
-    agent model and we keep the field only for inspection.
+      1. Decompose the question into sub-queries with explicit windows
+         (analyze_and_decompose_query). For most TimeQA-style questions
+         this yields a single sub-query.
+      2. Per sub-query, *in parallel*:
+           a. Resolve seed entities against the bitemporal graph
+              (resolve_seed_entities).
+           b. Reformulate the sub-query text with the window inline.
+           c. Call ``local_search_provider`` with the resolved titles as
+              ``include_entity_names`` so graphrag's context builder
+              biases entity-mapping toward time-relevant candidates.
+      3. If a single sub-answer was produced, return it directly.
+         If multiple were produced, run a small synthesis LLM call.
+      4. If the final answer hedges / refuses, re-run synthesis using
+         as-of evidence from the bitemporal graph
+         (refusal-recovery branch).
+
+    ``baseline_provider`` is accepted for signature back-compat with the
+    previous pipeline; when ``local_search_provider`` is missing, it is
+    used as a fallback (called once with the original query) so the
+    pipeline still produces *something* during partial wiring.
     """
-    from graphrag.bt_graphrag.temporal_agent import (
-        AgentContext,
-        run_temporal_agent,
-    )
-
     query_time = query_time or utcnow()
 
     if model is None:
-        # Agent loop needs an LLM; fall back to an empty answer so
-        # callers still get a well-shaped dict.
-        return {
-            "answer": "",
-            "sub_queries": [],
-            "edges_used": 0,
-            "query_time": query_time.isoformat(),
-            "analysis": {"agent_trace": [], "iterations": 0},
-            "community_reports": [],
-            "baseline_evidence": None,
-        }
+        return _empty_pipeline_result(query, query_time, reason="no model")
 
-    ctx = AgentContext(
-        driver=driver,
-        config=config,
-        model=model,
-        embedding_model=embedding_model,
-        query_time=query_time,
-        baseline_provider=baseline_provider,
+    # ── Stage 1: decompose ────────────────────────────────────────────
+    analysis = await analyze_and_decompose_query(query, model, query_time)
+    sub_queries = analysis.get("sub_queries") or []
+    global_entities = analysis.get("entities") or []
+    if not sub_queries:
+        sub_queries = _heuristic_query_analysis(query, query_time)["sub_queries"]
+
+    seed_top_k = int(getattr(config, "query_seed_top_k", 3) or 3)
+    seed_threshold = float(
+        getattr(config, "query_seed_embedding_threshold", 0.55) or 0.55
+    )
+    seed_prefer_title = bool(
+        getattr(config, "query_seed_prefer_title_match", True)
     )
 
-    try:
-        agent_result = await run_temporal_agent(
-            query=query,
-            ctx=ctx,
-            max_iters=max_agent_iters,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("temporal agent failed: %s", exc)
+    # Resolve the provider once: if local_search_provider is missing,
+    # fall back to the legacy baseline_provider wrapper.
+    provider: LocalSearchProvider | None = local_search_provider
+    if provider is None and baseline_provider is not None:
+        async def _provider_compat(
+            q: str, *, include_entity_names: list[str] | None = None,
+        ) -> str | None:
+            del include_entity_names  # legacy provider cannot accept seeds
+            return await baseline_provider(q)
+        provider = _provider_compat
+
+    # ── Stage 2: per-sub-query retrieval (parallel) ──────────────────
+    async def _process_one(sq: dict[str, Any]) -> dict[str, Any]:
+        seed_names = sq.get("entities") or global_entities or []
+        seeds: list[dict[str, Any]] = []
+        try:
+            async with driver.session(database=config.neo4j_database) as session:
+                seeds = await resolve_seed_entities(
+                    session, seed_names,
+                    embedding_model=embedding_model,
+                    top_k=seed_top_k,
+                    score_threshold=seed_threshold,
+                    prefer_title_match=seed_prefer_title,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("seed resolution failed for %r: %s", seed_names, exc)
+
+        rendered = _render_subquery_with_window(sq)
+        include_names = [s.get("title") for s in seeds if s.get("title")]
+
+        answer: str | None = None
+        if provider is not None:
+            try:
+                answer = await provider(
+                    rendered, include_entity_names=include_names or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("local_search_provider failed: %s", exc)
+                answer = None
+
         return {
-            "answer": "",
-            "sub_queries": [],
-            "edges_used": 0,
-            "query_time": query_time.isoformat(),
-            "analysis": {"agent_trace": [], "iterations": 0, "error": str(exc)},
-            "community_reports": [],
-            "baseline_evidence": None,
-        }
-
-    answer = agent_result.get("answer", "") or ""
-    trace = agent_result.get("trace", []) or []
-    edges = agent_result.get("edges_collected", []) or []
-    baseline_evidence = agent_result.get("baseline_answer")
-    iterations = agent_result.get("iterations", 0)
-    ts_count = agent_result.get("text_search_count", 0)
-    ts_empty = agent_result.get("text_search_empty", 0)
-
-    sub_results = [
-        {
-            "sub_query": {"sub_query": query, "query_type": "AGENT"},
-            "edges": edges,
+            "sub_query": sq,
+            "seeds": seeds,
+            "rendered_query": rendered,
+            "include_entity_names": include_names,
+            "answer": (answer or "").strip(),
+            "edges": [],            # populated later if refusal recovery runs
             "background_edges": [],
-            "seeds": [],
-            "valid_at": None,
-            "valid_range": None,
-            "anchor": None,
-            "entities": [],
         }
-    ] if edges else []
 
+    sub_results: list[dict[str, Any]] = list(
+        await asyncio.gather(*(_process_one(sq) for sq in sub_queries))
+    )
+
+    # ── Stage 3: synthesis ────────────────────────────────────────────
+    if len(sub_results) == 1:
+        final = sub_results[0].get("answer", "")
+    else:
+        final = await _synthesize_subanswers(query, sub_results, model)
+
+    # ── Stage 4: refusal recovery ─────────────────────────────────────
+    retried = False
+    needs_recovery = (not final.strip()) or _looks_like_refusal(final)
+    if needs_recovery:
+        retried = True
+        graph_evidence = await _gather_graph_evidence(
+            sub_results=sub_results,
+            driver=driver,
+            config=config,
+            query_time=query_time,
+            k_hop=k_hop,
+        )
+        # Pipe the graph evidence back into the sub_results so the
+        # caller can serialise it for telemetry.
+        for sr, ge in zip(sub_results, graph_evidence):
+            sr["edges"] = ge.get("edges", [])
+            sr["background_edges"] = ge.get("background_edges", [])
+        final = await _refusal_recovery_with_graph(
+            query=query,
+            prior_answer=final,
+            graph_evidence=graph_evidence,
+            model=model,
+        )
+
+    edges_used = sum(len(sr.get("edges", [])) for sr in sub_results)
+    analysis_out = dict(analysis)
+    analysis_out["refusal_retry"] = retried
     return {
-        "answer": answer,
+        "answer": final,
         "sub_queries": sub_results,
-        "edges_used": len(edges),
+        "edges_used": edges_used,
         "query_time": query_time.isoformat(),
-        "analysis": {
-            "agent_trace": trace,
-            "iterations": iterations,
-            "text_search_count": ts_count,
-            "text_search_empty": ts_empty,
-        },
+        "analysis": analysis_out,
         "community_reports": [],
-        "baseline_evidence": baseline_evidence,
+        "baseline_evidence": None,
     }
 
 
 # ---------------------------------------------------------------------------
-# Legacy entry points
+# Legacy entry points (kept stable; only the orchestrator was rewritten)
 # ---------------------------------------------------------------------------
 
 
@@ -1096,11 +1212,7 @@ async def temporal_audit_search(
     config: BTGraphRAGConfig,
     driver: "AsyncDriver",
 ) -> dict[str, Any]:
-    """Temporal Audit: 'What did the system believe at time T?'.
-
-    Queries by transaction-time to reconstruct historical system state.
-    Not part of the question-answering pipeline.
-    """
+    """Temporal Audit: 'What did the system believe at time T?'."""
     from graphrag.bt_graphrag.neo4j_store import get_system_state_at
 
     async with driver.session(database=config.neo4j_database) as session:
@@ -1120,13 +1232,7 @@ async def dispute_resolution_search(
     model: "LLMCompletion | None" = None,
     entity_title: str | None = None,
 ) -> dict[str, Any]:
-    """Surface ``disputed`` edges and (optionally) ask the LLM to weight them.
-
-    Implements the disambiguation-only mode that the thesis names as
-    ``dispute_resolution_search``. The dispute weighting is exposed as
-    ``rank_disputed_edges`` and is also applied inside the main pipeline
-    over the PRIMARY bucket.
-    """
+    """Surface ``disputed`` edges and (optionally) ask the LLM to weight them."""
     from graphrag.bt_graphrag.neo4j_store import get_disputed_edges
 
     async with driver.session(database=config.neo4j_database) as session:
@@ -1165,16 +1271,7 @@ async def temporal_search(
     query_time: datetime | None = None,
     search_mode: str = "local",
 ) -> dict[str, Any]:
-    """Unified entry — the thesis-named top-level dispatcher.
-
-    ``search_mode`` switches between the three modes described in
-    Implementation.tex, sec. 6b:
-
-      - ``local`` (default): full five-step pipeline
-        (``temporal_query_pipeline``).
-      - ``audit``: ``temporal_audit_search`` over transaction-time.
-      - ``dispute``: ``dispute_resolution_search`` over disputed edges.
-    """
+    """Unified entry — kept as the thesis-named top-level dispatcher."""
     if search_mode == "audit":
         return await temporal_audit_search(
             query, query_time or utcnow(), config, driver,

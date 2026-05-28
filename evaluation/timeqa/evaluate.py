@@ -25,9 +25,11 @@ import json
 import logging
 import re
 import shutil
+import statistics
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,7 @@ from evaluation.core.metrics import (
     truthfulness,
 )
 from evaluation.core.runners import BTConfig, VanillaConfig, bt_answer, vanilla_answer
+from evaluation.core.token_tracker import active_system, get_tracker
 from evaluation.timeqa.load import main as load_main
 from scripts.wipe_neo4j_dbs import DEFAULT_DBS as WIPE_DEFAULT_DBS
 from scripts.wipe_neo4j_dbs import main as wipe_neo4j_main
@@ -705,6 +708,25 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "inside report.json."
         ),
     )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help=(
+            "Run the query phase K times. When K > 1, outputs are written under "
+            "<out>/multirun/<timestamp>/run_<k>/ and a summary.json with per-run "
+            "and mean metrics + LLM token usage is written alongside."
+        ),
+    )
+    parser.add_argument(
+        "--multirun-tag",
+        type=str,
+        default="",
+        help=(
+            "Optional name for the multirun directory (replaces the auto "
+            "timestamp). Output goes to <out>/multirun/<multirun-tag>/."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -804,6 +826,7 @@ async def _amain(args: argparse.Namespace) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     tag = (args.tag or "").strip()
+    runs = max(1, int(getattr(args, "runs", 1) or 1))
 
     # Share a single Neo4j driver across all BT-GraphRAG calls. Each driver
     # owns its own connection pool, so creating one per question at
@@ -833,14 +856,61 @@ async def _amain(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not create shared Neo4j driver: %s", exc)
 
+    # Install the litellm token-tracker (no-op if already installed). Captures
+    # prompt/completion tokens per system across both BT-GraphRAG and vanilla.
+    tracker = get_tracker()
+    multirun_dir: Path | None = None
+    if runs > 1:
+        multirun_label = (args.multirun_tag or "").strip() or datetime.now().strftime(
+            "%Y%m%d_%H%M%S"
+        )
+        multirun_dir = args.out / "multirun" / multirun_label
+        multirun_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("=" * 72)
+        logger.info("[multirun] %d runs → %s", runs, multirun_dir)
+        logger.info("=" * 72)
+
+    per_run_records: list[dict[str, Any]] = []
     try:
-        reports: dict[str, dict[str, Any]] = {}
-        for system in args.systems:
-            reports[system] = await _run_system(
-                system, records, args.out, args.dataset, opts, tag
-            )
-        if len(args.systems) >= 2:
-            _write_comparison(args.out, reports, tag)
+        for k in range(1, runs + 1):
+            run_out = (multirun_dir / f"run_{k}") if multirun_dir else args.out
+            run_out.mkdir(parents=True, exist_ok=True)
+            if runs > 1:
+                logger.info("=" * 72)
+                logger.info("[multirun] run %d/%d → %s", k, runs, run_out)
+                logger.info("=" * 72)
+
+            tracker.reset()
+            reports: dict[str, dict[str, Any]] = {}
+            tokens_per_system: dict[str, dict[str, Any]] = {}
+            for system in args.systems:
+                with active_system(system):
+                    reports[system] = await _run_system(
+                        system, records, run_out, args.dataset, opts, tag
+                    )
+                snap = tracker.snapshot().get(system, {})
+                tokens_per_system[system] = snap
+                # Persist tokens alongside the per-system report.
+                reports[system]["llm_tokens"] = snap
+                sys_dir = _system_report_dir(run_out, system, tag, reports[system])
+                if sys_dir is not None:
+                    (sys_dir / "report.json").write_text(
+                        json.dumps(reports[system], ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+
+            if len(args.systems) >= 2:
+                _write_comparison(run_out, reports, tag)
+
+            per_run_records.append({
+                "run": k,
+                "out_dir": str(run_out),
+                "reports": reports,
+                "tokens": tokens_per_system,
+            })
+
+        if multirun_dir is not None:
+            _write_multirun_summary(multirun_dir, args.systems, per_run_records, tag)
     finally:
         if shared_bt_driver is not None:
             try:
@@ -849,6 +919,126 @@ async def _amain(args: argparse.Namespace) -> int:
                 pass
 
     return 0
+
+
+def _system_report_dir(
+    out_dir: Path, system: str, tag: str, report: dict[str, Any]
+) -> Path | None:
+    """Recompute the directory _run_system wrote into so we can append tokens."""
+    model_raw = (report.get("model") or "unknown").strip() or "unknown"
+    model_dir = _safe_model_name(model_raw)
+    sys_dir = out_dir / system / "timeqa"
+    if tag:
+        sys_dir = sys_dir / tag
+    sys_dir = sys_dir / model_dir
+    return sys_dir if sys_dir.is_dir() else None
+
+
+_SUMMARY_METRIC_KEYS = (
+    "exact_match", "f1", "em_native", "f1_native",
+    "judge_correct", "judge_incorrect",
+)
+_SUMMARY_TRUTH_KEYS = (
+    "accuracy", "correct_rate", "incorrect_rate",
+)
+_SUMMARY_TOKEN_KEYS = (
+    "calls", "prompt_tokens", "completion_tokens", "total_tokens",
+)
+
+
+def _mean_std(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0}
+    return {
+        "mean": float(statistics.fmean(values)),
+        "std": float(statistics.pstdev(values)) if len(values) > 1 else 0.0,
+        "min": float(min(values)),
+        "max": float(max(values)),
+        "n": len(values),
+    }
+
+
+def _write_multirun_summary(
+    multirun_dir: Path,
+    systems: list[str],
+    runs: list[dict[str, Any]],
+    tag: str,
+) -> None:
+    summary: dict[str, Any] = {
+        "benchmark": "timeqa",
+        "split": "hard",
+        "tag": tag,
+        "num_runs": len(runs),
+        "systems": {},
+        "runs": [
+            {
+                "run": r["run"],
+                "out_dir": r["out_dir"],
+                "reports": {
+                    sys: {
+                        "metrics": rep.get("metrics", {}),
+                        "truthfulness": rep.get("truthfulness", {}),
+                        "elapsed_seconds": rep.get("elapsed_seconds"),
+                        "num_examples": rep.get("num_examples"),
+                        "model": rep.get("model"),
+                        "llm_tokens": rep.get("llm_tokens", {}),
+                    }
+                    for sys, rep in r["reports"].items()
+                },
+            }
+            for r in runs
+        ],
+    }
+
+    for system in systems:
+        metric_series: dict[str, list[float]] = {k: [] for k in _SUMMARY_METRIC_KEYS}
+        truth_series: dict[str, list[float]] = {k: [] for k in _SUMMARY_TRUTH_KEYS}
+        token_series: dict[str, list[float]] = {k: [] for k in _SUMMARY_TOKEN_KEYS}
+        elapsed_series: list[float] = []
+        for r in runs:
+            rep = r["reports"].get(system) or {}
+            m = rep.get("metrics") or {}
+            for k in _SUMMARY_METRIC_KEYS:
+                if k in m and isinstance(m[k], (int, float)):
+                    metric_series[k].append(float(m[k]))
+            t = rep.get("truthfulness") or {}
+            for k in _SUMMARY_TRUTH_KEYS:
+                if k in t and isinstance(t[k], (int, float)):
+                    truth_series[k].append(float(t[k]))
+            tok = r["tokens"].get(system) or {}
+            for k in _SUMMARY_TOKEN_KEYS:
+                if k in tok and isinstance(tok[k], (int, float)):
+                    token_series[k].append(float(tok[k]))
+            if isinstance(rep.get("elapsed_seconds"), (int, float)):
+                elapsed_series.append(float(rep["elapsed_seconds"]))
+
+        summary["systems"][system] = {
+            "metrics_stats": {k: _mean_std(v) for k, v in metric_series.items() if v},
+            "truthfulness_stats": {k: _mean_std(v) for k, v in truth_series.items() if v},
+            "token_stats": {k: _mean_std(v) for k, v in token_series.items() if v},
+            "elapsed_seconds_stats": _mean_std(elapsed_series),
+            "total_tokens_across_runs": int(sum(token_series.get("total_tokens", []))),
+        }
+
+    out_path = multirun_dir / "summary.json"
+    out_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    logger.info("[multirun] wrote %s", out_path)
+    # Also a compact human-readable line per system.
+    for system, stats in summary["systems"].items():
+        m = stats.get("metrics_stats") or {}
+        t = stats.get("truthfulness_stats") or {}
+        tok = stats.get("token_stats") or {}
+        acc = (t.get("accuracy") or {}).get("mean", 0.0)
+        acc_std = (t.get("accuracy") or {}).get("std", 0.0)
+        f1 = (m.get("f1") or {}).get("mean", 0.0)
+        toks = (tok.get("total_tokens") or {}).get("mean", 0.0)
+        logger.info(
+            "[multirun] %s — acc=%.3f±%.3f  f1=%.3f  mean_tokens/run=%.0f  total=%d",
+            system, acc, acc_std, f1, toks,
+            stats.get("total_tokens_across_runs", 0),
+        )
 
 
 _NOISY_LOGGERS = (

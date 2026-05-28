@@ -12,15 +12,43 @@ from evaluation.core.metrics import exact_match, token_f1
 
 logger = logging.getLogger(__name__)
 
-_JUDGE_PROMPT = """You are a strict evaluator of question-answering systems.
+_JUDGE_PROMPT = """You evaluate a candidate answer against a reference for a question-answering benchmark.
 
 Question: {question}
 Reference answer: {gold}
 Candidate answer: {prediction}
 
-Decide whether the candidate answer is:
-  - "correct": semantically matches the reference (paraphrases, alias names, equivalent dates).
-  - "incorrect": anything else — wrong, unrelated, empty, or a refusal / "I don't know".
+Your task is to decide whether the candidate, as a response to the question, names the same entity / value as the reference.
+
+GROUND RULES:
+- Treat the REFERENCE as ground truth. Do NOT contradict it with outside knowledge — if you think the reference is factually wrong, you must still judge against it.
+- Do NOT introduce facts that appear in neither the prediction nor the reference. Compare only what is on the page.
+- The question's date/scope anchor matters only insofar as the reference uses it. Do not penalise the candidate for naming the reference entity even if a side detail (month, exact day, alternate name) differs from the question.
+
+LABEL "correct" WHEN:
+- The candidate names the same entity/value as the reference, allowing for:
+    * paraphrases ("U.S. Senator" vs "Senate"; "Governor of Kentucky" vs "governors")
+    * aliases, abbreviations, full names ("Ajax" vs "AFC Ajax"; "TTC" vs "Toronto Transit Commission")
+    * alternate spellings / transliterations ("Feodorovna" vs "Fedorovna")
+    * adding a country or location qualifier the reference omits (cities/orgs inside the reference's country)
+    * refining the reference with a more specific sub-type (when the question allows it)
+    * sub/super-organization equivalence ONLY when the question's grain leaves them interchangeable; if the question pins a specific sub-unit and the candidate names the parent (or vice versa), that is INCORRECT
+- The candidate names the reference entity AND adds non-contradictory context (extra dates, role detail, related entities) — extra correct information never makes a right answer wrong.
+- For "after T?" questions: the candidate names the reference entity, even if it also mentions a later successor in chronological order. The reference being one item from a sequence does not make a sequence-naming answer wrong.
+- For "before T?" / "in T?" questions: the candidate names the reference entity for the asked time, even if it also gives the predecessor's tenure as context — as long as the reference entity is identified as the one true at T.
+- The candidate hedges linguistically ("reportedly", "likely", "according to sources") but still commits to the reference entity. Hedging without contradiction is still a match.
+
+LABEL "incorrect" WHEN:
+- The candidate names a DIFFERENT primary entity than the reference (and the two are not aliases/paraphrases of each other).
+- The candidate explicitly negates the reference ("X was not Y", "did not hold the position", "no spouse at that time").
+- The candidate refuses or says the information is unknown / unavailable / not in the data, without committing to the reference entity.
+- The candidate is empty.
+- For exclusive-relation questions (spouse, single position, current team) the candidate names a DIFFERENT entity as the active one at the asked time, even if the reference entity appears somewhere else in the answer as a non-active mention.
+
+EDGE CASES:
+- If the candidate names multiple entities and the reference is one of them, label "correct" UNLESS the candidate explicitly designates a different one as THE answer to the asked slot.
+- If the candidate gives a parent/child organisation instead of the exact reference, label "incorrect" when they refer to distinct entities (e.g. parent broadcaster vs specific channel) and "correct" when they are interchangeable for the question's grain.
+- "Late <decade>s" or other time phrases: interpret them as the reference does. If the reference's entity is the candidate's entity and the candidate's dates are consistent with the reference's interpretation, label "correct".
 
 Reply with EXACTLY one line of JSON:
 {{"label": "correct|incorrect", "reason": "<=30 words"}}

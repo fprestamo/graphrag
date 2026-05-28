@@ -1,0 +1,38 @@
+{
+  "benchmark": "timeqa",
+  "split": "hard",
+  "system": "btgraphrag",
+  "dataset": "evaluation/timeqa/data/timeqa.jsonl",
+  "num_examples": 370,
+  "elapsed_seconds": 658.361,
+  "metrics": {
+    "judge_correct": 0.7054054054054054,
+    "judge_incorrect": 0.2945945945945946
+  },
+  "truthfulness": {
+    "total": 370,
+    "accuracy": 0.7054054054054054,
+    "incorrect_rate": 0.2945945945945946
+  },
+  "model": "gpt-4.1-mini",
+  "llm_tokens": {
+    "calls": 1876,
+    "prompt_tokens": 4013513,
+    "completion_tokens": 65207,
+    "total_tokens": 4078720,
+    "by_model": {
+      "gpt-4.1-mini": {
+        "calls": 1136,
+        "prompt_tokens": 4004742,
+        "completion_tokens": 65207,
+        "total_tokens": 4069949
+      },
+      "text-embedding-3-large": {
+        "calls": 740,
+        "prompt_tokens": 8771,
+        "completion_tokens": 0,
+        "total_tokens": 8771
+      }
+    }
+  }
+}

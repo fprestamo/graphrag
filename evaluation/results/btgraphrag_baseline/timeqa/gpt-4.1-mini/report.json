@@ -3,16 +3,36 @@
   "split": "hard",
   "system": "btgraphrag_baseline",
   "dataset": "evaluation/timeqa/data/timeqa.jsonl",
-  "num_examples": 370,
-  "elapsed_seconds": 932.632,
+  "num_examples": 10,
+  "elapsed_seconds": 21.361,
   "metrics": {
-    "judge_correct": 0.6648648648648648,
-    "judge_incorrect": 0.33513513513513515
+    "judge_correct": 0.8,
+    "judge_incorrect": 0.2
   },
   "truthfulness": {
-    "total": 370,
-    "accuracy": 0.6648648648648648,
-    "incorrect_rate": 0.33513513513513515
+    "total": 10,
+    "accuracy": 0.8,
+    "incorrect_rate": 0.2
   },
-  "model": "gpt-4.1-mini"
+  "model": "gpt-4.1-mini",
+  "llm_tokens": {
+    "calls": 28,
+    "prompt_tokens": 60192,
+    "completion_tokens": 757,
+    "total_tokens": 60949,
+    "by_model": {
+      "text-embedding-3-large": {
+        "calls": 10,
+        "prompt_tokens": 170,
+        "completion_tokens": 0,
+        "total_tokens": 170
+      },
+      "gpt-4.1-mini": {
+        "calls": 18,
+        "prompt_tokens": 60022,
+        "completion_tokens": 757,
+        "total_tokens": 60779
+      }
+    }
+  }
 }

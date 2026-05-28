@@ -136,6 +136,11 @@ class AgentContext:
         self.baseline_answer: str | None = None
         self.text_search_count = 0
         self.text_search_empty = 0  # how many TS calls returned empty / null
+        # When text_search returns a non-empty candidate, this is set so the
+        # loop forces the agent to verify with a graph call before it is
+        # allowed to commit to final_answer.
+        self.pending_verification: bool = False
+        self.verification_rejections: int = 0
 
 
 # Each tool is `async def tool(ctx, args) -> str` returning the user-visible
@@ -231,15 +236,45 @@ async def _tool_time_window_search(
             include_disputed=True,
             limit=limit,
         )
-    edges = [
-        {k: v for k, v in e.items() if not k.endswith("_embedding")}
-        for e in sub.get("edges", [])
-    ]
+        edges = [
+            {k: v for k, v in e.items() if not k.endswith("_embedding")}
+            for e in sub.get("edges", [])
+        ]
+        # Auto-expand: a narrow window that returns nothing is the single most
+        # common reason the agent falsely concludes "no record". Drop the
+        # temporal filter behind the scenes and surface those edges so it can
+        # judge them itself, saving one full agent turn.
+        auto_expanded = False
+        if not edges:
+            sub_wide = await get_subgraph_around_entities(
+                session,
+                entity_titles=titles,
+                k_hop=k_hop,
+                valid_at=None,
+                valid_range=None,
+                tx_at=None,
+                include_disputed=True,
+                limit=limit,
+            )
+            edges = [
+                {k: v for k, v in e.items() if not k.endswith("_embedding")}
+                for e in sub_wide.get("edges", [])
+            ]
+            auto_expanded = True
     ctx.collected_edges.extend(edges)
-    header = (
-        f"time_window_search returned {len(edges)} edge(s) for "
-        f"{titles} in window [{t_start.date()} → {t_end.date()}]:"
-    )
+    if auto_expanded:
+        header = (
+            f"time_window_search returned 0 edges for {titles} in window "
+            f"[{t_start.date()} → {t_end.date()}]; AUTO-EXPANDED to full "
+            f"history and found {len(edges)} edge(s). These are NOT filtered "
+            "by the question's window — check each edge's [valid_start → "
+            "valid_end] against the asked date yourself:"
+        )
+    else:
+        header = (
+            f"time_window_search returned {len(edges)} edge(s) for "
+            f"{titles} in window [{t_start.date()} → {t_end.date()}]:"
+        )
     return f"{header}\n{_format_edges(edges, limit)}"
 
 
@@ -342,19 +377,20 @@ async def _tool_text_search(
                 "Make your best guess from the evidence you already have.")
     ctx.text_search_count += 1
     answer = await ctx.baseline_provider(question)
-    if not answer:
-        ctx.text_search_empty += 1
-        # Empty answer is a frequent failure mode of the underlying retriever.
-        # Tell the agent exactly what to do next instead of letting it answer
-        # blindly from the (possibly noisy) graph alone.
+    if not answer or _looks_like_refusal(answer):
+        # Empty or hedging answer — both are frequent failure modes of the
+        # underlying retriever. Don't trigger the verification gate on them.
+        if not answer:
+            ctx.text_search_empty += 1
         remaining = 3 - ctx.text_search_count
         next_tool_hint = (
             "search_edges_by_description with a different phrasing"
             if remaining > 0 else "wide_search"
         )
+        body = answer if answer else "(no answer)"
         return (
-            "(text_search returned no answer for this question.) "
-            "The text retriever sometimes fails silently. "
+            f"(text_search returned an unusable answer: {body[:200]}) "
+            "The text retriever sometimes fails silently or hedges. "
             f"DO NOT answer yet — try {next_tool_hint}, or rephrase the question "
             "and call text_search again. Only fall back to the graph candidate "
             "if all alternatives are exhausted."
@@ -362,7 +398,18 @@ async def _tool_text_search(
     # Keep the first text_search answer as the "baseline_evidence" surface.
     if ctx.baseline_answer is None:
         ctx.baseline_answer = answer
-    return f"text_search returned:\n{answer}"
+    # Mark this candidate as unverified — the loop will refuse to accept a
+    # final_answer until a graph-side tool runs to corroborate it.
+    ctx.pending_verification = True
+    return (
+        f"text_search returned:\n{answer}\n\n"
+        "VERIFY BEFORE ANSWERING: text_search often returns an entity that "
+        "stands in the WRONG relation to the subject (e.g. employer when "
+        "asked about school). You MUST call time_window_search or "
+        "search_edges_by_description to confirm the named entity holds the "
+        "relation the question asks about in the right window, before "
+        "calling final_answer."
+    )
 
 
 async def _tool_final_answer(
@@ -378,6 +425,14 @@ TOOL_DISPATCH: dict[str, Callable[[AgentContext, dict[str, Any]], Awaitable[str]
     "search_edges_by_description": _tool_search_edges_by_description,
     "text_search": _tool_text_search,
     "final_answer": _tool_final_answer,
+}
+
+# Tools that count as "graph-side verification" — running any of them clears
+# the pending_verification flag set by text_search.
+_VERIFICATION_TOOLS = {
+    "time_window_search",
+    "wide_search",
+    "search_edges_by_description",
 }
 
 
@@ -460,12 +515,23 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 # refusal language, not on legitimately-negative facts ("X never married").
 _REFUSAL_RE = re.compile(
     r"(no (record|information|data|specific(ally)?|specified|known|details|"
-    r"direct (information|evidence)|mention)|"
+    r"direct (information|evidence)|mention|indication|evidence|sign)|"
     r"not (specified|provided|available|present|directly|in (the|this)|"
-    r"explicitly|recorded|mentioned|listed|stated|found)|"
-    r"did not (hold|join|belong|play|work|attend|live|specify|appear|have)|"
-    r"there is no|information.*missing|cannot be (determined|confirmed|identified)|"
-    r"data does not (provide|specify|contain|include|mention))",
+    r"explicitly|recorded|mentioned|listed|stated|found|clear|known|"
+    r"indicated|documented|reported)|"
+    r"did not (hold|join|belong|play|work|attend|live|specify|appear|have|"
+    r"serve|attend|study|teach|lead|run|manage|coach|sign|become)|"
+    r"there is no|there's no|"
+    r"information.*missing|cannot be (determined|confirmed|identified|"
+    r"verified|established|ascertained)|"
+    r"unable to (determine|confirm|identify|verify|find)|"
+    r"data does not (provide|specify|contain|include|mention|indicate|"
+    r"show|state|reveal)|"
+    r"according to the (provided|available|given) (data|information|sources)|"
+    r"based on the (provided|available|given) (data|information|sources)|"
+    r"fails to (mention|specify|provide|include|indicate)|"
+    r"is not (mentioned|specified|provided|recorded|listed|documented|"
+    r"detailed|available))",
     re.IGNORECASE,
 )
 
@@ -473,6 +539,38 @@ _REFUSAL_RE = re.compile(
 def _looks_like_refusal(text: str) -> bool:
     """True when the model's answer is hedging instead of committing to an entity."""
     return bool(_REFUSAL_RE.search(text or ""))
+
+
+def _summarize_evidence(ctx: "AgentContext", max_edges: int = 6) -> str:
+    """Compact recap of evidence gathered so far, for the anti-refusal pushback."""
+    parts: list[str] = []
+    if ctx.baseline_answer:
+        parts.append(f"text_search answered: {_truncate(ctx.baseline_answer, 600)}")
+    if ctx.collected_edges:
+        # Surface the most recent unique edges — that's the freshest evidence
+        # the agent saw before its refusal.
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for e in reversed(ctx.collected_edges):
+            key = str(e.get("id") or (
+                e.get("source"), e.get("relation_type"), e.get("target"),
+                e.get("t_valid_start"), e.get("t_valid_end"),
+            ))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(e)
+            if len(unique) >= max_edges:
+                break
+        if unique:
+            parts.append("Most recent edges collected:")
+            parts.append(_format_edges(list(reversed(unique)), max_edges))
+    if ctx.resolved_titles:
+        titles = sorted(ctx.resolved_titles)[:10]
+        parts.append(f"Resolved entity titles: {', '.join(titles)}")
+    if not parts:
+        return "(no evidence collected yet)"
+    return "\n".join(parts)
 
 
 def _parse_decision(text: str) -> Decision:
@@ -519,7 +617,7 @@ def _parse_decision(text: str) -> Decision:
 async def run_temporal_agent(
     query: str,
     ctx: AgentContext,
-    max_iters: int = 8,
+    max_iters: int = 5,
 ) -> dict[str, Any]:
     """Drive the LLM through tool-by-tool retrieval until it answers.
 
@@ -547,7 +645,7 @@ async def run_temporal_agent(
     trace: list[dict[str, Any]] = []
     final_answer: str | None = None
     used_iters = 0
-    pushback_done = False  # only allow ONE anti-refusal pushback per question
+    pushback_count = 0  # up to 2 anti-refusal pushbacks per question
 
     for step in range(max_iters):
         used_iters = step + 1
@@ -560,36 +658,85 @@ async def run_temporal_agent(
         decision = _parse_decision(content)
 
         if decision.kind == "answer":
-            # Anti-refusal guard: if the model is hedging instead of committing
-            # to an entity, push back ONCE with a strict re-prompt that demands
-            # a concrete answer synthesised from all evidence gathered so far.
-            # The check only fires when iterations remain and we haven't
-            # pushed back yet — we don't want to loop indefinitely.
+            # Verification gate: text_search just returned a candidate and we
+            # haven't seen a graph-side confirmation since. Force the agent to
+            # run one before committing. Capped at 2 rejections to avoid
+            # consuming the whole iteration budget on a stubborn model.
             if (
-                not pushback_done
+                ctx.pending_verification
+                and ctx.verification_rejections < 2
                 and step < max_iters - 1
-                and _looks_like_refusal(decision.answer)
             ):
-                pushback_done = True
+                ctx.verification_rejections += 1
                 builder.add_assistant_message(content)
                 builder.add_user_message(
-                    "REJECTED. You may NOT refuse or hedge ('no data', "
-                    "'not specified', 'did not hold', 'cannot determine', etc.). "
-                    "Re-read EVERY tool result above — the entities you "
-                    "resolved, the edges from time_window_search and "
-                    "search_edges_by_description, and the text_search "
-                    "responses — and commit to the SINGLE most likely entity "
-                    "for the question. If the time window matches multiple "
-                    "candidates, pick the one with the strongest evidence. "
-                    "If text_search hedged but graph edges named an entity, "
-                    "use the graph entity. If the graph has no good match "
-                    "but text_search mentioned any entity at all (even with "
-                    "uncertain framing), use that. Output JSON now: "
-                    '{"answer": "<single entity, one short sentence>"}'
+                    "BLOCKED. text_search gave you a candidate but you have "
+                    "NOT verified it on the graph. Before final_answer you "
+                    "must run ONE of: time_window_search (on the candidate's "
+                    "title + question window), or search_edges_by_description "
+                    "(with the exact relation phrase from the question). "
+                    "Read the returned edges: does the relation match what "
+                    "the question asks (e.g. STUDIED_AT for 'went to school', "
+                    "not EMPLOYED_AT / TEACHES_AT)? Does the window cover "
+                    "the question's date? Output a tool call now, not an "
+                    "answer."
                 )
                 trace.append({
                     "step": step,
+                    "kind": "verification_block",
+                    "refused_answer": decision.answer[:200],
+                })
+                continue
+
+            # Anti-refusal guard: when the model hedges instead of committing,
+            # push back with a strict reprompt. First pushback is a plain
+            # rejection; second one injects the actual evidence collected so
+            # far so the model has nowhere to hide. Cap at 2 to avoid loops.
+            if (
+                pushback_count < 2
+                and step < max_iters - 1
+                and _looks_like_refusal(decision.answer)
+            ):
+                pushback_count += 1
+                builder.add_assistant_message(content)
+                if pushback_count == 1:
+                    builder.add_user_message(
+                        "REJECTED. You may NOT refuse or hedge ('no data', "
+                        "'not specified', 'did not hold', 'cannot determine', etc.). "
+                        "Re-read EVERY tool result above — the entities you "
+                        "resolved, the edges from time_window_search and "
+                        "search_edges_by_description, and the text_search "
+                        "responses — and commit to the SINGLE most likely "
+                        "entity for the question. If the time window matches "
+                        "multiple candidates, pick the one with the strongest "
+                        "evidence. If text_search hedged but graph edges named "
+                        "an entity, use the graph entity. If the graph has no "
+                        "good match but text_search mentioned any entity at "
+                        "all (even with uncertain framing), use that. Output "
+                        'JSON now: {"answer": "<single entity, one short sentence>"}'
+                    )
+                else:
+                    evidence = _summarize_evidence(ctx)
+                    builder.add_user_message(
+                        "STILL REFUSING. This is your LAST chance — below is "
+                        "every piece of evidence you actually gathered:\n\n"
+                        f"{evidence}\n\n"
+                        "Pick the SINGLE entity that best fits the question's "
+                        "relation and time window. Rules:\n"
+                        "  • If any edge names an entity in the right relation "
+                        "family within the window, use that entity.\n"
+                        "  • Else if text_search named any entity (even with "
+                        "uncertain framing), use that.\n"
+                        "  • Else pick the most plausible entity from the "
+                        "resolved titles or any edge above.\n"
+                        "Do NOT say 'no information', 'not specified', or "
+                        '"did not". Output JSON: '
+                        '{"answer": "<single entity, one short sentence>"}'
+                    )
+                trace.append({
+                    "step": step,
                     "kind": "anti_refusal_pushback",
+                    "pushback_count": pushback_count,
                     "refused_answer": decision.answer[:200],
                 })
                 continue
@@ -630,6 +777,9 @@ async def run_temporal_agent(
         except Exception as exc:  # noqa: BLE001
             result = f"Tool error: {exc}"
             logger.debug("tool %s failed: %s", tool_name, exc)
+        # Any graph-side call clears the verification gate.
+        if tool_name in _VERIFICATION_TOOLS:
+            ctx.pending_verification = False
         result = _truncate(result, _TOOL_RESULT_TRUNCATE)
         builder.add_assistant_message(content)
         builder.add_user_message(f"{result}\n\nNext JSON action?")

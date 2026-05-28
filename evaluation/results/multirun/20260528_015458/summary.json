@@ -1,0 +1,195 @@
+{
+  "benchmark": "timeqa",
+  "split": "hard",
+  "system": "graphrag",
+  "tag": "",
+  "num_runs": 3,
+  "runs": [
+    {
+      "run": 1,
+      "out_dir": "evaluation/results/multirun/20260528_015458/run_1",
+      "report": {
+        "metrics": {
+          "judge_correct": 0.7,
+          "judge_incorrect": 0.3
+        },
+        "truthfulness": {
+          "total": 370,
+          "accuracy": 0.7,
+          "incorrect_rate": 0.3
+        },
+        "elapsed_seconds": 256.686,
+        "num_examples": 370,
+        "model": "gpt-4.1-mini",
+        "llm_tokens": {
+          "calls": 1109,
+          "prompt_tokens": 3388172,
+          "completion_tokens": 29930,
+          "total_tokens": 3418102,
+          "by_model": {
+            "text-embedding-3-large": {
+              "calls": 370,
+              "prompt_tokens": 6593,
+              "completion_tokens": 0,
+              "total_tokens": 6593
+            },
+            "gpt-4.1-mini": {
+              "calls": 739,
+              "prompt_tokens": 3381579,
+              "completion_tokens": 29930,
+              "total_tokens": 3411509
+            }
+          }
+        }
+      }
+    },
+    {
+      "run": 2,
+      "out_dir": "evaluation/results/multirun/20260528_015458/run_2",
+      "report": {
+        "metrics": {
+          "judge_correct": 0.6756756756756757,
+          "judge_incorrect": 0.32432432432432434
+        },
+        "truthfulness": {
+          "total": 370,
+          "accuracy": 0.6756756756756757,
+          "incorrect_rate": 0.32432432432432434
+        },
+        "elapsed_seconds": 262.665,
+        "num_examples": 370,
+        "model": "gpt-4.1-mini",
+        "llm_tokens": {
+          "calls": 1110,
+          "prompt_tokens": 3389164,
+          "completion_tokens": 29752,
+          "total_tokens": 3418916,
+          "by_model": {
+            "text-embedding-3-large": {
+              "calls": 370,
+              "prompt_tokens": 6593,
+              "completion_tokens": 0,
+              "total_tokens": 6593
+            },
+            "gpt-4.1-mini": {
+              "calls": 740,
+              "prompt_tokens": 3382571,
+              "completion_tokens": 29752,
+              "total_tokens": 3412323
+            }
+          }
+        }
+      }
+    },
+    {
+      "run": 3,
+      "out_dir": "evaluation/results/multirun/20260528_015458/run_3",
+      "report": {
+        "metrics": {
+          "judge_correct": 0.6864864864864865,
+          "judge_incorrect": 0.31351351351351353
+        },
+        "truthfulness": {
+          "total": 370,
+          "accuracy": 0.6864864864864865,
+          "incorrect_rate": 0.31351351351351353
+        },
+        "elapsed_seconds": 339.306,
+        "num_examples": 370,
+        "model": "gpt-4.1-mini",
+        "llm_tokens": {
+          "calls": 1110,
+          "prompt_tokens": 3388852,
+          "completion_tokens": 29615,
+          "total_tokens": 3418467,
+          "by_model": {
+            "text-embedding-3-large": {
+              "calls": 370,
+              "prompt_tokens": 6593,
+              "completion_tokens": 0,
+              "total_tokens": 6593
+            },
+            "gpt-4.1-mini": {
+              "calls": 740,
+              "prompt_tokens": 3382259,
+              "completion_tokens": 29615,
+              "total_tokens": 3411874
+            }
+          }
+        }
+      }
+    }
+  ],
+  "stats": {
+    "metrics_stats": {
+      "judge_correct": {
+        "mean": 0.6873873873873874,
+        "std": 0.009950775691159684,
+        "min": 0.6756756756756757,
+        "max": 0.7,
+        "n": 3
+      },
+      "judge_incorrect": {
+        "mean": 0.3126126126126126,
+        "std": 0.009950775691159706,
+        "min": 0.3,
+        "max": 0.32432432432432434,
+        "n": 3
+      }
+    },
+    "truthfulness_stats": {
+      "accuracy": {
+        "mean": 0.6873873873873874,
+        "std": 0.009950775691159684,
+        "min": 0.6756756756756757,
+        "max": 0.7,
+        "n": 3
+      },
+      "incorrect_rate": {
+        "mean": 0.3126126126126126,
+        "std": 0.009950775691159706,
+        "min": 0.3,
+        "max": 0.32432432432432434,
+        "n": 3
+      }
+    },
+    "token_stats": {
+      "calls": {
+        "mean": 1109.6666666666667,
+        "std": 0.4714045207910317,
+        "min": 1109.0,
+        "max": 1110.0,
+        "n": 3
+      },
+      "prompt_tokens": {
+        "mean": 3388729.3333333335,
+        "std": 414.1669014083842,
+        "min": 3388172.0,
+        "max": 3389164.0,
+        "n": 3
+      },
+      "completion_tokens": {
+        "mean": 29765.666666666668,
+        "std": 128.96080369200902,
+        "min": 29615.0,
+        "max": 29930.0,
+        "n": 3
+      },
+      "total_tokens": {
+        "mean": 3418495.0,
+        "std": 332.9033893889737,
+        "min": 3418102.0,
+        "max": 3418916.0,
+        "n": 3
+      }
+    },
+    "elapsed_seconds_stats": {
+      "mean": 286.219,
+      "std": 37.61745416691565,
+      "min": 256.686,
+      "max": 339.306,
+      "n": 3
+    },
+    "total_tokens_across_runs": 10255485
+  }
+}

@@ -157,41 +157,29 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
         )
         owns_driver = True
 
-    # Compose with vanilla local_search when configured: each temporal
-    # query also triggers a non-temporal retrieval; the answer is fed
-    # to the synthesis prompt as BASELINE EVIDENCE. Failures inside
-    # vanilla_answer are absorbed (returns None) so the temporal path
-    # still runs.
-    baseline_provider = None
+    # temporal_query now drives graphrag's local_search per sub-query
+    # (with seed entities resolved against the bitemporal graph injected
+    # as include_entity_names). We build a provider closure here so the
+    # vanilla state is loaded once and reused across sub-queries.
+    local_search_provider = None
     if cfg.vanilla_config is not None:
         vanilla_cfg = cfg.vanilla_config
 
-        async def _baseline_provider(q: str) -> str | None:
+        async def _local_search_provider(
+            q: str, *, include_entity_names: list[str] | None = None,
+        ) -> str | None:
             try:
-                v = await vanilla_answer(q, config=vanilla_cfg)
+                return await _call_local_search_with_seeds(
+                    vanilla_cfg, q, include_entity_names,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "[text_search] vanilla raised: %s | question: %r",
+                    "[local_search_provider] failed: %s | question: %r",
                     exc, q[:120],
                 )
                 return None
-            ans = (v.get("answer") or "").strip() if isinstance(v, dict) else ""
-            err = v.get("raw", {}).get("error") if isinstance(v, dict) else None
-            if err:
-                logger.warning(
-                    "[text_search] vanilla returned error: %s | question: %r",
-                    err, q[:120],
-                )
-                return None
-            if not ans:
-                logger.info(
-                    "[text_search] vanilla returned empty answer (no exception) "
-                    "| question: %r", q[:120],
-                )
-                return None
-            return ans
 
-        baseline_provider = _baseline_provider
+        local_search_provider = _local_search_provider
 
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -203,7 +191,7 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
             model=llm,
             embedding_model=embedding_model,
             max_edges_per_sub=cfg.max_edges,
-            baseline_provider=baseline_provider,
+            local_search_provider=local_search_provider,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("temporal_query_pipeline failed: %s", exc)
@@ -404,3 +392,86 @@ async def vanilla_answer(
             "has_context": bool(context),
         },
     }
+
+
+async def _call_local_search_with_seeds(
+    cfg: VanillaConfig,
+    query: str,
+    seed_titles: list[str] | None,
+) -> str | None:
+    """Run graphrag's ``LocalSearch`` directly so we can pass
+    ``include_entity_names`` as a per-call kwarg.
+
+    ``api.local_search`` consumes the streaming engine, which does NOT
+    forward kwargs to the context builder. We rebuild the engine via the
+    same factory the api uses and invoke ``search()`` (non-streaming),
+    which accepts arbitrary kwargs and threads them into
+    ``LocalSearchMixedContext.build_context`` — that's where
+    ``include_entity_names`` actually takes effect.
+    """
+    state = await _load_vanilla_state(cfg)
+
+    from graphrag.config.embeddings import entity_description_embedding
+    from graphrag.prompts.query.local_search_system_prompt import (
+        LOCAL_SEARCH_SYSTEM_PROMPT,
+    )
+    from graphrag.query.factory import get_local_search_engine
+    from graphrag.query.indexer_adapters import (
+        read_indexer_covariates,
+        read_indexer_entities,
+        read_indexer_relationships,
+        read_indexer_reports,
+        read_indexer_text_units,
+    )
+    from graphrag.utils.api import get_embedding_store
+
+    graphrag_config = state["config"]
+    description_embedding_store = get_embedding_store(
+        config=graphrag_config.vector_store,
+        embedding_name=entity_description_embedding,
+    )
+
+    entities_ = read_indexer_entities(
+        state["entities"], state["communities"], cfg.community_level,
+    )
+    relationships_ = read_indexer_relationships(state["relationships"])
+    reports_ = read_indexer_reports(
+        state["community_reports"], state["communities"], cfg.community_level,
+    )
+    text_units_ = read_indexer_text_units(state["text_units"])
+    covs_df = state.get("covariates")
+    covariates_ = read_indexer_covariates(covs_df) if covs_df is not None else []
+
+    search_engine = get_local_search_engine(
+        config=graphrag_config,
+        reports=reports_,
+        text_units=text_units_,
+        entities=entities_,
+        relationships=relationships_,
+        covariates={"claims": covariates_},
+        description_embedding_store=description_embedding_store,
+        response_type=cfg.response_type,
+        system_prompt=LOCAL_SEARCH_SYSTEM_PROMPT,
+        callbacks=None,
+    )
+
+    search_kwargs: dict[str, Any] = {}
+    if seed_titles:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for t in seed_titles:
+            if not t:
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            deduped.append(t)
+        if deduped:
+            search_kwargs["include_entity_names"] = deduped
+
+    result = await search_engine.search(query=query, **search_kwargs)
+    response = getattr(result, "response", "")
+    if response is None:
+        return None
+    text = response if isinstance(response, str) else str(response)
+    return text.strip() or None
