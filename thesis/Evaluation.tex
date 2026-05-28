@@ -2,7 +2,7 @@
 
 Este capítulo presenta la evaluación experimental de los dos módulos centrales que el Capítulo~\ref{chapter:proposal} introdujo como aportación original de BT-GRAPHRAG: la resolución contextual y temporal de entidades (CGER) y la detección y resolución de conflictos temporales (ETCDR). Cada módulo se evalúa de forma independiente sobre un corpus específicamente preparado para él, con ganancia de verdad anotada manualmente y métricas pareadas a su tipo de salida. ETCDR se evalúa de manera conjunta con la clasificación de cardinalidad, ya que su lógica de detección depende por completo de la categoría asignada a cada tipo de relación y, por tanto, ninguna evaluación significativa puede aislar una de la otra.
 
-El capítulo se organiza en seis secciones. La sección~\ref{sec:eval-setup} expone la metodología común a los dos experimentos: la naturaleza del corpus, los modelos empleados, el proceso de generación de la verdad anotada y las métricas reportadas. La sección~\ref{sec:eval-cger} presenta la evaluación de CGER, incluyendo el ajuste de su umbral coseno mediante búsqueda por recocido simulado y los resultados pareados sobre el conjunto de prueba. La sección~\ref{sec:eval-etcdr} describe la evaluación conjunta de ETCDR y la clasificación de cardinalidad, con la matriz de confusión y el análisis de errores. La sección~\ref{sec:eval-ragtest} complementa los dos experimentos anteriores con un análisis observacional sobre un corpus de cien documentos, ejecutado sin verdad anotada, que permite caracterizar el comportamiento de ambos módulos a una escala mayor que la de los conjuntos controlados. La sección~\ref{sec:eval-discussion} discute los resultados, sus limitaciones y las lecturas que pueden extraerse de cada experimento. Finalmente, la sección~\ref{sec:eval-conclusions} resume las conclusiones del capítulo.
+El capítulo se organiza en siete secciones. La sección~\ref{sec:eval-setup} expone la metodología común a los dos experimentos: la naturaleza del corpus, los modelos empleados, el proceso de generación de la verdad anotada y las métricas reportadas. La sección~\ref{sec:eval-cger} presenta la evaluación de CGER, incluyendo el ajuste de su umbral coseno mediante búsqueda por recocido simulado y los resultados pareados sobre el conjunto de prueba. La sección~\ref{sec:eval-etcdr} describe la evaluación conjunta de ETCDR y la clasificación de cardinalidad, con la matriz de confusión y el análisis de errores. La sección~\ref{sec:eval-ragtest} complementa los dos experimentos anteriores con un análisis observacional sobre un corpus de cien documentos, ejecutado sin verdad anotada, que permite caracterizar el comportamiento de ambos módulos a una escala mayor que la de los conjuntos controlados. La sección~\ref{sec:eval-timeqa} reporta una evaluación \emph{end-to-end} sobre el partido \texttt{hard} de TimeQA, que compara el motor de consulta temporal de BT-GRAPHRAG con la línea base de GraphRAG sobre 370~preguntas con anclaje temporal explícito. La sección~\ref{sec:eval-discussion} discute los resultados, sus limitaciones y las lecturas que pueden extraerse de cada experimento. Finalmente, la sección~\ref{sec:eval-conclusions} resume las conclusiones del capítulo.
 
 %% ============================================================
 \section{Metodología común}\label{sec:eval-setup}
@@ -262,6 +262,183 @@ Las cifras admiten una lectura combinada con el reparto de cardinalidades. De la
 La Tabla~\ref{tab:eval-ragtest-etcdr-samples} ilustra el tipo de conflicto que cada una de las cuatro estrategias contextuales captura. La traza de \texttt{HELEN CLARK} es un caso de libro de \texttt{EVOLUTION}: dos documentos describen al mismo cargo en dos intervalos consecutivos y sin solapamiento (2009--2017 y 2017--presente), de modo que el módulo cierra el primero asignándole \texttt{valid\_end~=~2017} e inserta el segundo como sucesor activo. Las cuatro \texttt{CORRECTION} ---entre ellas el caso \texttt{KLAUS FUCHS}--- corresponden a aristas previas cuyo \texttt{valid\_start} es demostrablemente incompatible con la nueva evidencia: el módulo las retracta vía \texttt{tx\_end} sin borrarlas y registra la versión corregida como activa, dejando rastro auditable. Las cuatro \texttt{DISAGREEMENT} aparecen exclusivamente sobre relaciones de lugar de nacimiento o de afiliación con descripciones ambiguas, justamente la situación que el \emph{Decision Router} debe degradar antes que comprometerse con una versión. El \emph{log} no contiene ninguna \emph{late arrival} sobre las 10\,276~aristas, lo que sugiere que el extractor procesa los documentos en un orden lo bastante coherente como para que la cuestión no se materialice en este corpus.
 
 Esta traza confirma, a una escala dos órdenes de magnitud mayor que la del experimento controlado, los dos patrones que aquél anticipaba. Primero, las cinco estrategias del \emph{Decision Router} se distribuyen de forma marcadamente desigual: el caso esperable en un corpus enciclopédico es \texttt{NEW\_EDGE}, las corroboraciones representan un dígito porcentual, y las decisiones de evolución, corrección y desacuerdo se cuentan por decenas. Segundo, las dos estrategias menos frecuentes ---\texttt{CORRECTION} y \texttt{DISAGREEMENT}--- sí aparecen cuando el corpus es lo bastante grande para contenerlas, aunque en proporciones por debajo del $0.1\%$. Su presencia, aun marginal, permite comprobar que la \emph{lógica} de retractación y de degradación de confianza está operativa, una validación que el corpus controlado de la sección~\ref{sec:eval-etcdr} no llega a proporcionar.
+
+%% ============================================================
+\section{Evaluación end-to-end sobre TimeQA}\label{sec:eval-timeqa}
+
+Los tres bloques empíricos anteriores han examinado en aislamiento las dos contribuciones algorítmicas de BT-GRAPHRAG (CGER y ETCDR) sobre verdad anotada manualmente y han caracterizado su comportamiento observacional a mayor escala. Esta sección los complementa con una evaluación \emph{end-to-end} sobre un \emph{benchmark} público de preguntas-respuestas temporales: contrasta el motor de consulta temporal de BT-GRAPHRAG contra la línea base de GraphRAG sobre exactamente el mismo corpus y el mismo modelo, de modo que la única variable entre los dos sistemas sea la lógica de razonamiento temporal a la hora de responder. El objetivo es medir qué fracción de la mejora algorítmica del \emph{pipeline} se traduce, efectivamente, en respuestas correctas a preguntas con anclaje temporal explícito.
+
+\subsection{Banco de pruebas y configuración experimental}\label{sec:eval-timeqa-setup}
+
+\paragraph{Conjunto de datos.} La evaluación utiliza el partido \texttt{hard} de TimeQA~\cite{TODO_timeqa}, un \emph{benchmark} de preguntas-respuestas extraído de Wikidata y de Wikipedia, en el que cada pregunta fija una franja temporal explícita (un mes-año, un año, un rango entre dos fechas, o un \emph{before/after} respecto a una fecha) y exige nombrar la entidad que satisface la relación en ese intervalo. El partido \texttt{hard} es el más exigente de TimeQA porque la respuesta requiere atender al modificador temporal: el mismo predicado (por ejemplo, \texttt{employer}) admite distintas respuestas en distintas franjas temporales sobre la misma entidad-sujeto. La evaluación procesa 370~preguntas distribuidas sobre 100~biografías distintas de Wikipedia, cargadas en un único corpus unificado en el que el sistema bajo prueba ha de localizar por sí mismo el documento relevante (no se le entrega el \emph{gold passage}).
+
+\paragraph{Sistemas comparados.} Sobre ese único corpus se comparan tres sistemas:
+
+\begin{itemize}
+\item \textbf{GRAPHRAG} (línea base de la literatura): el indexador estándar de GraphRAG~\cite{TODO_graphrag} construye comunidades y \emph{embeddings} sobre el corpus, y el motor de \emph{local search} responde cada pregunta sin ningún componente temporal explícito.
+\item \textbf{BT-GRAPHRAG} (\emph{baseline} interno): la misma versión de \emph{local search} de GraphRAG, pero ejecutada sobre el índice (\emph{parquets} + grafo Neo4j) que produce el \emph{pipeline} de indexación bitemporal descrito en el Capítulo~\ref{chapter:proposal} (es decir, con CGER y ETCDR activados en la fase de indexación, pero \emph{sin} usar el motor de consulta temporal). Este sistema aísla el efecto que tiene sobre la línea base la sustitución del indexador estándar por el bitemporal.
+\item \textbf{BT-GRAPHRAG} (\emph{temporal query}): el motor de consulta temporal completo, descrito en la sección~\ref{sec:bt-temporal-query}, que extrae sub-consultas con anclaje temporal, resuelve las entidades semilla contra el grafo bitemporal y filtra las aristas candidatas por el período activo. En esta configuración el motor temporal compone su respuesta apoyándose, además, en la respuesta de \emph{local search} de GraphRAG, que se le suministra como \emph{baseline evidence} en el \emph{prompt} de síntesis~\cite{TODO_btg_compose}. La composición es la configuración por defecto del módulo y la que la evaluación reporta.
+\end{itemize}
+
+El interés principal de esta sección está en el contraste entre el primero y el tercero (\emph{vanilla} GraphRAG frente al motor temporal completo de BT-GRAPHRAG): los dos sistemas operan sobre el mismo conjunto de documentos, con el mismo modelo de generación y con el mismo \emph{benchmark} de preguntas, de modo que la diferencia entre ellos atribuible a la lógica de razonamiento temporal puede leerse sin confusión. La línea \emph{baseline} interna se reporta como referencia para descontar cuánta variación introduce la sustitución del indexador.
+
+\paragraph{Modelos y parámetros.} Los tres sistemas comparten el mismo modelo de generación, \texttt{gpt-4.1-mini}~\cite{TODO_gpt41mini}, y el mismo modelo de \emph{embedding}, \texttt{text-embedding-3-large}~\cite{TODO_te3large}. El motor temporal de BT-GRAPHRAG opera con la configuración por defecto del Capítulo~\ref{chapter:proposal} ($\tau_{\cos}=0.687$, umbral de confianza del \emph{Decision Router} en $0.7$, máximo de 50~aristas por sub-consulta) y la fase de indexación es exactamente la misma sobre la que se construye el análisis observacional de la sección~\ref{sec:eval-ragtest}. La concurrencia de la evaluación se fija en 100 peticiones simultáneas a la API.
+
+\paragraph{Métrica principal.} Cada predicción se evalúa con un juez LLM (\emph{LLM-as-a-judge})~\cite{TODO_llm_judge} alimentado por el mismo modelo \texttt{gpt-4.1-mini}, instruido con un \emph{prompt} que compara la respuesta candidata con la respuesta de referencia y emite un veredicto binario \texttt{correct} / \texttt{incorrect}. El \emph{prompt} acepta como correctas las paráfrasis, los alias, las normalizaciones tipográficas y las respuestas que añaden contexto no contradictorio, y declara incorrectas las que nombran un referente distinto, las que niegan la referencia o las que se abstienen sin comprometerse con la respuesta. La métrica reportada es la \emph{accuracy} agregada del juez sobre las 370~preguntas. Como métricas complementarias se reportan EM y $F_1$ a nivel de \emph{token} (descontadas en TimeQA por su sensibilidad al fraseo) y métricas operacionales: latencia, número de llamadas al LLM y \emph{tokens} consumidos.
+
+\paragraph{Estabilidad.} Para acotar la varianza inducida por el muestreo del LLM, cada sistema se ejecuta tres veces sobre el mismo conjunto de 370~preguntas, manteniendo fijos los \emph{embeddings} pre-calculados y el grafo persistido. Las métricas agregadas se reportan como media~$\pm$~desviación estándar muestral sobre las tres corridas; los análisis cualitativos por pregunta usan la consolidación por mayoría ($\geq 2$ corridas correctas).
+
+\subsection{Resultados agregados}\label{sec:eval-timeqa-aggregate}
+
+La Tabla~\ref{tab:eval-timeqa-headline} recoge la \emph{accuracy} del juez, el tiempo de pared por corrida y el coste en \emph{tokens} para los tres sistemas. La Tabla~\ref{tab:eval-timeqa-calls} desglosa el reparto de llamadas al LLM entre el modelo de generación y el modelo de \emph{embedding}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\hline
+\textbf{Sistema} & \textbf{Accuracy del juez} & \textbf{Tiempo / corrida (s)} & \textbf{\emph{Tokens} / corrida} & \textbf{Latencia / pregunta (s)} \\ \hline
+GRAPHRAG (\emph{vanilla})       & $0.687 \pm 0.010$ & $286 \pm 38$ & $3{,}42\,\text{M}$ & $65$ \\
+BT-GRAPHRAG (\emph{baseline})   & $0.704 \pm 0.009$ & $663 \pm 2$  & $3{,}46\,\text{M}$ & $75$ \\
+BT-GRAPHRAG (\emph{temporal})   & $\mathbf{0.721 \pm 0.011}$ & $658 \pm 6$  & $4{,}07\,\text{M}$ & $83$ \\ \hline
+\end{tabular}
+\caption{Resultados agregados sobre TimeQA \texttt{hard} (370~preguntas, 3~corridas por sistema). La \emph{accuracy} es la del juez LLM. La latencia por pregunta es la media de los tiempos individuales; el tiempo por corrida es el reloj de pared total con concurrencia $100$.}
+\label{tab:eval-timeqa-headline}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrr}
+\hline
+\textbf{Sistema} & \textbf{Llamadas / corrida} & \textbf{\emph{Tokens prompt}} & \textbf{\emph{Tokens completion}} \\ \hline
+GRAPHRAG (\emph{vanilla})       & $1{,}110$ & $3{,}388{,}729$ & $29{,}766$ \\
+BT-GRAPHRAG (\emph{baseline})   & $1{,}110$ & $3{,}425{,}625$ & $31{,}072$ \\
+BT-GRAPHRAG (\emph{temporal})   & $1{,}872$ & $4{,}008{,}557$ & $65{,}412$ \\ \hline
+\end{tabular}
+\caption{Reparto del consumo de LLM por sistema sobre TimeQA \texttt{hard} (medias sobre 3~corridas). El motor temporal duplica el número de llamadas porque añade el analizador de sub-consultas y la composición con \emph{baseline evidence}.}
+\label{tab:eval-timeqa-calls}
+\end{table}
+
+Las cifras permiten una primera lectura. El motor temporal de BT-GRAPHRAG mejora la \emph{accuracy} del juez en $+3.4$~puntos porcentuales sobre la línea base \emph{vanilla} ($0.721$ frente a $0.687$) y en $+1.7$~puntos porcentuales sobre la línea base interna ($0.721$ frente a $0.704$). La diferencia entre las dos líneas base ---ambas usan el mismo motor de \emph{local search} de GraphRAG, pero la segunda opera sobre el índice bitemporal--- queda en $+1.7$~puntos porcentuales, lo que sugiere que aproximadamente la mitad del beneficio que se observa en el sistema completo proviene del propio indexador bitemporal (CGER reduce la fragmentación de entidades y ETCDR consolida aristas redundantes, lo que produce un grafo más limpio para cualquier motor de consulta) y la otra mitad, del motor temporal en sí.
+
+El coste asociado se concentra en dos partidas. El motor temporal consume un $19\%$ más de \emph{tokens} por corrida que la línea base \emph{vanilla} y prácticamente duplica el número de llamadas al LLM, porque añade dos etapas: el analizador de sub-consultas que extrae las entidades semilla y la franja temporal, y la composición con la respuesta de \emph{local search} como \emph{baseline evidence}. El tiempo de pared se multiplica por aproximadamente $2.3\times$ debido a las consultas Cypher contra Neo4j y a la serialización de las sub-consultas; el sobrecosto por pregunta individual ($+18$~s en mediana) es asumible para un sistema interactivo y la curva escala linealmente con la concurrencia. Las desviaciones estándar de la \emph{accuracy} sobre tres corridas son inferiores a $1.1$~puntos porcentuales en los tres sistemas, lo que confirma que el muestreo del LLM no introduce ruido relevante a este orden de magnitud.
+
+\subsection{Divergencia por pregunta}\label{sec:eval-timeqa-divergence}
+
+La métrica agregada esconde el patrón más relevante: \emph{qué preguntas} responde bien cada sistema. La Tabla~\ref{tab:eval-timeqa-divergence} cruza el veredicto del juez para los dos sistemas principales en base de mayoría ($\geq 2$ corridas correctas) y en base estricta ($3/3$ correctas).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+\textbf{Cruce} & \textbf{Mayoría ($\geq 2/3$)} & \textbf{Estricta ($3/3$)} \\ \hline
+Ambas correctas              & $237$ & $210$ \\
+Sólo BT-GRAPHRAG correcta    & $\mathbf{30}$ & $\mathbf{17}$ \\
+Sólo GRAPHRAG correcta       & $20$ & $6$ \\
+Ambas incorrectas            & $83$  & $65$ \\ \hline
+\end{tabular}
+\caption{Cruce de respuestas correctas entre BT-GRAPHRAG (temporal) y GRAPHRAG (\emph{vanilla}) sobre las 370~preguntas. La columna de mayoría exige acierto en al menos 2 de las 3 corridas; la columna estricta exige acuerdo unánime de las 3 corridas.}
+\label{tab:eval-timeqa-divergence}
+\end{table}
+
+En base de mayoría, BT-GRAPHRAG acierta 30~preguntas que GRAPHRAG falla; el contraflujo (\emph{vanilla} acierta y BT falla) es de 20~preguntas. Es decir, la mejora neta de $+10$ preguntas en mayoría se compone de $+30$~recuperaciones y $-20$~regresiones. La separación se acentúa al exigir consistencia entre corridas: bajo el criterio estricto ($3/3$~acuerdos), BT-GRAPHRAG retiene $17$~victorias exclusivas frente a sólo $6$~de la línea base, un \emph{ratio} de $2.8\times$. El test de McNemar sobre el cruce de mayoría arroja $p=0.20$ a dos colas, lo que no permite rechazar la hipótesis nula al nivel del $5\%$ sobre las 370~preguntas; el efecto observado es del orden de la magnitud que la potencia del banco permite distinguir, lo que sugiere que para una afirmación estadística más fuerte sobre el cruce agregado sería conveniente ampliar el conjunto de prueba. Lo más informativo, sin embargo, es el desglose por categoría de pregunta que sigue, donde el efecto se concentra en las franjas que la teoría predice.
+
+\subsection{Desglose por tipo de pregunta}\label{sec:eval-timeqa-by-type}
+
+\paragraph{Por tipo de sub-consulta del analizador.} El analizador de sub-consultas del motor temporal etiqueta cada pregunta como \texttt{POINT\_IN\_TIME} (una fecha puntual, por ejemplo ``en Mar 1992'') o como \texttt{RANGE} (un intervalo, por ejemplo ``entre Abr 1996 y Oct 1996'' o un \emph{before/after}). La Tabla~\ref{tab:eval-timeqa-by-querytype} muestra la \emph{accuracy} de cada sistema desagregada por esta etiqueta.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccc}
+\hline
+\textbf{Tipo de sub-consulta} & \textbf{$n$} & \textbf{GRAPHRAG} & \textbf{BT-GRAPHRAG (temporal)} \\ \hline
+\texttt{RANGE}          & $206$ & $0.694$ & $\mathbf{0.748}$ \quad ($+5.4$~pp) \\
+\texttt{POINT\_IN\_TIME} & $164$ & $0.695$ & $0.689$ \quad ($-0.6$~pp) \\ \hline
+\end{tabular}
+\caption{\emph{Accuracy} (base de mayoría) por tipo de sub-consulta extraído por el analizador del motor temporal de BT-GRAPHRAG. La ganancia del motor temporal se concentra en las preguntas de rango, no en las de fecha puntual.}
+\label{tab:eval-timeqa-by-querytype}
+\end{table}
+
+El efecto del motor temporal está, prácticamente en su totalidad, en las preguntas de rango: las 206 preguntas \texttt{RANGE} concentran $+5.4$~puntos porcentuales de ganancia, mientras que las 164 preguntas \texttt{POINT\_IN\_TIME} quedan en un empate técnico ($-0.6$~puntos porcentuales). La asimetría es coherente con el diseño del módulo: una pregunta puntual admite ser respondida por una sola arista (la que está activa exactamente en esa fecha), de modo que el indexador estándar de GraphRAG, que recupera por similitud semántica, suele encontrar el pasaje correcto sin necesidad de razonamiento temporal explícito. Una pregunta de rango, en cambio, exige razonar sobre intervalos: o bien recuperar varias aristas y elegir la que solapa el período, o bien encontrar una arista cuya descripción cubra todo el intervalo. La indexación bitemporal de ETCDR colapsa varias menciones del mismo hecho en una arista única con período válido $[t_v^s, t_v^e]$, y la consulta temporal filtra por solapamiento de intervalos en Cypher, lo que es exactamente la operación que las preguntas de rango requieren.
+
+\paragraph{Por patrón textual de la pregunta.} La Tabla~\ref{tab:eval-timeqa-by-bucket} reagrupa las 370~preguntas según el patrón sintáctico del modificador temporal en la pregunta original.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccc}
+\hline
+\textbf{Patrón textual} & \textbf{$n$} & \textbf{GRAPHRAG} & \textbf{BT-GRAPHRAG (temporal)} \\ \hline
+\texttt{in Mon YYYY}      & $148$ & $0.703$ & $0.689$  \\
+\texttt{between/from-to}  & $141$ & $0.652$ & $\mathbf{0.702}$ \quad ($+5.0$~pp) \\
+\texttt{after YYYY}       & $26$  & $0.962$ & $0.962$  \\
+\texttt{before YYYY}      & $23$  & $0.652$ & $\mathbf{0.739}$ \quad ($+8.7$~pp) \\
+\texttt{in YYYY}          & $13$  & $0.615$ & $\mathbf{0.846}$ \quad ($+23.1$~pp) \\
+otros                     & $19$  & $0.684$ & $0.684$  \\ \hline
+\end{tabular}
+\caption{\emph{Accuracy} (base de mayoría) por patrón textual del modificador temporal de la pregunta. El motor temporal mejora en los tres patrones de rango (\emph{between}, \emph{before}, \emph{in YYYY}) y queda al mismo nivel en los de fecha puntual estrecha (\emph{in Mon YYYY}) y en los de cota \emph{after}.}
+\label{tab:eval-timeqa-by-bucket}
+\end{table}
+
+La lectura por patrón refina la conclusión anterior. Las preguntas \texttt{between/from-to} son el segmento más grande tras las puntuales y concentran la mayor ganancia bruta del motor temporal ($+7$ preguntas adicionales correctas sobre $141$). Las preguntas \texttt{before YYYY} se benefician en proporción aún mayor ($+2$ sobre $23$, equivalente a $+8.7$~puntos porcentuales). Las preguntas \texttt{in YYYY} ---un año sin mes, una franja de doce meses--- alcanzan la mejora porcentual más alta ($+23$~puntos porcentuales), si bien sobre un soporte reducido de $13$~preguntas. Los dos patrones en los que el motor temporal no aporta (\texttt{in Mon YYYY} y \texttt{after YYYY}) son consistentes con la lectura anterior: el primero es una franja temporal estrechísima (un mes), efectivamente equivalente a un punto, y el segundo admite cualquier sucesor cronológicamente posterior y suele ser fácil de responder por similitud semántica sobre la frase ``after''.
+
+\paragraph{Por tipo de relación (propiedad Wikidata).} Cada pregunta de TimeQA está construida sobre una propiedad Wikidata fija; la Tabla~\ref{tab:eval-timeqa-by-property} reporta la \emph{accuracy} desagregada por las propiedades más frecuentes en el banco.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\hline
+\textbf{Propiedad} & \textbf{Significado} & \textbf{$n$} & \textbf{GRAPHRAG} & \textbf{BT-GRAPHRAG (temporal)} \\ \hline
+\texttt{P54}   & \emph{member of sports team}     & $126$ & $0.675$ & $0.667$ \\
+\texttt{P108}  & \emph{employer}                  & $58$  & $0.672$ & $\mathbf{0.845}$ \quad ($+17.3$~pp) \\
+\texttt{P39}   & \emph{position held}             & $52$  & $0.692$ & $0.712$ \\
+\texttt{P1448} & \emph{official name}             & $21$  & $\mathbf{0.952}$ & $0.810$ \quad ($-14.2$~pp) \\
+\texttt{P488}  & \emph{chairperson}               & $19$  & $0.632$ & $0.526$ \\
+\texttt{P69}   & \emph{educated at}               & $15$  & $0.600$ & $0.600$ \\
+\texttt{P26}   & \emph{spouse}                    & $12$  & $0.833$ & $0.750$ \\
+\texttt{P463}  & \emph{member of}                 & $9$   & $0.556$ & $\mathbf{0.778}$ \\
+\texttt{P937}  & \emph{work location}             & $9$   & $0.556$ & $\mathbf{0.778}$ \\ \hline
+\end{tabular}
+\caption{\emph{Accuracy} (base de mayoría) por propiedad Wikidata sobre la que se construye la pregunta. La ganancia del motor temporal se concentra en relaciones de empleo y de pertenencia institucional; las pérdidas, en \emph{official name} y en relaciones casi estáticas (cónyuge, presidente).}
+\label{tab:eval-timeqa-by-property}
+\end{table}
+
+El reparto por propiedad muestra dos patrones claros. En primer lugar, el motor temporal aporta de forma decisiva sobre \texttt{P108}~(\emph{employer}), donde gana $+10$~preguntas absolutas sobre $58$ (un $+17.3\%$), y sobre las relaciones de pertenencia institucional \texttt{P463}~(\emph{member of}) y \texttt{P937}~(\emph{work location}); son justamente las relaciones que típicamente evolucionan a lo largo de la carrera de una persona, con varios valores válidos en intervalos distintos, y donde la fragmentación temporal del registro penaliza al motor estándar. En segundo lugar, el motor temporal pierde sobre \texttt{P1448}~(\emph{official name}), una propiedad para la que la respuesta es estática o cambia con muy poca frecuencia ($17/21$ frente a $20/21$ para \emph{vanilla}): el sobre-razonamiento temporal puede llevar a seleccionar un nombre interino en lugar del nombre vigente, una observación cualitativa que coincide con los ejemplos del siguiente apartado. \texttt{P54}~(\emph{member of sports team}), la propiedad más frecuente del banco, queda en un empate técnico: las preguntas sobre equipos de fútbol están masivamente sobre-representadas en Wikipedia y la similitud semántica del indexador estándar es muy efectiva para esa franja.
+
+\subsection{Análisis cualitativo de la divergencia}\label{sec:eval-timeqa-qualitative}
+
+Los conjuntos disjuntos de la Tabla~\ref{tab:eval-timeqa-divergence} contienen las preguntas que distinguen empíricamente a los dos sistemas. Esta subsección examina los patrones recurrentes en cada uno de los dos sentidos, sin entrar en una enumeración exhaustiva.
+
+\paragraph{Recuperación por filtrado temporal explícito (BT-GRAPHRAG~$>$~GRAPHRAG).} El patrón más claro de la columna ``sólo BT-GRAPHRAG correcta'' es la \emph{recuperación de hechos que GraphRAG declara desconocer}. En estos casos, la respuesta del motor estándar es alguna variante de ``el conjunto de datos no contiene información sobre…'' a pesar de que el documento de origen está presente en el corpus, mientras que el motor temporal recupera la respuesta correcta. Tres ejemplos de la corrida~1 ilustran el patrón:
+
+\begin{itemize}
+\item Pregunta: ``\emph{What was the name of the employer Aurelio Lampredi worked for before Mar 1939?}'', referencia: \texttt{Isotta Fraschini}. GraphRAG: ``\emph{The data provided does not include information about the employer of Aurelio Lampredi before March 1939.}'' BT-GRAPHRAG: ``\emph{Before March 1939, Aurelio Lampredi worked for Isotta Fraschini.}'' La biografía menciona el empleo, pero el indexador estándar no recupera el pasaje porque la similitud semántica entre la pregunta filtrada por fecha y el pasaje narrativo del documento es baja.
+\item Pregunta: ``\emph{What was the name of the employer Aurelio Lampredi worked for in Feb 1960?}'', referencia: \texttt{Fiat}. GraphRAG vuelve a abstenerse; BT-GRAPHRAG responde \texttt{Fiat} y aporta el período de cargo.
+\item Pregunta: ``\emph{Which team did Ivan Turina play for between May 2004 and May 2006?}'', referencia: \texttt{Dinamo Zagreb}. Misma pauta: GraphRAG se abstiene, BT-GRAPHRAG identifica al portero como titular del Dinamo Zagreb en la temporada 2005--06.
+\end{itemize}
+
+El mecanismo subyacente es el siguiente. El motor estándar busca pasajes textualmente similares a la pregunta y, cuando el modificador temporal lo aleja de la formulación literal del documento (que rara vez dice ``\emph{Lampredi's employer between April 1942 and May 1943 was}''), no recupera el pasaje y degrada a una abstención conservadora. El motor temporal, en cambio, descompone la pregunta en ``entidad-semilla'' (``Aurelio Lampredi'') más ``franja temporal'' (\texttt{1942-04-01}--\texttt{1943-05-31}) y lanza una consulta Cypher que selecciona aristas de la entidad-semilla cuyo período válido solape el intervalo pedido. Esa consulta no depende del fraseo de la pregunta, sino de la estructura del grafo, y por tanto recupera la respuesta cuando el grafo contiene la arista correcta. Sobre 30~preguntas (base de mayoría), este patrón explica la mayor parte de las victorias exclusivas del motor temporal.
+
+\paragraph{Regresiones por razonamiento temporal espurio (GRAPHRAG~$>$~BT-GRAPHRAG).} Las 20~preguntas en las que el motor estándar gana exclusivamente sobre el temporal admiten una lectura más matizada y se concentran en dos clases:
+
+\begin{itemize}
+\item \emph{Selección errónea entre dos entidades simultáneamente plausibles.} Cuando el grafo contiene más de una arista que solapa el período pedido (por ejemplo, un equipo de origen y un equipo de cesión durante una temporada), el motor temporal puede elegir el equivocado. Ejemplo: ``\emph{Mark Bridge played for which team between Aug 2013 and Dec 2013?}'', referencia: \texttt{Western Sydney Wanderers}. BT-GRAPHRAG responde \texttt{Burton Albion} ---el equipo en el que estuvo cedido en julio de 2013, antes de pasar al club australiano en agosto. El motor estándar, que recupera por similitud semántica del pasaje narrativo, elige correctamente el club principal porque el documento dedica más texto al Western Sydney que al cedente.
+\item \emph{Sobre-precisión temporal sobre referentes estables.} En preguntas en las que la respuesta evoluciona poco o nada, el filtrado por franja del motor temporal puede preferir una variante de transición sobre la respuesta canónica. Ejemplo: ``\emph{What was the official name of VP-5 in Nov 1940?}'', referencia: \texttt{Patrol Squadron 42}. BT-GRAPHRAG responde \texttt{Patrol Squadron 17}, un nombre que la unidad ostentó en una franja contigua. La línea base, al no atender al modificador temporal, selecciona el nombre dominante en el pasaje, que coincide con la respuesta correcta.
+\end{itemize}
+
+Esta segunda clase de errores es la que explica la regresión observada sobre \texttt{P1448}~(\emph{official name}) en la Tabla~\ref{tab:eval-timeqa-by-property}: la propiedad cambia rara vez y el filtrado temporal estricto no ayuda; puede, en cambio, fijar la respuesta sobre un cambio interino. La primera clase ---selección entre varias aristas plausibles--- es la que limita la capacidad del módulo en relaciones como \texttt{P488}~(\emph{chairperson}) o \texttt{P26}~(\emph{spouse}), donde la elección entre dos referentes cercanos en el tiempo requiere un grado de discriminación contextual que el filtrado temporal puro no aporta.
+
+\paragraph{Coste-beneficio del motor temporal.} Las dos clases anteriores permiten formular el balance con precisión: el motor temporal cambia 30~abstenciones de la línea base por 30~respuestas correctas (la mayor parte de sus victorias exclusivas), a cambio de introducir 20~selecciones incorrectas (la mayor parte de sus regresiones exclusivas). La ganancia neta de $+10$ preguntas sobre $370$ es modesta en términos absolutos, pero la composición de la ganancia es revelador del comportamiento del módulo: el motor temporal sustituye un sesgo de \emph{abstención} por un sesgo de \emph{compromiso}. En aplicaciones que valoran la cobertura sobre la abstención (por ejemplo, un asistente conversacional que prefiere arriesgar una respuesta antes que admitir desconocimiento), este \emph{trade-off} es deseable. En aplicaciones que penalizan más una respuesta incorrecta que una abstención, la composición con \emph{baseline evidence} ---ya activada por defecto, sección~\ref{sec:eval-timeqa-setup}--- modera el sesgo de compromiso al inyectar la respuesta de la línea base como evidencia auxiliar.
+
+\subsection{Lecturas que se desprenden}\label{sec:eval-timeqa-readings}
+
+La evaluación \emph{end-to-end} sobre TimeQA \texttt{hard} confirma, sobre un banco público y con 370~preguntas, los patrones que los experimentos controlados sobre verdad anotada anticipaban: el motor temporal aporta cuando la pregunta exige razonamiento sobre intervalos (preguntas de rango, relaciones que evolucionan a lo largo del tiempo) y no aporta cuando la pregunta es efectivamente puntual o cuando la respuesta es estable. La cuantificación es: $+3.4$~puntos porcentuales de \emph{accuracy} agregada sobre la línea base \emph{vanilla} de GraphRAG y $+1.7$~puntos porcentuales sobre la línea base interna; del motor temporal proviene, por tanto, aproximadamente la mitad de la mejora total, y la otra mitad la aporta el indexador bitemporal (CGER y ETCDR) por el simple hecho de producir un grafo más limpio para el motor estándar.
+
+El experimento también pone una cota al efecto: el coste en \emph{tokens} ($+19\%$) y en latencia ($\times 2.3$) es no despreciable, y la mejora en la métrica agregada queda en el rango de ganancia que la potencia del banco no permite declarar estadísticamente significativa con $p<0.05$ sobre 370~preguntas. La distribución del efecto por categoría ---concentrado en preguntas de rango y en relaciones de empleo, ausente en preguntas puntuales y \emph{official name}--- es, sin embargo, la que la teoría predice, lo que refuerza la lectura de que el motor temporal está midiendo lo que pretende medir. Una evaluación con un banco varias veces mayor o con un partido más temporalmente exigente (preguntas con varias franjas, transiciones cercanas o cancelaciones explícitas) reduciría la varianza y permitiría una afirmación más fuerte sobre la dimensión del efecto.
 
 %% ============================================================
 \section{Discusión}\label{sec:eval-discussion}
