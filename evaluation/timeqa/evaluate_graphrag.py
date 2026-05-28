@@ -185,15 +185,36 @@ def _default_scorer(
     return metrics
 
 
+_PROGRESS_COUNTERS = {"started": 0, "finished": 0, "total": 0}
+
+
 async def _eval_one(
     rec: EvalRecord,
     opts: _RunOpts,
     sem: asyncio.Semaphore,
 ) -> EvalPrediction:
     async with sem:
+        _PROGRESS_COUNTERS["started"] += 1
+        start_idx = _PROGRESS_COUNTERS["started"]
+        total = _PROGRESS_COUNTERS["total"] or "?"
         started = time.perf_counter()
+        print(
+            f"  [q-start] {start_idx:>3d}/{total} "
+            f"qid={rec.qid} mode={opts.vanilla_cfg.search_mode}: "
+            f"{rec.question[:80]}",
+            flush=True,
+        )
         result = await vanilla_answer(rec.question, config=opts.vanilla_cfg)
         prediction = (result.get("answer") or "").strip()
+
+        elapsed_search = time.perf_counter() - started
+        _PROGRESS_COUNTERS["finished"] += 1
+        print(
+            f"  [q-done ] {_PROGRESS_COUNTERS['finished']:>3d}/{total} "
+            f"qid={rec.qid} {elapsed_search:6.1f}s "
+            f"answer={prediction[:60]!r}",
+            flush=True,
+        )
 
         judge = await judge_answer(
             rec.question, rec.answer, prediction, use_llm=opts.use_judge
@@ -368,6 +389,9 @@ async def _run_system(
     sem = asyncio.Semaphore(opts.concurrency)
     started = time.perf_counter()
     total = len(records)
+    _PROGRESS_COUNTERS["started"] = 0
+    _PROGRESS_COUNTERS["finished"] = 0
+    _PROGRESS_COUNTERS["total"] = total
     tasks = [
         asyncio.create_task(_eval_one(rec, opts, sem))
         for rec in records

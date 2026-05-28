@@ -2,7 +2,7 @@
 
 Este capítulo presenta la evaluación experimental de los dos módulos centrales que el Capítulo~\ref{chapter:proposal} introdujo como aportación original de BT-GRAPHRAG: la resolución contextual y temporal de entidades (CGER) y la detección y resolución de conflictos temporales (ETCDR). Cada módulo se evalúa de forma independiente sobre un corpus específicamente preparado para él, con ganancia de verdad anotada manualmente y métricas pareadas a su tipo de salida. ETCDR se evalúa de manera conjunta con la clasificación de cardinalidad, ya que su lógica de detección depende por completo de la categoría asignada a cada tipo de relación y, por tanto, ninguna evaluación significativa puede aislar una de la otra.
 
-El capítulo se organiza en cinco secciones. La sección~\ref{sec:eval-setup} expone la metodología común a los dos experimentos: la naturaleza del corpus, los modelos empleados, el proceso de generación de la verdad anotada y las métricas reportadas. La sección~\ref{sec:eval-cger} presenta la evaluación de CGER, incluyendo el ajuste de su umbral coseno mediante búsqueda por recocido simulado y los resultados pareados sobre el conjunto de prueba. La sección~\ref{sec:eval-etcdr} describe la evaluación conjunta de ETCDR y la clasificación de cardinalidad, con la matriz de confusión y el análisis de errores. La sección~\ref{sec:eval-discussion} discute los resultados, sus limitaciones y las lecturas que pueden extraerse de cada experimento. Finalmente, la sección~\ref{sec:eval-conclusions} resume las conclusiones del capítulo.
+El capítulo se organiza en seis secciones. La sección~\ref{sec:eval-setup} expone la metodología común a los dos experimentos: la naturaleza del corpus, los modelos empleados, el proceso de generación de la verdad anotada y las métricas reportadas. La sección~\ref{sec:eval-cger} presenta la evaluación de CGER, incluyendo el ajuste de su umbral coseno mediante búsqueda por recocido simulado y los resultados pareados sobre el conjunto de prueba. La sección~\ref{sec:eval-etcdr} describe la evaluación conjunta de ETCDR y la clasificación de cardinalidad, con la matriz de confusión y el análisis de errores. La sección~\ref{sec:eval-ragtest} complementa los dos experimentos anteriores con un análisis observacional sobre un corpus de cien documentos, ejecutado sin verdad anotada, que permite caracterizar el comportamiento de ambos módulos a una escala mayor que la de los conjuntos controlados. La sección~\ref{sec:eval-discussion} discute los resultados, sus limitaciones y las lecturas que pueden extraerse de cada experimento. Finalmente, la sección~\ref{sec:eval-conclusions} resume las conclusiones del capítulo.
 
 %% ============================================================
 \section{Metodología común}\label{sec:eval-setup}
@@ -151,19 +151,132 @@ Las 15 entradas \emph{unmatched} de la Tabla~\ref{tab:eval-etcdr-scoring} se exp
 Los cinco errores ---tres \texttt{CORROBORATION}~$\to$~\texttt{EVOLUTION} y dos \texttt{NEW\_EDGE}~$\to$~estrategia distinta--- corresponden a la frontera natural entre \emph{el mismo hecho descrito dos veces} y \emph{dos hechos consecutivos que describen estados ligeramente distintos}. El \emph{Decision Router} dispone, para esta distinción, de las dos descripciones textuales y la cuádrupla temporal de las aristas implicadas. Cuando los intervalos $[t_v^s, t_v^e]$ están desplazados de forma marginal ---por ejemplo, porque un documento data el inicio del cargo a partir del año y otro a partir del mes--- el modelo tiende a interpretar la diferencia como una transición sucesoria, no como una redundancia. Esta sensibilidad es deliberada: aceptarla produce, en este corpus, una tasa de error del 1.9\%; eliminarla exigiría una desensibilización temporal que comprometería la detección de las verdaderas transiciones (de las que el corpus contiene siete y el módulo las recupera todas).
 
 %% ============================================================
+\section{Análisis observacional sobre un corpus extenso}\label{sec:eval-ragtest}
+
+Los dos experimentos anteriores miden a CGER y ETCDR contra una verdad anotada manualmente, lo que requiere por construcción un corpus reducido. Para complementar esa visión, esta sección reporta una traza completa de la indexación de un corpus de cien documentos heterogéneos ---biografías políticas y deportivas, artículos de organizaciones internacionales, eventos electorales e instituciones académicas--- procesados con la misma configuración que el resto del capítulo (\texttt{gpt-4.1-mini} como modelo de generación, \texttt{text-embedding-3-large} de 3\,072~dimensiones, $\tau_{\cos} = 0.687$, umbral de confianza del \emph{Decision Router} en $0.7$). El corpus produjo 7\,969 entidades canónicas y 9\,609 relaciones tras el \emph{pipeline} completo. No existe verdad anotada para este corpus, de modo que las cifras que siguen no son métricas de calidad sino \emph{estadísticas operacionales} de los dos módulos: qué proporción de candidatos cada uno resolvió, en qué clase decidió y cuál es la distribución de los conflictos detectados.
+
+\subsection{Trazas de CGER}
+
+La indexación de este corpus se ejecutó sobre un grafo persistido vacío y se completó en una única pasada. Bajo esas condiciones la Fase~A del módulo ---el contraste contra el grafo persistido--- no llega a hacer ningún trabajo de resolución efectivo: el \emph{log} contiene 9\,007 entradas etiquetadas como \texttt{A\_cross\_graph}, pero todas ellas tienen \texttt{best\_match} vacío, \texttt{best\_score~=~0} y lista de comparaciones vacía, porque el bucle iteró sobre cada entidad sin ningún candidato persistido contra el que medirse. Toda la actividad de resolución de CGER se concentra, por tanto, en la Fase~B (intra-lote), cuya distribución se recoge en la Tabla~\ref{tab:eval-ragtest-cger-decisions}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+\textbf{Decisión (Fase~B)} & \textbf{Entradas} & \textbf{Proporción} \\ \hline
+\texttt{BELOW\_THRESHOLD} (no candidato sobre $\tau_{\cos}$) & 4\,625 & $65.9\%$ \\
+\texttt{LLM\_DIFFERENT\_ENTITY} (LLM rechaza el par)   & 1\,883 & $26.8\%$ \\
+\texttt{SAME\_B} (LLM fusiona, sobrevive el nombre B)  &   350 &  $5.0\%$ \\
+\texttt{SAME\_A} (LLM fusiona, sobrevive el nombre A)  &   154 &  $2.2\%$ \\
+\texttt{LLM\_DIFFERENT\_TEMPORAL} (mismo referente, distinta época) & 4 & $0.06\%$ \\ \hline
+\textbf{Total Fase~B} & \textbf{7\,016} & \textbf{$100\%$} \\ \hline
+\end{tabular}
+\caption{Distribución de decisiones de CGER en la Fase~B (intra-lote) sobre el corpus de cien documentos.}
+\label{tab:eval-ragtest-cger-decisions}
+\end{table}
+
+La tasa efectiva de verificación por LLM ---la proporción de candidatos de la Fase~B que superan $\tau_{\cos}$ y se envían al verificador--- es del $34.1\%$ ($2\,391$ pares verificados sobre $7\,016$ candidatos). De los pares verificados, el LLM emite un veredicto de fusión (\texttt{SAME\_A} o \texttt{SAME\_B}) en un $21.1\%$ de los casos. El mapa de fusión final agrega 502~entradas, lo que indica una reducción nominal de aproximadamente el $6\%$ del catálogo de entidades extraídas (502~alias absorbidos sobre 8\,471 títulos antes de la fusión). Sólo una cadena de fusión transitiva (\emph{src}~$\to$~\emph{mid}~$\to$~\emph{dst}) aparece en la traza, lo que confirma empíricamente la estabilidad del orden de procesamiento intra-lote frente a las reasignaciones encadenadas que la sección~\ref{sec:bt-cger} señala como riesgo teórico.
+
+La Tabla~\ref{tab:eval-ragtest-cger-samples} reúne ejemplos representativos del comportamiento del módulo en cada uno de los tres tipos de decisión cualitativamente más interesantes.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{p{4.2cm}p{4.2cm}p{1.0cm}p{4.0cm}}
+\hline
+\textbf{Entidad nueva} & \textbf{Mejor candidato} & \textbf{$\cos$} & \textbf{Veredicto} \\ \hline
+\texttt{RCAF} & \texttt{ROYAL CANADIAN AIR FORCE} & --- & \texttt{SAME\_B} (acrónimo) \\
+\texttt{HITLER} & \texttt{ADOLF HITLER} & $0.79$ & \texttt{SAME\_B} (apellido $\to$ nombre canónico) \\
+\texttt{ANDRE MALRAUX} & \texttt{ANDRÉ MALRAUX} & --- & \texttt{SAME\_B} (acento) \\
+\texttt{INT.\ AMATEUR ATHLETIC FED.} & \texttt{WORLD ATHLETICS} & --- & \texttt{SAME\_B} (cambio de nombre) \\
+\texttt{LOS ANGELES COUNTY SHERIFFS DEPT.} & \texttt{LOS ANGELES COUNTY SHERIFF'S DEPT.} & --- & \texttt{SAME\_B} (apóstrofo) \\
+\hline
+\texttt{WEMBLEY STADIUM (NEW)} & \texttt{WEMBLEY STADIUM (OLD)} & $0.81$ & \texttt{LLM\_DIFFERENT\_ENTITY} (cualificador) \\
+\texttt{OISE RIVER} & \texttt{SEINE RIVER} & $0.77$ & \texttt{LLM\_DIFFERENT\_ENTITY} (otro referente) \\
+\texttt{LIBERAL ALLIANCE OF MONTENEGRO} & \texttt{LIBERAL PARTY OF MONTENEGRO} & $0.78$ & \texttt{LLM\_DIFFERENT\_ENTITY} (organizaciones distintas) \\
+\hline
+\texttt{VALPARAISO MALE AND FEMALE COLLEGE} & \texttt{VALPARAISO UNIVERSITY} & $0.69$ & \texttt{LLM\_DIFFERENT\_TEMPORAL} (misma institución, dos estados) \\
+\texttt{ELECTORATE OF HANOVER} & \texttt{PRINCIPALITY OF CALENBERG} & $0.72$ & \texttt{LLM\_DIFFERENT\_TEMPORAL} (sucesión territorial) \\ \hline
+\end{tabular}
+\caption{Ejemplos cualitativos de cada uno de los tres tipos de decisión del verificador LLM de CGER sobre el corpus de cien documentos.}
+\label{tab:eval-ragtest-cger-samples}
+\end{table}
+
+Tres observaciones cabe destacar. La primera es que la mayoría de los aciertos del módulo se corresponden con clases canónicas de la literatura de \emph{entity resolution}: acrónimos, expansiones, normalización de acentos y puntuación, y renombrados institucionales (\emph{Aurore}, ahora \emph{World Athletics}). La segunda es que el filtro coseno por sí solo no separa correctamente los pares positivos de los negativos: las parejas \texttt{WEMBLEY (NEW)}/\texttt{WEMBLEY (OLD)} y \texttt{OISE RIVER}/\texttt{SEINE RIVER} exceden el umbral configurado y serían fusiones espurias en un sistema sin verificación contextual. La tercera es que el veredicto \texttt{DIFFERENT\_TEMPORAL} se invoca con extrema parsimonia (4~veces en todo el corpus): el módulo lo reserva para casos en los que dos descripciones describen efectivamente estados sucesivos del mismo referente, no para preservar identidades distintas que comparten un fragmento de nombre. Estas trazas, por su volumen, refuerzan las observaciones que el experimento controlado de la sección~\ref{sec:eval-cger} hace sobre un conjunto pequeño y reducen la sospecha de que aquellos resultados respondan a singularidades del corpus de prueba.
+
+\subsection{Trazas de ETCDR}
+
+Sobre el mismo corpus, ETCDR procesa 10\,276 aristas candidatas. La Tabla~\ref{tab:eval-ragtest-etcdr-strategies} recoge la distribución de las cinco estrategias emitidas por el \emph{Decision Router}, y la Tabla~\ref{tab:eval-ragtest-etcdr-cardinality} la distribución de cardinalidades efectivamente asignadas por el clasificador a los tipos de relación.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+\textbf{Estrategia} & \textbf{Aristas} & \textbf{Proporción} \\ \hline
+\texttt{NEW\_EDGE}      & 9\,966 & $97.0\%$ \\
+\texttt{CORROBORATION}  &   284  & $2.8\%$ \\
+\texttt{EVOLUTION}      &    18  & $0.18\%$ \\
+\texttt{CORRECTION}     &     4  & $0.04\%$ \\
+\texttt{DISAGREEMENT}   &     4  & $0.04\%$ \\ \hline
+\textbf{Total} & \textbf{10\,276} & \textbf{$100\%$} \\ \hline
+\end{tabular}
+\caption{Distribución de estrategias emitidas por ETCDR sobre las 10\,276 aristas candidatas del corpus de cien documentos.}
+\label{tab:eval-ragtest-etcdr-strategies}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrr}
+\hline
+\textbf{Cardinalidad} & \textbf{Aristas} & \textbf{Proporción} \\ \hline
+\texttt{NON\_EXCLUSIVE}     & 9\,410 & $91.6\%$ \\
+\texttt{SUBJECT\_EXCLUSIVE} &   808  & $7.9\%$ \\
+\texttt{OBJECT\_EXCLUSIVE}  &    49  & $0.5\%$ \\
+\texttt{BOTH\_EXCLUSIVE}    &     9  & $0.1\%$ \\ \hline
+\end{tabular}
+\caption{Distribución de cardinalidades efectivamente aplicadas por el clasificador sobre las aristas del corpus.}
+\label{tab:eval-ragtest-etcdr-cardinality}
+\end{table}
+
+Las cifras admiten una lectura combinada con el reparto de cardinalidades. De las 866~aristas con alguna etiqueta exclusiva ($\texttt{SUBJECT}$, $\texttt{OBJECT}$ o $\texttt{BOTH}$), 978 dispararon al menos una consulta de detección con resultado positivo y pasaron por el \emph{Decision Router}\footnote{El número de aristas que activan la detección supera al de aristas con cardinalidad exclusiva porque una arista \texttt{NON\_EXCLUSIVE} también puede entrar a corroboración si encuentra una copia idéntica en el lote.}. La gran mayoría de esas 978~detecciones se resuelve como una de las tres estrategias contextuales: $284$ \texttt{CORROBORATION}, $18$ \texttt{EVOLUTION}, $4$ \texttt{CORRECTION} y $4$ \texttt{DISAGREEMENT}. Las restantes $668$ se resuelven como \texttt{NEW\_EDGE} porque, aunque el detector emitió señal, las descripciones del candidato y de la arista en conflicto convencieron al \emph{Decision Router} de que se trataba de hechos independientes (por ejemplo, dos cargos simultáneos en organizaciones distintas, o dos participaciones en eventos del mismo nombre pero distinto año). Las cuatro únicas decisiones de \texttt{DISAGREEMENT} terminan en aristas con estatus \texttt{disputed}, en consonancia con la política de degradación segura cuando la confianza del LLM cae por debajo de $0.7$.
+
+\begin{table}[h]
+\centering
+\footnotesize
+\begin{tabular}{p{1.7cm}p{6.0cm}p{6.0cm}}
+\hline
+\textbf{Estrategia} & \textbf{Candidato} & \textbf{Arista en conflicto} \\ \hline
+\texttt{EVOLUTION} & \texttt{HELEN CLARK -[EMPLOYED\_AT]-> UNDP} \newline (2017--present) & misma tripleta (2009--2017) \\
+\texttt{EVOLUTION} & \texttt{DAVID L. GUNN -[IS\_PRESIDENT\_OF]-> AMTRAK} \newline (2002-05--present) & misma tripleta cerrada en 2002-05 con descripción del cese de 2005 \\
+\texttt{CORROBORATION} & \texttt{NIGEL GREENWOOD -[EMPLOYED\_AT]-> HALIFAX TOWN} \newline (1992-07--present) & misma tripleta y mismo período, distinta redacción \\
+\texttt{CORRECTION} & \texttt{KLAUS FUCHS -[STUDIED\_AT]-> UNIV.\ LEIPZIG} \newline (1930, según el candidato) & misma tripleta con \texttt{valid\_start} en 1949, claramente errónea \\
+\texttt{DISAGREEMENT} & \texttt{CHRIS WATSON -[BORN\_IN]-> VALPARAÍSO} \newline (1867-04, según el candidato) & misma tripleta con período abierto y descripción que admite la duda \\ \hline
+\end{tabular}
+\caption{Ejemplos representativos, uno por estrategia distinta de \texttt{NEW\_EDGE}, extraídos directamente del \emph{log} de ETCDR sobre el corpus.}
+\label{tab:eval-ragtest-etcdr-samples}
+\end{table}
+
+La Tabla~\ref{tab:eval-ragtest-etcdr-samples} ilustra el tipo de conflicto que cada una de las cuatro estrategias contextuales captura. La traza de \texttt{HELEN CLARK} es un caso de libro de \texttt{EVOLUTION}: dos documentos describen al mismo cargo en dos intervalos consecutivos y sin solapamiento (2009--2017 y 2017--presente), de modo que el módulo cierra el primero asignándole \texttt{valid\_end~=~2017} e inserta el segundo como sucesor activo. Las cuatro \texttt{CORRECTION} ---entre ellas el caso \texttt{KLAUS FUCHS}--- corresponden a aristas previas cuyo \texttt{valid\_start} es demostrablemente incompatible con la nueva evidencia: el módulo las retracta vía \texttt{tx\_end} sin borrarlas y registra la versión corregida como activa, dejando rastro auditable. Las cuatro \texttt{DISAGREEMENT} aparecen exclusivamente sobre relaciones de lugar de nacimiento o de afiliación con descripciones ambiguas, justamente la situación que el \emph{Decision Router} debe degradar antes que comprometerse con una versión. El \emph{log} no contiene ninguna \emph{late arrival} sobre las 10\,276~aristas, lo que sugiere que el extractor procesa los documentos en un orden lo bastante coherente como para que la cuestión no se materialice en este corpus.
+
+Esta traza confirma, a una escala dos órdenes de magnitud mayor que la del experimento controlado, los dos patrones que aquél anticipaba. Primero, las cinco estrategias del \emph{Decision Router} se distribuyen de forma marcadamente desigual: el caso esperable en un corpus enciclopédico es \texttt{NEW\_EDGE}, las corroboraciones representan un dígito porcentual, y las decisiones de evolución, corrección y desacuerdo se cuentan por decenas. Segundo, las dos estrategias menos frecuentes ---\texttt{CORRECTION} y \texttt{DISAGREEMENT}--- sí aparecen cuando el corpus es lo bastante grande para contenerlas, aunque en proporciones por debajo del $0.1\%$. Su presencia, aun marginal, permite comprobar que la \emph{lógica} de retractación y de degradación de confianza está operativa, una validación que el corpus controlado de la sección~\ref{sec:eval-etcdr} no llega a proporcionar.
+
+%% ============================================================
 \section{Discusión}\label{sec:eval-discussion}
 
 Los dos experimentos miden propiedades distintas del \emph{pipeline}. El primero, sobre CGER, ataca la limitación~5 del estado del arte (resolución de entidades sin temporalidad): el módulo recupera dos terceras partes de las equivalencias del conjunto de prueba sobre un \emph{baseline} de coincidencia exacta que recupera cero. La $F_1$ pareada de $0.60$ se debe interpretar a la luz de la dificultad del corpus, donde los pares positivos están construidos para no compartir cadena exacta y donde varios alias aparecen una única vez (limitando la calidad del \emph{embedding} de descripción). El umbral coseno calibrado sobre el corpus de entrenamiento mantiene una calidad razonable en transferencia al conjunto de prueba ---la $F_1$ cae de $0.73$ a $0.60$---, lo que se atribuye a la diferencia de densidad de menciones entre los dos corpus y al tamaño limitado de la verdad anotada (33 pares positivos).
 
 El segundo experimento, sobre el sistema combinado de cardinalidad y ETCDR, alcanza una precisión del 98\% en la elección de la estrategia de resolución por arista. Esta cifra debe leerse con cuidado: la verdad anotada del corpus no contiene casos de \texttt{CORRECTION} ni de \texttt{DISAGREEMENT}, por lo que el experimento mide la capacidad del módulo para distinguir entre \texttt{NEW\_EDGE}, \texttt{CORROBORATION} y \texttt{EVOLUTION}, que son las tres estrategias más frecuentes en cualquier corpus biográfico. El resultado confirma que, sobre este reparto, la combinación clasificador de cardinalidad + \emph{Decision Router} es muy estable. Las siete transiciones \texttt{EVOLUTION} se recuperan todas, lo que es relevante porque son precisamente el tipo de decisión que un sistema sin clasificación de cardinalidad asimétrica (la limitación~3 del estado del arte) no podría tomar. Las cinco decisiones incorrectas pertenecen, en su totalidad, a la frontera natural entre \texttt{CORROBORATION} y \texttt{EVOLUTION}: una región donde la verdad anotada por un revisor humano admite, en algunos casos, ambas lecturas legítimas, y no a una insensibilidad estructural del módulo a una categoría de conflicto.
 
-\paragraph{Limitaciones de los experimentos.} Tres limitaciones merecen explicitarse. La primera, ya señalada, es el reducido tamaño de la verdad anotada en CGER (33 pares positivos en prueba, 118 en entrenamiento): el corpus es suficiente para estimar el umbral coseno y para diferenciar el módulo de un \emph{baseline} trivial, pero los intervalos de confianza sobre la $F_1$ pareada son anchos. La segunda es la ausencia de \texttt{CORRECTION} y \texttt{DISAGREEMENT} en la verdad anotada de ETCDR: la composición del corpus no permite valorar la calidad del módulo en esos dos cuadrantes del \emph{Decision Router}, que conceptualmente son los más exigentes. La tercera es la sustitución de CGER por un oráculo de canonicalización en el experimento de ETCDR: el experimento aísla con éxito la calidad de la combinación cardinalidad + \emph{Decision Router}, pero deja para trabajo futuro la medición de los efectos en cascada que un CGER no perfecto introduciría sobre ETCDR.
+\paragraph{Limitaciones de los experimentos.} Tres limitaciones merecen explicitarse. La primera, ya señalada, es el reducido tamaño de la verdad anotada en CGER (33 pares positivos en prueba, 118 en entrenamiento): el corpus es suficiente para estimar el umbral coseno y para diferenciar el módulo de un \emph{baseline} trivial, pero los intervalos de confianza sobre la $F_1$ pareada son anchos. La segunda es la ausencia de \texttt{CORRECTION} y \texttt{DISAGREEMENT} en la verdad anotada de ETCDR: la composición del corpus no permite valorar la calidad del módulo en esos dos cuadrantes del \emph{Decision Router}, que conceptualmente son los más exigentes; el análisis observacional de la sección~\ref{sec:eval-ragtest} mitiga parcialmente esta limitación al exhibir trazas reales de las dos estrategias, pero sin métricas pareadas. La tercera es la sustitución de CGER por un oráculo de canonicalización en el experimento de ETCDR: el experimento aísla con éxito la calidad de la combinación cardinalidad + \emph{Decision Router}, pero deja para trabajo futuro la medición de los efectos en cascada que un CGER no perfecto introduciría sobre ETCDR.
 
-\paragraph{Lecturas combinadas.} A pesar de las limitaciones anteriores, los dos experimentos permiten una lectura conjunta: BT-GRAPHRAG resuelve la inmensa mayoría de los conflictos temporales del corpus de prueba ($98\%$) bajo el supuesto de que su capa previa de resolución de entidades acierta. Cuando esta última se somete a su propio examen, recupera dos tercios de las equivalencias contra una línea base que recupera ninguna. La asignación de responsabilidad es, por tanto, transparente: el cuello de botella del \emph{pipeline}, sobre este corpus, es CGER, no ETCDR. Esta lectura orienta la siguiente fase de trabajo hacia el refinamiento del componente de resolución de entidades, donde los \emph{embeddings} de descripción son más cortos y la decisión del LLM se enfrenta a información más esparsa.
+\paragraph{Lecturas combinadas.} A pesar de las limitaciones anteriores, los tres bloques empíricos permiten una lectura conjunta: BT-GRAPHRAG resuelve la inmensa mayoría de los conflictos temporales del corpus de prueba ($98\%$) bajo el supuesto de que su capa previa de resolución de entidades acierta. Cuando esta última se somete a su propio examen, recupera dos tercios de las equivalencias contra una línea base que recupera ninguna. La traza observacional sobre el corpus de cien documentos refuerza ambas lecturas a una escala mayor: el módulo CGER produce el tipo de fusiones que la literatura clásica espera (acrónimos, expansiones, normalización de signos diacríticos, renombrados institucionales) y rechaza fusiones espurias entre entidades semánticamente vecinas que el coseno por sí solo habría aceptado, mientras que ETCDR distribuye sus estrategias en proporciones consistentes con un corpus enciclopédico (\texttt{NEW\_EDGE} dominante, corroboraciones en el dígito porcentual, evolución/corrección/desacuerdo en el dígito por mil) y materializa las dos estrategias \texttt{CORRECTION} y \texttt{DISAGREEMENT} que el experimento controlado no contenía. La asignación de responsabilidad es, por tanto, transparente: el cuello de botella del \emph{pipeline}, sobre este corpus, es CGER, no ETCDR. Esta lectura orienta la siguiente fase de trabajo hacia el refinamiento del componente de resolución de entidades, donde los \emph{embeddings} de descripción son más cortos y la decisión del LLM se enfrenta a información más esparsa.
 
 %% ============================================================
 \section{Conclusiones}\label{sec:eval-conclusions}
 
 El presente capítulo ha evaluado experimentalmente los dos módulos centrales de BT-GRAPHRAG sobre un corpus controlado de cinco biografías. CGER alcanza una $F_1$ pareada de $0.603$ frente a un \emph{baseline} de coincidencia exacta que obtiene cero, lo que confirma la contribución neta del componente sobre la limitación~5 del estado del arte. La combinación de la clasificación de cardinalidad asimétrica y del \emph{Decision Router} de ETCDR alcanza una precisión del 98\% en la asignación de estrategias de resolución, recuperando la totalidad de las transiciones \texttt{EVOLUTION} presentes en la verdad anotada y degradando a \texttt{DISAGREEMENT} sólo aquellos casos en los que la confianza del LLM cae por debajo del umbral configurado.
 
-Los dos experimentos validan empíricamente las dos decisiones de diseño que el Capítulo~\ref{chapter:proposal} consideró más sensibles: el uso del LLM como árbitro contextual de la fusión de entidades, con período activo como parte de su contexto, y la dirección de la búsqueda de conflictos por la cardinalidad asimétrica del tipo de relación. Ningún experimento es concluyente respecto a las dos estrategias menos frecuentes (\texttt{CORRECTION} y \texttt{DISAGREEMENT}), cuya evaluación queda pendiente para corpus con retractaciones explícitas. El análisis sugiere, además, que el cuello de botella sobre este corpus es la fase de resolución de entidades y no la de detección y resolución de conflictos, lo que orienta el trabajo futuro hacia el refinamiento de CGER en escenarios de descripción esparsa.
+Los dos experimentos controlados validan empíricamente las dos decisiones de diseño que el Capítulo~\ref{chapter:proposal} consideró más sensibles: el uso del LLM como árbitro contextual de la fusión de entidades, con período activo como parte de su contexto, y la dirección de la búsqueda de conflictos por la cardinalidad asimétrica del tipo de relación. El análisis observacional sobre el corpus de cien documentos confirma a una escala mayor las distribuciones que aquellos experimentos anticipaban y, al exhibir trazas reales de las estrategias \texttt{CORRECTION} y \texttt{DISAGREEMENT}, comprueba que la lógica de retractación y de degradación de confianza está operativa, aunque su evaluación cuantitativa sobre verdad anotada queda pendiente para corpus con retractaciones explícitas. El análisis sugiere, además, que el cuello de botella sobre estos corpus es la fase de resolución de entidades y no la de detección y resolución de conflictos, lo que orienta el trabajo futuro hacia el refinamiento de CGER en escenarios de descripción esparsa.
