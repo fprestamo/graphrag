@@ -298,16 +298,25 @@ async def find_entities_by_titles(
     norm_titles = [n for _, n in norm_pairs]
     lower_titles = [n.lower() for n in norm_titles]
 
+    # Token-aligned CONTAINS: we pad both sides with a sentinel space so that
+    # short substring matches like "JOHN" inside "JOHN WILLIAMS" only fire on
+    # whole-word boundaries. Combined with a min-length floor this filters out
+    # noise seeds like "LL", "ART", "JOHN" that were polluting the subgraph.
     query = """
     UNWIND range(0, size($raw) - 1) AS i
     WITH i, $raw[i] AS query_term, $norm[i] AS norm_term, $lower[i] AS lower_term
     OPTIONAL MATCH (e:Entity)
-    WHERE e.title = norm_term
-       OR toLower(e.title) = lower_term
-       OR toLower(e.title) CONTAINS lower_term
-       OR lower_term CONTAINS toLower(e.title)
-    WITH query_term, e
-    WHERE e IS NOT NULL
+    WITH query_term, lower_term, e,
+         toLower(e.title) AS ent_lower
+    WITH query_term, lower_term, e, ent_lower,
+         ' ' + lower_term + ' ' AS lt_padded,
+         ' ' + ent_lower + ' ' AS et_padded
+    WHERE e IS NOT NULL AND (
+           e.title = lower_term
+        OR ent_lower = lower_term
+        OR (size(lower_term) >= 4 AND size(ent_lower) >= 4
+            AND (et_padded CONTAINS lt_padded OR lt_padded CONTAINS et_padded))
+    )
     RETURN query_term, properties(e) AS props
     """
     result = await session.run(
@@ -394,6 +403,12 @@ async def get_subgraph_around_entities(
     # Two-step query: first find candidate edges within k_hop of seeds, then
     # return them along with the participating entities.  We use APOC-style
     # variable-length patterns and rely on the seed list to anchor the path.
+    #
+    # Ordering before LIMIT: prefer edges with higher confidence and support,
+    # then most recent valid_start. This keeps the more reliable, more recent
+    # claims in the truncated head when the candidate pool exceeds the cap.
+    # Python-side re-ranking can still reorder by temporal overlap with the
+    # query window before feeding the LLM.
     cypher = f"""
     MATCH (seed:Entity)
     WHERE seed.title IN $seeds
@@ -408,6 +423,9 @@ async def get_subgraph_around_entities(
     MATCH (s:Entity)-[r]->(t:Entity)
     WHERE {where_clause}
     WITH DISTINCT r, s, t
+    ORDER BY coalesce(r.confidence, 1.0) DESC,
+             coalesce(r.support_count, 1) DESC,
+             r.t_valid_start DESC
     RETURN s.title AS source, t.title AS target,
            properties(r) AS edge_props,
            properties(s) AS source_props,

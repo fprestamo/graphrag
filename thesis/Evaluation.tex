@@ -1,0 +1,169 @@
+\chapter{Evaluación experimental}\label{chapter:evaluation}
+
+Este capítulo presenta la evaluación experimental de los dos módulos centrales que el Capítulo~\ref{chapter:proposal} introdujo como aportación original de BT-GRAPHRAG: la resolución contextual y temporal de entidades (CGER) y la detección y resolución de conflictos temporales (ETCDR). Cada módulo se evalúa de forma independiente sobre un corpus específicamente preparado para él, con ganancia de verdad anotada manualmente y métricas pareadas a su tipo de salida. ETCDR se evalúa de manera conjunta con la clasificación de cardinalidad, ya que su lógica de detección depende por completo de la categoría asignada a cada tipo de relación y, por tanto, ninguna evaluación significativa puede aislar una de la otra.
+
+El capítulo se organiza en cinco secciones. La sección~\ref{sec:eval-setup} expone la metodología común a los dos experimentos: la naturaleza del corpus, los modelos empleados, el proceso de generación de la verdad anotada y las métricas reportadas. La sección~\ref{sec:eval-cger} presenta la evaluación de CGER, incluyendo el ajuste de su umbral coseno mediante búsqueda por recocido simulado y los resultados pareados sobre el conjunto de prueba. La sección~\ref{sec:eval-etcdr} describe la evaluación conjunta de ETCDR y la clasificación de cardinalidad, con la matriz de confusión y el análisis de errores. La sección~\ref{sec:eval-discussion} discute los resultados, sus limitaciones y las lecturas que pueden extraerse de cada experimento. Finalmente, la sección~\ref{sec:eval-conclusions} resume las conclusiones del capítulo.
+
+%% ============================================================
+\section{Metodología común}\label{sec:eval-setup}
+
+La evaluación se realiza sobre un corpus controlado de cinco artículos biográficos extraídos de Wikipedia\cite{TODO_wikipedia}, seleccionados por presentar las dos propiedades necesarias para ejercitar los dos módulos: una densidad alta de menciones con variantes nominales (necesaria para CGER) y un conjunto de hechos con restricciones temporales claras y, en algunos casos, evolución de cargos a lo largo del tiempo (necesario para ETCDR). El conjunto de prueba lo integran las biografías de Agnes de Selincourt, Angela Eagle, Charles Fechter, Peter Sutherland y Thomas Slingsby Duncombe, con un volumen combinado de aproximadamente 8\,700 palabras. Estos perfiles cubren un rango deliberadamente amplio de épocas (siglo XIX al XXI) y dominios (política, academia, artes escénicas y misiones religiosas), lo que reduce el riesgo de que los resultados respondan a un sesgo de género temporal o de campo.
+
+Para la calibración del umbral coseno de CGER (sección~\ref{sec:eval-cger}) se reserva un corpus de entrenamiento independiente compuesto por quince biografías distintas (Frederica Wilson, Robert Tarjan, Margaret Burbidge, Wilhelm Liebknecht, Tina Anselmi, Philip Alston y otros), con un volumen total de aproximadamente 17\,500 palabras. La separación estricta entre los corpus de entrenamiento y de prueba garantiza que los umbrales se elijan sin observar las decisiones del conjunto sobre el que se reporta el resultado final.
+
+\paragraph{Pipeline de extracción.} En ambos corpus, cada documento se segmenta en bloques de \emph{tokens} (\emph{chunks}) mediante el segmentador estándar de GraphRAG, con tamaño de bloque de 800~\emph{tokens} y solapamiento de 100 para el conjunto de prueba de CGER, y de 600~\emph{tokens} con el mismo solapamiento para el de ETCDR (la ventana más estrecha favorece la detección de hechos temporales por proximidad). Sobre cada bloque se ejecuta el extractor temporal descrito en la sección~\ref{sec:impl-stage1}, configurado con \texttt{gpt-4.1-mini}\cite{TODO_gpt41mini} como modelo de generación y \texttt{text-embedding-3-large}\cite{TODO_te3large} (de 3\,072 dimensiones) como modelo de \emph{embedding}. La salida concatenada de la extracción se materializa como un trío de archivos JSON ---bloques, entidades y relaciones--- que sirve de entrada común para todos los experimentos posteriores: ningún experimento vuelve a invocar al extractor, lo que aísla las métricas reportadas de la variabilidad propia del modelo de extracción.
+
+\paragraph{Verdad anotada.} La verdad de cada experimento se genera en dos pasos. En el primero, un agente LLM al que se le entrega exclusivamente el archivo de extracción agrupa las menciones que considera referidas a la misma entidad o predicado, siguiendo un \emph{prompt} de autoría que prohibe la introducción de cadenas que no aparezcan textualmente en la extracción y que descarta los grupos de un solo elemento. En el segundo, los grupos propuestos por el agente se revisan manualmente para corregir falsos agrupamientos, completar los que falten y descartar los que el lector humano considere ambiguos. Esta política conservadora prefiere descartar un \emph{cluster} dudoso antes que incluirlo, ya que el corrector pareado (sección~\ref{sec:eval-setup-metrics}) penaliza más una asignación errónea que una omitida.
+
+\paragraph{Métricas reportadas.}\label{sec:eval-setup-metrics}
+Para CGER, cuya salida natural es un mapa de fusión entre menciones, el corrector convierte cada \emph{cluster} de la verdad anotada en el conjunto de pares no ordenados $\{(a_i, a_j)\,|\,a_i, a_j \in \text{cluster}, i<j\}$, hace lo mismo con el mapa de fusión emitido por el módulo y reporta precisión, exhaustividad y $F_1$ pareadas. La métrica pareada es estándar en la literatura de resolución de entidades~\cite{TODO_pairwise_er} y tiene la propiedad deseable de penalizar de forma simétrica las fusiones excesivas y las omitidas, sin depender del orden de los elementos dentro de cada \emph{cluster}.
+
+Para ETCDR, cuya salida es una estrategia de resolución por arista candidata, el corrector pairea cada entrada de la verdad anotada con la $k$-ésima aparición de su tripleta canónica en el lote y compara la estrategia esperada con la efectivamente seleccionada. Las métricas reportadas son: la precisión global (\emph{accuracy}), entendida como la proporción de tripletas correctamente clasificadas sobre el total de las pareadas; la matriz de confusión a nivel de estrategia; y el desglose de aquellas tripletas declaradas en la verdad que el sistema no llegó a procesar (\emph{unmatched}), ya sea porque la canonicalización las descartó o porque el orden de extracción difería de la previsión del anotador.
+
+%% ============================================================
+\section{Evaluación de CGER}\label{sec:eval-cger}
+
+\subsection{Banco de pruebas y procedimiento}
+
+Sobre el conjunto de prueba descrito en la sección anterior, el extractor produjo 690 entidades y 764 relaciones. La verdad anotada contiene 29 \emph{clusters} de entidades coreferentes que, al expandirse a pares, suman 33 pares positivos. Cada par representa dos cadenas distintas que se refieren a la misma entidad del mundo real (por ejemplo, ``BRIAN LENIHAN'' y ``BRAIN LENIHAN'' como variantes ortográficas de la misma persona, o ``2016 UNITED KINGDOM EUROPEAN UNION MEMBERSHIP REFERENDUM'' y ``BREXIT REFERENDUM 2016'' como denominaciones equivalentes del mismo evento). De forma deliberada, ninguno de los 33 pares positivos comparte la cadena textual exacta de ambos lados: la coincidencia de nombre del GraphRAG original obtendría una exhaustividad de cero sobre este conjunto, lo que permite atribuir cualquier acierto del módulo a su componente semántico-temporal y no a un \emph{baseline} trivial.
+
+El módulo se invoca en modo \emph{intra-batch}: el grafo persistente se mantiene vacío para forzar a que cada alias se contraste contra los demás alias del mismo lote, replicando la condición del primer procesamiento de un corpus. La configuración fija el coseno-umbral en el valor obtenido en la calibración (descrita más abajo), el modelo de \emph{embedding} en \texttt{text-embedding-3-large}, el modelo de verificación en \texttt{gpt-4.1-mini} y los parámetros \texttt{cger\_candidate\_top\_k} y \texttt{cger\_phase\_b\_top\_k} en 3. Cada experimento se ejecuta tres veces, con semilla distinta del LLM, y los resultados se reportan como media y desviación estándar.
+
+\subsection{Calibración del umbral coseno}
+
+El umbral $\tau_{\cos}$ que controla la transición entre el pre-filtrado y la verificación por LLM admite, para un mismo corpus, configuraciones muy distintas según se priorice precisión, exhaustividad o coste en llamadas al LLM. La calibración se realiza sobre el corpus de entrenamiento independiente (118 pares positivos en la verdad anotada) mediante una búsqueda por recocido simulado~\cite{TODO_simulated_annealing} que optimiza una puntuación compuesta de $F_1$ y de proporción de llamadas al LLM:
+\begin{equation}
+\text{score}(\tau) = F_1(\tau) - \lambda \cdot \text{llm\_rate}(\tau),
+\end{equation}
+con $\lambda = 0.3$. Esta función premia la calidad de las fusiones y penaliza linealmente la fracción de pares que activan la verificación por LLM, evitando los óptimos triviales que clavarían el umbral en el extremo bajo del rango (todo se verifica) o en el alto (nada se verifica).
+
+La búsqueda explora el intervalo $[0.20, 0.95]$ con cinco puntos iniciales de \emph{grid scan} seguidos de veinte iteraciones de recocido (temperatura inicial $0.2$, factor de enfriamiento geométrico $0.85$, radio de vecindad decreciente entre $0.25$ y $0.01$). El mejor punto encontrado fue $\tau_{\cos} = 0.687$, con $F_1 = 0.734$, precisión $0.757$ y exhaustividad $0.712$ sobre el corpus de entrenamiento, activando la verificación por LLM en un 39\% de los pares candidatos.
+
+\subsection{Resultados sobre el conjunto de prueba}
+
+Con el umbral fijado, las tres corridas independientes sobre el conjunto de prueba arrojan los resultados de la Tabla~\ref{tab:eval-cger-results}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\hline
+\textbf{Configuración} & \textbf{Precisión} & \textbf{Exhaustividad} & \textbf{$F_1$} & \textbf{Pares correctos / totales} \\ \hline
+CGER (media de 3 corridas) & $0.600 \pm 0.010$ & $0.606 \pm 0.000$ & $0.603 \pm 0.005$ & $20 / 33$ \\
+\emph{Baseline} coincidencia exacta de nombre & $0.000$ & $0.000$ & $0.000$ & $0 / 33$ \\ \hline
+\end{tabular}
+\caption{Resultados de CGER sobre el conjunto de prueba (33 pares positivos en la verdad anotada). El \emph{baseline} es el comportamiento de GraphRAG original, que sólo fusiona cadenas idénticas.}
+\label{tab:eval-cger-results}
+\end{table}
+
+La precisión y la exhaustividad se sitúan en torno al 0.60, lo que indica que el módulo identifica correctamente alrededor de dos terceras partes de las equivalencias del conjunto de prueba sin acumular sobre-fusiones desproporcionadas. La estabilidad entre corridas es alta (desviación estándar de $F_1$ por debajo de 0.01), lo que sugiere que el componente principal de variabilidad ---el muestreo del LLM--- no introduce ruido relevante para la decisión de fusión a este umbral.
+
+El contraste frente al \emph{baseline} de coincidencia exacta es decisivo: ninguno de los 33 pares positivos se detectaría por igualdad textual, porque todos involucran variantes ortográficas, abreviaturas, expansiones o reordenamientos. La $F_1$ de $0.603$ es, por construcción, la contribución neta del componente CGER respecto a la línea base de GraphRAG.
+
+\subsection{Análisis de errores}
+
+Los 13 falsos negativos comunes a las tres corridas se concentran en pares con coseno por debajo del umbral $\tau_{\cos}=0.687$: descripciones muy escuetas (``EAGLE'' frente a ``ANGELA EAGLE'') o casos donde la entidad aparece una sola vez en el corpus, lo que limita el contenido del \emph{embedding} de descripción. Estos errores son inherentes al diseño en dos fases: bajar el umbral los recuperaría a costa de duplicar el número de llamadas al LLM, según se observa durante la calibración del corpus de entrenamiento.
+
+Los 13--14 falsos positivos típicos corresponden a entidades semánticamente vecinas pero distintas: pares como ``EUROPEAN PERSON OF THE YEAR AWARD'' y ``THE GOLD MEDAL OF THE EUROPEAN PARLIAMENT'' tienen descripciones lo bastante cercanas para que el LLM emita ocasionalmente \texttt{SAME} en lugar de \texttt{DIFFERENT\_ENTITY}. Estos errores son de la clase que la limitación~5 del estado del arte (sección~\ref{sec:soa-conclusions}) ya señala como difícil para cualquier resolución basada exclusivamente en similitud semántica; el veredicto \texttt{DIFFERENT\_TEMPORAL} reduce ---pero no elimina--- esta confusión cuando los períodos activos de las dos entidades coinciden en la misma franja temporal.
+
+%% ============================================================
+\section{Evaluación de ETCDR y clasificación de cardinalidad}\label{sec:eval-etcdr}
+
+\subsection{Acoplamiento de los dos componentes}
+
+ETCDR no puede evaluarse de manera aislada respecto a la clasificación de cardinalidad: la categoría asignada a cada tipo de relación determina qué consultas de detección se lanzan sobre el grafo y, por tanto, qué aristas conflictivas alcanzan al \emph{Decision Router}. Si la clasificación etiqueta una relación exclusiva como \texttt{NON\_EXCLUSIVE}, ningún conflicto se detecta y la estrategia degenera a \texttt{NEW\_EDGE}, con independencia de lo que el \emph{Decision Router} hubiera decidido en presencia de evidencia. A la inversa, una etiqueta exclusiva sobre una relación que no lo es genera conflictos espurios que el \emph{Decision Router} ha de descartar uno a uno. Por este motivo, el experimento que sigue evalúa al sistema combinado ---clasificador de cardinalidad más \emph{Decision Router}--- frente a una verdad anotada que codifica directamente la estrategia esperada sobre cada arista, sin separar la responsabilidad entre los dos sub-componentes.
+
+\subsection{Banco de pruebas y procedimiento}
+
+El experimento opera sobre el mismo conjunto de cinco biografías que el de CGER. Una vez completada la extracción, los 690 entidades y 764 relaciones se canonicalizan apoyándose en los \emph{clusters} de la verdad anotada de entidades y de tipos de relación: el equivalente al mapa de fusión que produciría CGER en condiciones ideales, suministrado aquí como oráculo para que la evaluación se centre en las decisiones de ETCDR y no en la calidad de la fase previa.
+
+Para garantizar que las decisiones de detección y resolución sean comparables entre experimentos, se mantiene la base de datos persistida vacía durante toda la pasada: todos los conflictos se materializan en el ámbito intra-lote, lo que efectivamente prueba la lógica de Phase~B de ETCDR descrita en la sección~\ref{sec:bt-etcdr} y su almacén auxiliar \texttt{etcdrbatch}. Este enfoque es deliberado: la lógica Cypher que aplica \texttt{apply\_evolution}, \texttt{apply\_correction} y \texttt{apply\_corroboration} es la misma en ambos orígenes (persistido o intra-lote), de modo que la estrategia seleccionada para cada candidata es lo que efectivamente se evalúa, con independencia del subsistema que aportó la arista existente.
+
+\paragraph{Verdad anotada.} La verdad anotada se genera siguiendo el mismo procedimiento que el de CGER: un agente LLM construye un borrador con la estrategia esperada por cada aparición de cada tripleta canónica y un revisor humano corrige y completa. Una entrada típica codifica, para una tripleta canónica como (\texttt{ELON MUSK}, \texttt{IS\_CEO\_OF}, \texttt{TESLA}), una secuencia ordenada de estrategias ---\texttt{NEW\_EDGE} en la primera ocurrencia, \texttt{CORROBORATION} en cada reiteración del mismo hecho, \texttt{EVOLUTION} si más tarde aparece un sucesor en el mismo cargo--- que el corrector pareará con la $k$-ésima aparición de esa tripleta en el orden de extracción. El conjunto resultante contiene 277 entradas: 130 con estrategia esperada \texttt{NEW\_EDGE}, 140 con \texttt{CORROBORATION} y 7 con \texttt{EVOLUTION}. La ausencia de \texttt{CORRECTION} y \texttt{DISAGREEMENT} en la verdad anotada refleja la naturaleza del corpus: los hechos están razonablemente bien acotados y no se observa ninguna retractación explícita entre documentos.
+
+\paragraph{Sobreescrituras de cardinalidad.} La verdad anotada fija manualmente la cardinalidad de los ocho tipos de relación que el revisor identifica como claramente exclusivos en el dominio: \texttt{IS\_PRESIDENT\_OF}, \texttt{IS\_CHAIRMAN\_OF}, \texttt{IS\_DIRECTOR\_OF}, \texttt{IS\_DEPUTY\_LEADER\_OF}, \texttt{DIED\_IN}, \texttt{INTERRED\_AT}, \texttt{RETIRED\_TO} y \texttt{BORN\_IN}. Los otros 145 tipos de relación que aparecen en el lote se clasifican \emph{en línea} por el LLM, con el mismo \emph{prompt} que la sección~\ref{sec:impl-cardinality} expone y bajo la misma política conservadora que favorece \texttt{NON\_EXCLUSIVE} en ausencia de evidencia. El reparto resultante de las 153 cardinalidades efectivamente usadas se recoge en la Tabla~\ref{tab:eval-cardinality-distribution}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lc}
+\hline
+\textbf{Categoría} & \textbf{Tipos clasificados} \\ \hline
+\texttt{NON\_EXCLUSIVE} & 123 \\
+\texttt{SUBJECT\_EXCLUSIVE} & 24 \\
+\texttt{OBJECT\_EXCLUSIVE} & 5 \\
+\texttt{BOTH\_EXCLUSIVE} & 1 \\ \hline
+\textbf{Total} & 153 \\ \hline
+\end{tabular}
+\caption{Distribución de las cardinalidades efectivamente usadas en la corrida (8 sobreescrituras manuales y 145 clasificaciones por LLM).}
+\label{tab:eval-cardinality-distribution}
+\end{table}
+
+El predominio de \texttt{NON\_EXCLUSIVE} (123 de 153) confirma que la política conservadora del clasificador se respeta también en este corpus: sólo el 20\% de los tipos de relación recibe una etiqueta exclusiva, lo que mantiene acotado el número de candidatos que invocan al \emph{Decision Router}.
+
+\subsection{Resultados}
+
+La Tabla~\ref{tab:eval-etcdr-scoring} recoge la métrica global y la Tabla~\ref{tab:eval-etcdr-confusion} la matriz de confusión por estrategia. La precisión global es de $0.981$ (257 aciertos en 262 entradas pareadas); de las 277 entradas de la verdad anotada, 15 no encuentran contraparte en el lote canonicalizado y se reportan como \emph{unmatched}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lc}
+\hline
+\textbf{Indicador} & \textbf{Valor} \\ \hline
+Entradas esperadas (verdad anotada) & 277 \\
+Entradas pareadas con el lote canonicalizado & 262 \\
+Entradas no pareadas (\emph{unmatched}) & 15 \\
+Decisiones correctas & 257 \\
+\textbf{Precisión global} (\emph{accuracy}) & $\mathbf{0.981}$ \\
+Umbral de confianza del \emph{Decision Router} & $0.7$ \\ \hline
+\end{tabular}
+\caption{Resultados globales del experimento conjunto de cardinalidad y ETCDR.}
+\label{tab:eval-etcdr-scoring}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lccccc}
+\hline
+& \multicolumn{5}{c}{\textbf{Estrategia predicha}} \\
+\cline{2-6}
+\textbf{Estrategia esperada} & \texttt{NEW\_EDGE} & \texttt{CORROBORATION} & \texttt{EVOLUTION} & \texttt{CORRECTION} & \texttt{DISAGREEMENT} \\ \hline
+\texttt{NEW\_EDGE} (128) & \textbf{126} & 1 & 1 & 0 & 0 \\
+\texttt{CORROBORATION} (127) & 0 & \textbf{124} & 3 & 0 & 0 \\
+\texttt{EVOLUTION} (7) & 0 & 0 & \textbf{7} & 0 & 0 \\
+\texttt{CORRECTION} (0) & --- & --- & --- & --- & --- \\
+\texttt{DISAGREEMENT} (0) & --- & --- & --- & --- & --- \\ \hline
+\end{tabular}
+\caption{Matriz de confusión a nivel de estrategia sobre las 262 entradas pareadas. La columna sin etiqueta absorbe los ceros.}
+\label{tab:eval-etcdr-confusion}
+\end{table}
+
+Los siete casos esperados como \texttt{EVOLUTION} se recuperan en su totalidad. Las cinco decisiones incorrectas se reparten entre dos confusiones distintas: tres entradas etiquetadas como \texttt{CORROBORATION} en la verdad anotada se resuelven como \texttt{EVOLUTION} porque el \emph{Decision Router} interpreta una pequeña discrepancia temporal entre las dos descripciones como un cambio sucesivo; y dos entradas \texttt{NEW\_EDGE} se reasignan a \texttt{CORROBORATION} y \texttt{EVOLUTION} cuando la canonicalización conecta dos aristas que el revisor humano consideraba independientes. Ninguna entrada termina en \texttt{CORRECTION} ni en \texttt{DISAGREEMENT}, en consonancia con la composición del corpus, que no contiene retractaciones explícitas.
+
+De las 764 aristas candidatas que se llevaron al \emph{pipeline} completo, 208 activaron al menos una consulta de detección con resultado positivo (es decir, se enfrentaron a un conflicto intra-lote y pasaron por el \emph{Decision Router}). La distribución completa de estrategias emitidas por el módulo a lo largo de las 764 aristas se reparte de la siguiente forma: 599 \texttt{NEW\_EDGE}, 143 \texttt{CORROBORATION}, 16 \texttt{EVOLUTION} y 6 \texttt{DISAGREEMENT}. Las seis decisiones de \texttt{DISAGREEMENT} corresponden a casos en los que el valor de confianza emitido por el LLM cae por debajo del umbral de $0.7$ configurado para esta corrida, lo que activa la política de degradación descrita en la sección~\ref{sec:bt-etcdr}: en ausencia de respaldo suficiente, el sistema prefiere preservar ambas versiones marcadas como \texttt{disputed} antes que tomar una decisión irreversible.
+
+\subsection{Análisis de errores y de entradas no pareadas}
+
+Las 15 entradas \emph{unmatched} de la Tabla~\ref{tab:eval-etcdr-scoring} se explican por dos fenómenos. En el primero, la tripleta esperada se refiere a una arista que la canonicalización dejó fuera del lote (porque el alias correspondiente no entró en el \emph{cluster} de la verdad anotada); el corrector las reporta como informativas y no las puntúa, en consonancia con el principio conservador discutido en la sección~\ref{sec:eval-setup}. En el segundo, la $k$-ésima ocurrencia esperada no llega a aparecer en el orden de extracción, situación que ocurre cuando dos documentos describen el mismo hecho con descripciones algo distintas y el extractor no produce la segunda copia.
+
+Los cinco errores ---tres \texttt{CORROBORATION}~$\to$~\texttt{EVOLUTION} y dos \texttt{NEW\_EDGE}~$\to$~estrategia distinta--- corresponden a la frontera natural entre \emph{el mismo hecho descrito dos veces} y \emph{dos hechos consecutivos que describen estados ligeramente distintos}. El \emph{Decision Router} dispone, para esta distinción, de las dos descripciones textuales y la cuádrupla temporal de las aristas implicadas. Cuando los intervalos $[t_v^s, t_v^e]$ están desplazados de forma marginal ---por ejemplo, porque un documento data el inicio del cargo a partir del año y otro a partir del mes--- el modelo tiende a interpretar la diferencia como una transición sucesoria, no como una redundancia. Esta sensibilidad es deliberada: aceptarla produce, en este corpus, una tasa de error del 1.9\%; eliminarla exigiría una desensibilización temporal que comprometería la detección de las verdaderas transiciones (de las que el corpus contiene siete y el módulo las recupera todas).
+
+%% ============================================================
+\section{Discusión}\label{sec:eval-discussion}
+
+Los dos experimentos miden propiedades distintas del \emph{pipeline}. El primero, sobre CGER, ataca la limitación~5 del estado del arte (resolución de entidades sin temporalidad): el módulo recupera dos terceras partes de las equivalencias del conjunto de prueba sobre un \emph{baseline} de coincidencia exacta que recupera cero. La $F_1$ pareada de $0.60$ se debe interpretar a la luz de la dificultad del corpus, donde los pares positivos están construidos para no compartir cadena exacta y donde varios alias aparecen una única vez (limitando la calidad del \emph{embedding} de descripción). El umbral coseno calibrado sobre el corpus de entrenamiento mantiene una calidad razonable en transferencia al conjunto de prueba ---la $F_1$ cae de $0.73$ a $0.60$---, lo que se atribuye a la diferencia de densidad de menciones entre los dos corpus y al tamaño limitado de la verdad anotada (33 pares positivos).
+
+El segundo experimento, sobre el sistema combinado de cardinalidad y ETCDR, alcanza una precisión del 98\% en la elección de la estrategia de resolución por arista. Esta cifra debe leerse con cuidado: la verdad anotada del corpus no contiene casos de \texttt{CORRECTION} ni de \texttt{DISAGREEMENT}, por lo que el experimento mide la capacidad del módulo para distinguir entre \texttt{NEW\_EDGE}, \texttt{CORROBORATION} y \texttt{EVOLUTION}, que son las tres estrategias más frecuentes en cualquier corpus biográfico. El resultado confirma que, sobre este reparto, la combinación clasificador de cardinalidad + \emph{Decision Router} es muy estable. Las siete transiciones \texttt{EVOLUTION} se recuperan todas, lo que es relevante porque son precisamente el tipo de decisión que un sistema sin clasificación de cardinalidad asimétrica (la limitación~3 del estado del arte) no podría tomar. Las cinco decisiones incorrectas pertenecen, en su totalidad, a la frontera natural entre \texttt{CORROBORATION} y \texttt{EVOLUTION}: una región donde la verdad anotada por un revisor humano admite, en algunos casos, ambas lecturas legítimas, y no a una insensibilidad estructural del módulo a una categoría de conflicto.
+
+\paragraph{Limitaciones de los experimentos.} Tres limitaciones merecen explicitarse. La primera, ya señalada, es el reducido tamaño de la verdad anotada en CGER (33 pares positivos en prueba, 118 en entrenamiento): el corpus es suficiente para estimar el umbral coseno y para diferenciar el módulo de un \emph{baseline} trivial, pero los intervalos de confianza sobre la $F_1$ pareada son anchos. La segunda es la ausencia de \texttt{CORRECTION} y \texttt{DISAGREEMENT} en la verdad anotada de ETCDR: la composición del corpus no permite valorar la calidad del módulo en esos dos cuadrantes del \emph{Decision Router}, que conceptualmente son los más exigentes. La tercera es la sustitución de CGER por un oráculo de canonicalización en el experimento de ETCDR: el experimento aísla con éxito la calidad de la combinación cardinalidad + \emph{Decision Router}, pero deja para trabajo futuro la medición de los efectos en cascada que un CGER no perfecto introduciría sobre ETCDR.
+
+\paragraph{Lecturas combinadas.} A pesar de las limitaciones anteriores, los dos experimentos permiten una lectura conjunta: BT-GRAPHRAG resuelve la inmensa mayoría de los conflictos temporales del corpus de prueba ($98\%$) bajo el supuesto de que su capa previa de resolución de entidades acierta. Cuando esta última se somete a su propio examen, recupera dos tercios de las equivalencias contra una línea base que recupera ninguna. La asignación de responsabilidad es, por tanto, transparente: el cuello de botella del \emph{pipeline}, sobre este corpus, es CGER, no ETCDR. Esta lectura orienta la siguiente fase de trabajo hacia el refinamiento del componente de resolución de entidades, donde los \emph{embeddings} de descripción son más cortos y la decisión del LLM se enfrenta a información más esparsa.
+
+%% ============================================================
+\section{Conclusiones}\label{sec:eval-conclusions}
+
+El presente capítulo ha evaluado experimentalmente los dos módulos centrales de BT-GRAPHRAG sobre un corpus controlado de cinco biografías. CGER alcanza una $F_1$ pareada de $0.603$ frente a un \emph{baseline} de coincidencia exacta que obtiene cero, lo que confirma la contribución neta del componente sobre la limitación~5 del estado del arte. La combinación de la clasificación de cardinalidad asimétrica y del \emph{Decision Router} de ETCDR alcanza una precisión del 98\% en la asignación de estrategias de resolución, recuperando la totalidad de las transiciones \texttt{EVOLUTION} presentes en la verdad anotada y degradando a \texttt{DISAGREEMENT} sólo aquellos casos en los que la confianza del LLM cae por debajo del umbral configurado.
+
+Los dos experimentos validan empíricamente las dos decisiones de diseño que el Capítulo~\ref{chapter:proposal} consideró más sensibles: el uso del LLM como árbitro contextual de la fusión de entidades, con período activo como parte de su contexto, y la dirección de la búsqueda de conflictos por la cardinalidad asimétrica del tipo de relación. Ningún experimento es concluyente respecto a las dos estrategias menos frecuentes (\texttt{CORRECTION} y \texttt{DISAGREEMENT}), cuya evaluación queda pendiente para corpus con retractaciones explícitas. El análisis sugiere, además, que el cuello de botella sobre este corpus es la fase de resolución de entidades y no la de detección y resolución de conflictos, lo que orienta el trabajo futuro hacia el refinamiento de CGER en escenarios de descripción esparsa.

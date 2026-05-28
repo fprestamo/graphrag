@@ -629,39 +629,31 @@ TEMPORAL_QUERY_DECOMPOSITION_PROMPT = TEMPORAL_QUERY_ANALYSIS_PROMPT
 # Stage 7: Temporal Answer Synthesis
 # ---------------------------------------------------------------------------
 
-TEMPORAL_ANSWER_SYNTHESIS_PROMPT = """You are a temporal knowledge synthesis expert. Answer the user's question using the bitemporal graph edges provided as context.
+TEMPORAL_ANSWER_SYNTHESIS_PROMPT = """You answer temporal questions over a bitemporal knowledge graph, with help from a non-temporal text retriever.
 
-Each edge is shown as:
+Edge format:
   (SOURCE) -[RELATION]-> (TARGET) [valid_start → valid_end] {{status, support_count, confidence}}: description
 
-Where:
-- valid_start / valid_end mark when the fact held in the world.
-- "UNKNOWN" on valid_start means the fact was already true earlier than the graph records — treat it as "since at least <valid_end or query time>", NOT as missing information.
-- "ONGOING" on valid_end means the fact is still active — treat it as extending up to the present, NOT as ambiguous.
-- "status" is one of: active, disputed, retracted. Retracted edges should be ignored unless the question explicitly asks about history.
-- "support_count" counts independent corroborating sources; higher is more reliable.
-- The "description" field often contains rich detail (positions, roles, dates, places) that is the most reliable source for the answer — read it carefully.
+Notes: dates were extracted from text and are approximate. UNKNOWN = earlier than recorded; ONGOING = still true. Ignore retracted edges unless the question is about history. The description often carries the precise role / position / place that answers the question — read it; it overrides a generic relation name.
 
-Original Question: {query}
+Per sub-query you receive:
+- **PRIMARY** edges — validity overlaps the sub-query's window, pre-ranked (anchor contained / start near anchor for POINT_IN_TIME / narrower / closer in time / more reliable).
+- **BACKGROUND** edges — out of window, for disambiguation.
+- **BASELINE EVIDENCE** (when present) — a text-grounded answer the non-temporal retriever produced after reading the source passage directly. No date filter.
 
-Retrieved temporal context:
-{sub_results}
+Question: {query}
 
-INSTRUCTIONS
-1. Answer directly and concisely. Lead with the answer.
-2. Ground your answer in the retrieved context — both the edge tuples AND their descriptions. Do not invent facts that are absent from both.
-3. Match the temporal scope of the question, applying these rules:
-   - POINT_IN_TIME ("in March 2014", "when X happened"): pick the edge whose [valid_start, valid_end] contains that point. An edge with UNKNOWN start covers all dates before its valid_end. An ONGOING end covers all dates after its valid_start.
-   - RANGE ("between Apr 1987 and Nov 1988"): prefer edges whose validity overlaps the range.
-   - "BEFORE X": prefer edges whose valid_end is at or before X, OR whose description references a period before X. An edge ending exactly on X (e.g. valid_end = X) still satisfies "before X".
-   - "AFTER X": prefer edges whose valid_start is at or after X, OR an ONGOING edge whose valid_start ≤ X. Edges with UNKNOWN start and valid_end > X also satisfy "after X" since their support extends past X.
-   - EVOLUTION: present edges in chronological order.
-   - COMPARISON: contrast the two time points explicitly.
-4. For DISPUTED edges, briefly acknowledge the conflict and prefer the claim with the highest support_count × confidence; use the most recent t_tx_start as a tiebreaker.
-5. Be willing to infer the answer from the edge's description when the relation type or endpoint is approximate but the description clearly contains the answer. Do not refuse just because no edge name literally matches the question's phrasing.
-6. Only respond that the information is missing when no edge — neither by tuple shape nor by description content — plausibly addresses the question. Do not refuse for minor temporal-boundary mismatches (off-by-day or off-by-month boundaries on multi-year facts) or for "UNKNOWN"/"ONGOING" sentinel values.
-7. Quote dates as they appear in the context (no rounding).
-8. Keep the answer short — one short sentence or phrase when the question has a single factual answer.
+{community_context}{sub_results}
+
+{baseline_block}First **judge whether each source actually answers the question** — not just whether it mentions the entity. Then write the best single-entity answer.
+
+Reconciling sources:
+- PRIMARY is strongest for **WHEN** something was true (only PRIMARY filters by the window).
+- BASELINE is strongest for **WHO / WHAT / WHICH** (it reads the source text; PRIMARY's extracted dates can be off by months or years and pull in a wrong-but-in-window edge).
+- When PRIMARY and BASELINE name different entities for the same slot, prefer BASELINE. Override only if *multiple* PRIMARY edges agree on the alternative.
+- When PRIMARY is empty / out of window, answer from BASELINE. Don't refuse if BASELINE has a confident answer.
+
+Reply in one short sentence. For atomic questions ("which team / what position / who / where / which employer"), name exactly ONE entity — drop extras PRIMARY may list. Quote dates verbatim. Only say "the information is missing" if every source genuinely fails.
 
 ANSWER:
 """
@@ -694,4 +686,137 @@ Output, for each dispute group, JSON of the form:
     "rationale": "<one sentence>",
     "confidence": <float in [0,1]>
 }}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Stage 6(b) — Agent loop
+# ---------------------------------------------------------------------------
+#
+# The temporal_query pipeline is implemented as a small agent: the LLM is
+# given a toolbox and a question, and decides — one step at a time — which
+# tool to call next, until it has enough evidence to answer. No native
+# function-calling: every turn the model emits a JSON object describing
+# either a tool invocation or the final answer.
+
+TEMPORAL_AGENT_SYSTEM_PROMPT = """You answer temporal questions about people, organisations, events, places, etc., using a bitemporal knowledge graph and a non-temporal text retriever.
+
+Today's date: {current_date}.
+
+You operate as a step-by-step agent. At each turn you MUST output a single JSON object with ONE of these shapes:
+
+  {{"tool": "<tool_name>", "args": {{...}}}}     ← invoke a tool
+  {{"answer": "<one short sentence>"}}            ← finish and reply to the user
+
+No prose, no markdown, no commentary. Only the JSON object.
+
+You have at most {max_iters} tool turns. Use them. Repeated identical tool calls are wasted turns — vary the arguments or try a different tool.
+
+────────────────────────────  TOOLS  ────────────────────────────
+
+1) resolve_entities — Look up entities by name (title match + embedding NN over entity descriptions).
+   args:
+     {{"names": ["<string>", ...],            // 1-3 candidate names from the question
+       "top_k": <int, default 3>}}
+   returns: list of {{title, type, description}}. Use the returned `title` (uppercased) for later tool calls.
+
+2) time_window_search — Bitemporal as-of subgraph: edges around the given entities whose validity *overlaps* the requested window.
+   args:
+     {{"entity_titles": ["<TITLE>", ...],
+       "t_start":  "YYYY-MM-DD" | null,        // null = open past
+       "t_end":    "YYYY-MM-DD" | null,        // null = today
+       "k_hop":    <int, default 1, max 2>,
+       "limit":    <int, default 12>}}
+   returns: edges formatted as
+     (SOURCE) -[RELATION]-> (TARGET) [valid_start → valid_end] {{status, support, conf}}: description
+
+3) wide_search — Same as (2) but WITHOUT the temporal filter. Use when the time window misses (extracted bounds are often noisy) or to map the entity's full neighbourhood.
+   args:
+     {{"entity_titles": ["<TITLE>", ...],
+       "k_hop":  <int, default 1, max 2>,
+       "limit":  <int, default 15>}}
+
+4) search_edges_by_description — **Semantic search over relationship descriptions.** Embeds your description text and returns the top-K edges whose own description is closest. Bypasses entity-resolution entirely: useful when the question wording mentions the role, position, or event directly (e.g. "chair of Norwegian Association in 1898", "broadcaster of Beugró", "joined the Royal Society in 1908"). Often surfaces the exact edge that answers the question even when resolve_entities + time_window_search returned nothing.
+   args:
+     {{"description": "<natural-language phrase summarising the edge you want>",
+       "top_k": <int, default 10, max 20>}}
+   returns: same edge format as (2).
+
+5) text_search — Ask a non-temporal text retriever that reads the source passages directly. Returns one sentence/paragraph grounded in the underlying text. **Authoritative for WHO / WHAT / WHICH identity questions.** Has no temporal filter, so its dates may be loose — but its named entities (person, team, place, organisation) come straight from the text and are usually right when graph extraction was noisy.
+   args:
+     {{"question": "<self-contained question, full phrasing>"}}
+   returns: string. (Available at most twice per question.)
+
+6) final_answer — Done. Stop the loop.
+   args:
+     {{"answer": "<one short sentence>"}}
+
+────────────────────────  HOW TO REASON  ────────────────────────
+
+The graph's extracted dates AND extracted entity names are *approximate*. Multiple graph edges can be consistently wrong because they all came from the same noisy extraction batch. Apparent consensus across graph edges is therefore NOT proof — you must confirm identity with `text_search` (which reads the source passage) before answering atomic identity questions.
+
+Default strategy:
+
+  Step 1. `resolve_entities` on the explicit name(s) in the question.
+
+  Step 2. `time_window_search` over the resolved titles with the question's time bounds.
+          This gives you a candidate answer from the graph.
+
+  Step 3. `search_edges_by_description` with a phrase paraphrasing what you're looking for
+          (e.g. "chair of Norwegian Association for Women's Rights in 1898",
+                "team Steve Guppy played for in April 2006",
+                "official name of VP-5 in August 1946").
+          Often surfaces the exact edge directly when entity-resolution missed.
+
+  Step 4. **`text_search` is MANDATORY before answering any atomic identity question**
+          (which team / what position / who / where / which employer / which broadcaster /
+           which capital / which spouse / which rank / which party / which organisation / which name).
+          Phrase the call as a complete self-contained question.
+          The text retriever reads the source passage and is the authoritative source for
+          WHO / WHAT / WHICH identity. Apparent consensus across graph edges does NOT replace it.
+
+  Step 5. Decide:
+          • If `text_search` and the graph agree → answer with that entity.
+          • If they disagree → **prefer `text_search`'s identity** unless TWO OR MORE INDEPENDENT
+            graph edges (different relation_types or different descriptions, not duplicates from
+            the same extraction) clearly name the alternative.
+          • If `text_search` returned empty AND the graph has a clear candidate → answer with
+            the graph candidate. If both empty/unclear → use remaining turns: try
+            `search_edges_by_description` with a different phrasing, or `wide_search` to scan
+            the entity's full neighbourhood, or `text_search` with a sharper rewording.
+
+Hard rules (apply at every step):
+
+  • **NEVER refuse or hedge.** Your final answer must commit to a SINGLE concrete entity
+    (a name / role / place / organisation), never phrases like "the information is not
+    available", "no record found", "data does not provide", "did not hold any position",
+    "cannot be determined". Even when every source is sparse or contradictory, look at ALL
+    the evidence you have gathered (resolved entities, time_window_search edges,
+    search_edges_by_description edges, text_search responses including their *content* even
+    when they hedge) and pick the best-supported single entity. The text retriever
+    occasionally hedges in its prose ("there is no data...") while still mentioning the
+    answer in the same sentence — extract the named entity, don't echo the hedge.
+  • **For atomic identity questions: ALWAYS call `text_search` before answering**, even when
+    `time_window_search` and `search_edges_by_description` look consistent. Multiple graph edges
+    naming the same entity can all be wrong from the same extraction error. `text_search` is the
+    independent check.
+  • Don't verify graph with more graph: re-querying `time_window_search` on the candidate answer
+    entity is not independent confirmation — it draws from the same extraction batch.
+  • For atomic identity questions, name exactly ONE entity in the final answer; drop extras the
+    edges may list (parent companies, secondary roles, transitions). Pick the most specific name
+    that matches the question's frame (e.g. the subsidiary, not the parent corporation).
+  • Quote dates verbatim as they appear in the source.
+
+Commitment over caution: a wrong guess and a hedged refusal score the same, but a wrong guess
+that happens to be a partial match can still be judged correct. Always commit.
+"""
+
+
+TEMPORAL_AGENT_USER_PROMPT = """QUESTION: {query}
+
+Begin. Output your first JSON action now."""
+
+
+TEMPORAL_AGENT_FORCE_ANSWER_PROMPT = """You have used all your tool turns. Output your best final answer now as JSON:
+  {{"answer": "<one short sentence>"}}
 """

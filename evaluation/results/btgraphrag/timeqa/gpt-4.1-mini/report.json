@@ -1,0 +1,18 @@
+{
+  "benchmark": "timeqa",
+  "split": "hard",
+  "system": "btgraphrag",
+  "dataset": "evaluation/timeqa/data/timeqa.jsonl",
+  "num_examples": 370,
+  "elapsed_seconds": 681.018,
+  "metrics": {
+    "judge_correct": 0.7054054054054054,
+    "judge_incorrect": 0.2945945945945946
+  },
+  "truthfulness": {
+    "total": 370,
+    "accuracy": 0.7054054054054054,
+    "incorrect_rate": 0.2945945945945946
+  },
+  "model": "gpt-4.1-mini"
+}

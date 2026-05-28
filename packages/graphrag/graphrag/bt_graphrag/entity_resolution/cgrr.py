@@ -295,6 +295,10 @@ async def resolve_relationships(
     normalize_map: dict[str, str] = {}
     phase_b_log: list[dict[str, Any]] = []
 
+    # Manual short-circuit: skip CGRR entirely (no scoring, no temp DB writes).
+    print("    [CGRR] Skipping — disabled by manual short-circuit at top of resolve_relationships")
+    return relationships_df, normalize_map, phase_b_log
+
     if relationships_df.empty:
         print("    [CGRR] Skipping — no relationships to resolve")
         return relationships_df, normalize_map, phase_b_log

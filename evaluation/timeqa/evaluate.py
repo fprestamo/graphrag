@@ -1,4 +1,15 @@
-"""Run BT-GraphRAG and/or vanilla GraphRAG on TimeQA hard (open-domain RAG)."""
+"""Run BT-GraphRAG (temporal query) and BT-GraphRAG (normal GraphRAG query) on TimeQA hard.
+
+Both systems share the same bitemporal index (entities resolved via CGER,
+relationships processed via ETCDR, parquets + Neo4j graph emitted by the
+same `poe index` run). They differ only in the query engine:
+
+  * ``btgraphrag``           — temporal query pipeline (reads Neo4j with
+                                temporal reasoning).
+  * ``btgraphrag_baseline``  — vanilla GraphRAG local/global search over
+                                the parquets that the BT-GraphRAG index
+                                emits (no temporal reasoning).
+"""
 
 from __future__ import annotations
 
@@ -48,7 +59,7 @@ from scripts.wipe_neo4j_dbs import main as wipe_neo4j_main
 
 logger = logging.getLogger(__name__)
 
-SYSTEMS = ("btgraphrag", "graphrag")
+SYSTEMS = ("btgraphrag", "btgraphrag_baseline")
 
 
 @dataclass
@@ -191,6 +202,31 @@ async def _eval_one(
                 ctx["_edges_used"] = raw.get("edges_used")
             if "error" in raw:
                 ctx["_error"] = raw.get("error")
+            # Agent telemetry: iterations and which tools were called
+            analysis = raw.get("analysis") or {}
+            if isinstance(analysis, dict):
+                if "iterations" in analysis:
+                    ctx["_agent_iters"] = analysis.get("iterations")
+                trace = analysis.get("agent_trace") or []
+                if isinstance(trace, list) and trace:
+                    tools = [
+                        t.get("tool") for t in trace
+                        if isinstance(t, dict) and t.get("kind") == "tool"
+                    ]
+                    ctx["_agent_tools"] = tools
+                    kinds = [t.get("kind") for t in trace if isinstance(t, dict)]
+                    if "forced_answer" in kinds:
+                        ctx["_agent_forced"] = True
+                    parse_errors = sum(1 for k in kinds if k == "parse_error")
+                    if parse_errors:
+                        ctx["_agent_parse_errors"] = parse_errors
+                # Text-search diagnostic
+                ts_count = analysis.get("text_search_count")
+                ts_empty = analysis.get("text_search_empty")
+                if ts_count is not None:
+                    ctx["_ts_count"] = ts_count
+                if ts_empty is not None:
+                    ctx["_ts_empty"] = ts_empty
         return EvalPrediction(
             qid=rec.qid,
             question=rec.question,
@@ -227,6 +263,7 @@ def _resolve_model(system: str, opts: "_RunOpts") -> str:
     """Best-effort identification of the model used to answer questions."""
     if system == "btgraphrag":
         return (opts.bt_cfg.model_id or os.getenv("BTG_MODEL_ID") or "unknown").strip() or "unknown"
+    # btgraphrag_baseline: vanilla GraphRAG query engine over the BT index.
     root = Path(opts.vanilla_cfg.root_dir)
     for cfg_name in ("settings.yaml", "settings.yml"):
         cfg_path = root / cfg_name
@@ -277,7 +314,13 @@ def _build_report(
 _JUDGE_GLYPH = {"correct": "✓", "incorrect": "✗"}
 
 
-def _log_prediction(idx: int, total: int, system: str, p: EvalPrediction) -> None:
+def _log_prediction(
+    idx: int,
+    total: int,
+    system: str,
+    p: EvalPrediction,
+    tally: dict[str, int] | None = None,
+) -> None:
     glyph = _JUDGE_GLYPH.get(p.judge_label or "", "·")
     label = (p.judge_label or "n/a").upper()
     reason = p.judge_reason or ""
@@ -285,6 +328,45 @@ def _log_prediction(idx: int, total: int, system: str, p: EvalPrediction) -> Non
     err = p.context.get("_error")
     print()
     print(f"[{system}] {idx}/{total}")
+    if tally is not None:
+        ok = tally.get("correct", 0)
+        bad = tally.get("incorrect", 0)
+        other = tally.get("other", 0)
+        seen = ok + bad + other
+        acc = (ok / seen) if seen else 0.0
+        running = f"  Running: ✓ {ok}  ✗ {bad}"
+        if other:
+            running += f"  · {other}"
+        running += f"   (acc={acc:.3f})"
+        print(running)
+    # Agent telemetry, when present
+    iters = p.context.get("_agent_iters")
+    tools = p.context.get("_agent_tools")
+    if iters is not None or tools:
+        bits = []
+        if iters is not None:
+            bits.append(f"iters={iters}")
+        if tools:
+            # Compact tool sequence, e.g. RE→TWS→TS
+            short = {"resolve_entities": "RE", "time_window_search": "TWS",
+                     "wide_search": "WS",
+                     "search_edges_by_description": "SED",
+                     "text_search": "TS",
+                     "final_answer": "FA"}
+            seq = "→".join(short.get(t, t or "?") for t in tools)
+            bits.append(f"tools={seq}")
+        ts_count = p.context.get("_ts_count")
+        ts_empty = p.context.get("_ts_empty")
+        if ts_count:
+            ts_bit = f"TS={ts_count}"
+            if ts_empty:
+                ts_bit += f"({ts_empty}empty)"
+            bits.append(ts_bit)
+        if p.context.get("_agent_forced"):
+            bits.append("forced")
+        if p.context.get("_agent_parse_errors"):
+            bits.append(f"parse_err={p.context['_agent_parse_errors']}")
+        print(f"  Agent: {'  '.join(bits)}")
     print(f"  Q:     {p.question}")
     print(f"  Pred:  {p.prediction or '<empty>'}")
     print(f"  Gold:  {p.gold_answer or '<none>'}")
@@ -343,10 +425,17 @@ async def _run_system(
     ]
     preds_by_qid: dict[str, EvalPrediction] = {}
     done_count = 0
+    tally = {"correct": 0, "incorrect": 0, "other": 0}
     for fut in asyncio.as_completed(tasks):
         pred = await fut
         done_count += 1
-        _log_prediction(done_count, total, system, pred)
+        if pred.judge_label == "correct":
+            tally["correct"] += 1
+        elif pred.judge_label == "incorrect":
+            tally["incorrect"] += 1
+        else:
+            tally["other"] += 1
+        _log_prediction(done_count, total, system, pred, tally=tally)
         preds_by_qid[pred.qid] = pred
     # Preserve original input order in outputs.
     preds = [preds_by_qid[r.qid] for r in records if r.qid in preds_by_qid]
@@ -406,25 +495,25 @@ def _write_comparison(
     out_dir: Path, reports: dict[str, dict[str, Any]], tag: str = ""
 ) -> None:
     bt = reports.get("btgraphrag", {})
-    gr = reports.get("graphrag", {})
+    base = reports.get("btgraphrag_baseline", {})
     bt_m = (bt.get("metrics") or {})
-    gr_m = (gr.get("metrics") or {})
+    base_m = (base.get("metrics") or {})
 
     rows: list[dict[str, Any]] = []
     for key, label in _COMPARE_METRICS:
-        if key not in bt_m and key not in gr_m:
+        if key not in bt_m and key not in base_m:
             continue
         bt_val = bt_m.get(key)
-        gr_val = gr_m.get(key)
+        base_val = base_m.get(key)
         delta = None
-        if isinstance(bt_val, (int, float)) and isinstance(gr_val, (int, float)):
-            delta = bt_val - gr_val
+        if isinstance(bt_val, (int, float)) and isinstance(base_val, (int, float)):
+            delta = bt_val - base_val
         rows.append(
             {
                 "benchmark": "timeqa",
                 "metric_key": key,
                 "metric": label,
-                "graphrag": gr_val,
+                "btgraphrag_baseline": base_val,
                 "btgraphrag": bt_val,
                 "delta": delta,
             }
@@ -433,7 +522,7 @@ def _write_comparison(
     compare = {
         "benchmark": "timeqa",
         "split": "hard",
-        "systems": {"graphrag": gr, "btgraphrag": bt},
+        "systems": {"btgraphrag_baseline": base, "btgraphrag": bt},
         "headline_metric": "f1_native",
         "rows": rows,
     }
@@ -450,13 +539,15 @@ def _write_comparison(
         "w", encoding="utf-8", newline=""
     ) as fh:
         writer = csv.writer(fh)
-        writer.writerow(["benchmark", "metric", "graphrag", "btgraphrag", "delta"])
+        writer.writerow(
+            ["benchmark", "metric", "btgraphrag_baseline", "btgraphrag", "delta"]
+        )
         for r in rows:
             writer.writerow(
                 [
                     r["benchmark"],
                     r["metric"],
-                    "" if r["graphrag"] is None else f"{r['graphrag']:.4f}",
+                    "" if r["btgraphrag_baseline"] is None else f"{r['btgraphrag_baseline']:.4f}",
                     "" if r["btgraphrag"] is None else f"{r['btgraphrag']:.4f}",
                     "" if r["delta"] is None else f"{r['delta']:+.4f}",
                 ]
@@ -466,17 +557,17 @@ def _write_comparison(
         "% Auto-generated by evaluation/timeqa/evaluate.py — headline metric: f1_native.",
         "\\begin{tabular}{llrrr}",
         "\\toprule",
-        "Benchmark & Metric & GraphRAG & BT-GraphRAG & $\\Delta$ \\\\",
+        "Benchmark & Metric & BT-GraphRAG (baseline) & BT-GraphRAG (temporal) & $\\Delta$ \\\\",
         "\\midrule",
     ]
     for r in rows:
-        gr_cell = "--" if r["graphrag"] is None else f"{r['graphrag']:.3f}"
+        base_cell = "--" if r["btgraphrag_baseline"] is None else f"{r['btgraphrag_baseline']:.3f}"
         bt_cell = "--" if r["btgraphrag"] is None else f"{r['btgraphrag']:.3f}"
         delta_cell = "--" if r["delta"] is None else f"{r['delta']:+.3f}"
         lines.append(
             f"{_latex_escape(r['benchmark'])} & "
             f"{_latex_escape(r['metric'])} & "
-            f"{gr_cell} & {bt_cell} & {delta_cell} \\\\"
+            f"{base_cell} & {bt_cell} & {delta_cell} \\\\"
         )
     lines += ["\\bottomrule", "\\end{tabular}", ""]
     (compare_dir / f"compare{suffix}.tex").write_text(
@@ -496,7 +587,11 @@ def _write_comparison(
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m evaluation.timeqa.evaluate",
-        description="Evaluate BT-GraphRAG and/or vanilla GraphRAG on TimeQA hard.",
+        description=(
+            "Evaluate BT-GraphRAG on TimeQA hard with two query engines "
+            "over the same bitemporal index: 'btgraphrag' (temporal query "
+            "pipeline) and 'btgraphrag_baseline' (vanilla GraphRAG search)."
+        ),
     )
     parser.add_argument(
         "--dataset",
@@ -592,6 +687,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Skip ragtest wipe + init + corpus copy + index (use existing index).",
     )
     parser.add_argument(
+        "--no-baseline-compose",
+        action="store_true",
+        help=(
+            "Disable composition: do NOT feed vanilla local_search's answer "
+            "into the temporal synthesis as BASELINE EVIDENCE. Default is on."
+        ),
+    )
+    parser.add_argument(
         "--tag",
         type=str,
         default="",
@@ -644,6 +747,13 @@ async def _amain(args: argparse.Namespace) -> int:
         vanilla_cfg.data_dir = args.graphrag_data
     if args.graphrag_search is not None:
         vanilla_cfg.search_mode = args.graphrag_search
+
+    # Composition: temporal_query now feeds vanilla local_search's
+    # answer into the synthesis prompt as BASELINE EVIDENCE. Skip when
+    # the user opted out or the eval is dry-run (vanilla returns
+    # nothing in that mode).
+    if not args.no_baseline_compose and not args.dry_run:
+        bt_cfg.vanilla_config = vanilla_cfg
 
     # Neo4j wipe: DROP+CREATE the target databases so `poe index` writes into
     # a clean store. Defaults to just the BT-GraphRAG database this eval uses.
@@ -699,15 +809,25 @@ async def _amain(args: argparse.Namespace) -> int:
     # owns its own connection pool, so creating one per question at
     # concurrency=100 spawns 100 simultaneous pools and Neo4j drops
     # connections ("Failed to read from defunct connection").
+    #
+    # Pool sizing: under composition (vanilla runs in parallel with
+    # temporal), the event loop is busier and Neo4j async iterators take
+    # longer to drain — sessions stay in-use longer. A pool sized to
+    # exactly the concurrency runs dry under any LLM-side stall (OpenAI
+    # rate-limit, retry backoff). Over-provision 2x when composing, else
+    # 1.5x as a safety margin.
     shared_bt_driver = None
     if "btgraphrag" in args.systems and not args.dry_run:
         try:
             from neo4j import AsyncGraphDatabase
 
+            composing = bt_cfg.vanilla_config is not None
+            pool_multiplier = 2 if composing else 1.5
+            pool_size = max(50, int(opts.concurrency * pool_multiplier))
             shared_bt_driver = AsyncGraphDatabase.driver(
                 bt_cfg.neo4j_uri,
                 auth=(bt_cfg.neo4j_user, bt_cfg.neo4j_password),
-                max_connection_pool_size=max(50, opts.concurrency),
+                max_connection_pool_size=pool_size,
             )
             bt_cfg.driver = shared_bt_driver
         except Exception as exc:  # noqa: BLE001
@@ -743,6 +863,15 @@ _NOISY_LOGGERS = (
     "neo4j",
 )
 
+# Spammy at WARNING level — these flood per-question output without adding
+# diagnostic value. Pin to ERROR so they only surface real failures.
+_VERY_NOISY_LOGGERS = (
+    "neo4j.notifications",  # "Received notification from DBMS server: ..." deprecations
+    "graphrag.query.context_builder.community_context",  # "No community records added"
+    "graphrag.query.structured_search.local_search.mixed_context",  # "Reached token limit"
+    "graphrag.query.structured_search.basic_search.basic_context",
+)
+
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
@@ -754,6 +883,10 @@ def main(argv: list[str] | None = None) -> int:
     third_party_level = logging.DEBUG if args.verbose else logging.WARNING
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(third_party_level)
+    # Always-silenced loggers (even with --verbose): pure spam at WARNING.
+    if not args.verbose:
+        for name in _VERY_NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.ERROR)
     return asyncio.run(_amain(args))
 
 

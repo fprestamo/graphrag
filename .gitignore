@@ -42,6 +42,7 @@ __blobstorage__/
 
 # Getting started example
 .ragtest/
+.ragtestbtgraphrag/
 .pipelines
 .pipeline
 

@@ -37,6 +37,11 @@ class BTConfig:
         default_factory=lambda: os.getenv("NEO4J_DATABASE", "btgraphrag")
     )
     model_id: str | None = field(default_factory=lambda: os.getenv("BTG_MODEL_ID"))
+    embedding_model_id: str | None = field(
+        default_factory=lambda: os.getenv(
+            "BTG_EMBEDDING_MODEL_ID", "text-embedding-3-large",
+        )
+    )
     max_edges: int = 50
     dry_run: bool = False
     # Optional shared Neo4j driver. When provided, bt_answer reuses its
@@ -45,6 +50,12 @@ class BTConfig:
     # concurrency=100 opens 100 separate pools and the server starts
     # killing connections).
     driver: Any = None
+    # Optional vanilla (non-temporal) retriever config. When set,
+    # bt_answer runs vanilla local_search in parallel with the temporal
+    # retrieval and feeds its answer to the synthesis prompt as
+    # BASELINE EVIDENCE — recovers refusals and corrects wrong-picks
+    # caused by noisy date extraction at index time.
+    vanilla_config: "VanillaConfig | None" = None
 
 
 def _format_edges(edges: list[dict[str, Any]], limit: int) -> str:
@@ -86,6 +97,33 @@ def _build_bt_llm(model_id: str | None):
         return None
 
 
+def _build_bt_embedding(model_id: str | None):
+    if not model_id:
+        return None
+    try:
+        from graphrag_llm.config import ModelConfig
+        from graphrag_llm.config.types import LLMProviderType
+        from graphrag_llm.embedding import create_embedding
+    except ImportError as exc:
+        logger.debug("graphrag_llm embedding not importable: %s", exc)
+        return None
+    api_key = os.getenv("GRAPHRAG_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    try:
+        cfg = ModelConfig(
+            type=LLMProviderType.LiteLLM,
+            model_provider=os.getenv(
+                "BTG_EMBEDDING_PROVIDER",
+                os.getenv("BTG_MODEL_PROVIDER", "openai"),
+            ),
+            model=model_id,
+            api_key=api_key,
+        )
+        return create_embedding(cfg)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not build BT embedding model: %s", exc)
+        return None
+
+
 async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[str, Any]:
     cfg = config or BTConfig()
     if cfg.dry_run:
@@ -108,6 +146,7 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
     )
 
     llm = _build_bt_llm(cfg.model_id)
+    embedding_model = _build_bt_embedding(cfg.embedding_model_id)
     shared_driver = cfg.driver
     if shared_driver is not None:
         driver = shared_driver
@@ -118,6 +157,42 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
         )
         owns_driver = True
 
+    # Compose with vanilla local_search when configured: each temporal
+    # query also triggers a non-temporal retrieval; the answer is fed
+    # to the synthesis prompt as BASELINE EVIDENCE. Failures inside
+    # vanilla_answer are absorbed (returns None) so the temporal path
+    # still runs.
+    baseline_provider = None
+    if cfg.vanilla_config is not None:
+        vanilla_cfg = cfg.vanilla_config
+
+        async def _baseline_provider(q: str) -> str | None:
+            try:
+                v = await vanilla_answer(q, config=vanilla_cfg)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[text_search] vanilla raised: %s | question: %r",
+                    exc, q[:120],
+                )
+                return None
+            ans = (v.get("answer") or "").strip() if isinstance(v, dict) else ""
+            err = v.get("raw", {}).get("error") if isinstance(v, dict) else None
+            if err:
+                logger.warning(
+                    "[text_search] vanilla returned error: %s | question: %r",
+                    err, q[:120],
+                )
+                return None
+            if not ans:
+                logger.info(
+                    "[text_search] vanilla returned empty answer (no exception) "
+                    "| question: %r", q[:120],
+                )
+                return None
+            return ans
+
+        baseline_provider = _baseline_provider
+
     result: dict[str, Any] | None = None
     error: str | None = None
     try:
@@ -126,7 +201,9 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
             config=bt_cfg,
             driver=driver,
             model=llm,
+            embedding_model=embedding_model,
             max_edges_per_sub=cfg.max_edges,
+            baseline_provider=baseline_provider,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("temporal_query_pipeline failed: %s", exc)
@@ -149,9 +226,15 @@ async def bt_answer(question: str, *, config: BTConfig | None = None) -> dict[st
         "edges_used": edges_used,
         "query_time": result.get("query_time"),
         "num_sub_queries": len(sub_results),
+        "community_reports": result.get("community_reports", []),
+        "baseline_evidence": result.get("baseline_evidence"),
     }
     analysis = result.get("analysis") or {}
     if analysis:
+        # Pass the analysis dict through verbatim so the eval harness can
+        # surface either the legacy static-pipeline fields (entities) or
+        # the agent fields (agent_trace, iterations).
+        raw["analysis"] = analysis
         raw["entities_extracted"] = analysis.get("entities", [])
         # Drop the heavy ``edges`` payload from each sub-query before
         # serialising — keep only the structured fields the LLM saw.

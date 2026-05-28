@@ -1,6 +1,6 @@
 \chapter{Implementación Computacional}\label{chapter:implementation}
 
-Este capítulo describe la realización computacional de BT-GRAPHRAG, el sistema cuya arquitectura conceptual se presentó en el Capítulo~\ref{chapter:proposal}. Mientras dicho capítulo se centró en el modelo de datos, los algoritmos y la arquitectura del sistema, el presente detalla las decisiones de ingeniería que permitieron traducir esa propuesta en un sistema funcional: la organización del proyecto, las tecnologías empleadas, el desarrollo de cada una de las siete etapas del \emph{pipeline} y los mecanismos de trazabilidad que sustentan la evaluación posterior. La exposición sigue el orden establecido en la sección~\ref{sec:bt-pipeline}.
+Este capítulo describe la realización computacional de BT-GRAPHRAG, el sistema cuya arquitectura conceptual se presentó en el Capítulo~\ref{chapter:proposal}. Mientras dicho capítulo se centró en el modelo de datos, los algoritmos y la arquitectura del sistema, el presente detalla las decisiones de ingeniería que permitieron traducir esa propuesta en un sistema funcional: la organización del proyecto, las tecnologías empleadas, el desarrollo de cada una de las seis etapas del \emph{pipeline} y los mecanismos de trazabilidad que sustentan la evaluación posterior. La exposición sigue el orden establecido en la sección~\ref{sec:bt-pipeline}.
 
 \section{Estructura del proyecto}\label{sec:impl-project-structure}
 
@@ -24,7 +24,7 @@ Todo el código introducido por la propuesta reside en el subpaquete \texttt{gra
 \begin{itemize}
   \item \texttt{models/}: tipos de datos y configuración del subsistema.
   \item \texttt{temporal\_extraction/}: extracción de entidades y relaciones con metadatos temporales y normalización de fechas a partir de la salida del LLM.
-  \item \texttt{entity\_resolution/}: resolución contextual de entidades (CGER), de tipos de relación (CGRR) y los \emph{scorers} compartidos.
+  \item \texttt{entity\_resolution/}: resolución contextual de entidades (CGER) y el \emph{scorer} de similitud coseno sobre descripciones.
   \item \texttt{conflict\_detection/}: detección y resolución temporal de conflictos (ETCDR) y \emph{Decision Router}.
   \item \texttt{neo4j\_store.py}: almacén bitemporal sobre Neo4j; expone las primitivas de lectura y escritura sobre la cuádrupla de estado temporal.
   \item \texttt{community\_update.py}: actualización incremental de comunidades (Leiden) restringida al vecindario $k$-hop de las entidades modificadas.
@@ -32,7 +32,7 @@ Todo el código introducido por la propuesta reside en el subpaquete \texttt{gra
   \item \texttt{knowledge\_maintenance.py}: operaciones de mantenimiento del conocimiento (eliminación compatible con GDPR, retractación de fuente y archivado de hechos antiguos).
   \item \texttt{pipeline.py}: coordinador del \emph{pipeline} de BT-GRAPHRAG (en lo sucesivo, \emph{orquestador}).
   \item \texttt{prompts.py}: plantillas de los \emph{prompts} utilizados en todas las etapas (extracción, clasificación de cardinalidad, resolución de conflictos, reportes y consultas).
-  \item \texttt{evaluation/}: infraestructura de evaluación, organizada por componente (CGER, CGRR, ETCDR e ICUS), con pruebas unitarias, validación sobre datos reales y búsqueda de hiperparámetros.
+  \item \texttt{evaluation/}: infraestructura de evaluación, organizada por componente (CGER y ETCDR), con pruebas unitarias, validación sobre datos reales y búsqueda de hiperparámetros.
 \end{itemize}
 
 % TODO: figura fig:impl-monorepo-structure que represente, como diagrama de paquetes, la estructura del monorepo de BT-GRAPHRAG: los ocho paquetes del workspace y, dentro de \texttt{graphrag.bt\_graphrag}, los subdirectorios por componente (models, temporal\_extraction, entity\_resolution, conflict\_detection, etc.) con flechas de dependencia entre ellos.
@@ -89,8 +89,8 @@ Los parámetros de BT-GRAPHRAG se centralizan en un único \texttt{dataclass}, \
 Conexión Neo4j & \texttt{neo4j\_uri}, \texttt{neo4j\_user}, \texttt{neo4j\_password}, \texttt{neo4j\_database}, \texttt{neo4j\_vector\_dimensions} \\
 Etapa 1 (extracción) & \texttt{late\_arrival\_threshold\_days}, \texttt{default\_valid\_time\_field}, \texttt{temporal\_extraction\_model\_id} \\
 Etapa 2 (CGER) & \texttt{cger\_enabled}, \texttt{cger\_cosine\_threshold}, \texttt{cger\_candidate\_top\_k} \\
-Etapa 2b (CGRR) & \texttt{cgrr\_enabled}, \texttt{cgrr\_cosine\_threshold}, \texttt{cgrr\_candidate\_top\_k} \\
-Etapa 3 (ETCDR) & \texttt{etcdr\_enabled}, \texttt{etcdr\_confidence\_threshold}, \texttt{relation\_cardinality\_overrides} \\
+Etapa 3 (cardinalidad) & \texttt{relation\_cardinality\_overrides} \\
+Etapa 4 (ETCDR) & \texttt{etcdr\_enabled}, \texttt{etcdr\_confidence\_threshold} \\
 Actualización incremental & \texttt{community\_update\_k\_hop} \\
 Consulta temporal & \texttt{temporal\_decay\_alpha} \\
 \emph{Prompts} y diagnóstico & \texttt{extraction\_prompt}, \texttt{community\_report\_prompt}, \texttt{cardinality\_prompt}, \texttt{debug\_output\_dir} \\ \hline
@@ -99,11 +99,11 @@ Consulta temporal & \texttt{temporal\_decay\_alpha} \\
 \label{tab:impl-config}
 \end{table}
 
-Cada subsistema dispone de un indicador de habilitación independiente (\texttt{cger\_enabled}, \texttt{cgrr\_enabled}, \texttt{etcdr\_enabled}), lo que aporta dos ventajas prácticas:
+Cada subsistema dispone de un indicador de habilitación independiente (\texttt{cger\_enabled}, \texttt{etcdr\_enabled}), lo que aporta dos ventajas prácticas:
 
 \begin{itemize}
   \item \textbf{Ablación selectiva}: es posible deshabilitar uno o varios componentes en una misma corrida sin necesidad de mantener ramas paralelas del código.
-  \item \textbf{Optimización dirigida por datos}: los umbrales de activación del LLM en CGER y CGRR (\texttt{cger\_cosine\_threshold}, \texttt{cgrr\_cosine\_threshold}) y el umbral de confianza de ETCDR se exponen como parámetros independientes.
+  \item \textbf{Optimización dirigida por datos}: el umbral de activación del LLM en CGER (\texttt{cger\_cosine\_threshold}) y el umbral de confianza de ETCDR se exponen como parámetros independientes.
 \end{itemize}
 
 Adicionalmente, el campo \texttt{relation\_cardinality\_overrides} permite que un experto de dominio fije manualmente la clasificación para tipos de relación críticos, sin necesidad de modificar el \emph{prompt} ni el código del clasificador.
@@ -177,9 +177,9 @@ Relaciones & Proviene del LLM; si el modelo no produjo un intervalo, se usa la f
 \label{tab:impl-temporal-init}
 \end{table}
 
-\section{Etapas 2 y 2b: Resolución de entidades y de tipos de relación}\label{sec:impl-cger-cgrr}
+\section{Etapa 2: Resolución de entidades}\label{sec:impl-cger}
 
-El módulo \texttt{entity\_resolution/scorers.py} expone como funciones puras la similitud coseno entre vectores de descripción, que es el único \emph{scorer} empleado tanto por CGER como por CGRR. Las dos funciones \texttt{description\_cosine\_entity\_scorer} y \texttt{description\_cosine\_relationship\_scorer} son simétricas: ambas reciben dos diccionarios y un objeto \texttt{BTGraphRAGConfig}, y devuelven el coseno entre los respectivos \emph{embeddings} de descripción. Al concentrar el \emph{scoring} en una sola señal, se elimina la necesidad de calibrar pesos heterogéneos y se traslada al LLM toda la responsabilidad sobre las decisiones cualitativas.
+El módulo \texttt{entity\_resolution/scorers.py} expone como función pura la similitud coseno entre vectores de descripción, que es el único \emph{scorer} empleado por CGER. La función \texttt{description\_cosine\_entity\_scorer} recibe dos diccionarios y un objeto \texttt{BTGraphRAGConfig}, y devuelve el coseno entre los respectivos \emph{embeddings} de descripción. Al concentrar el \emph{scoring} en una sola señal, se elimina la necesidad de calibrar pesos heterogéneos y se traslada al LLM toda la responsabilidad sobre las decisiones cualitativas.
 
 CGER se implementa en \texttt{entity\_resolution/cger.py}, cuya función principal es \texttt{resolve\_entities}. El proceso se estructura en dos fases, siguiendo el diseño expuesto en la sección~\ref{sec:bt-cger}.
 
@@ -212,31 +212,7 @@ El \emph{prompt} de verificación (constante \texttt{CGER\_VERIFICATION\_PROMPT}
 
 La función \texttt{llm\_verify\_entity\_match} normaliza la salida del modelo y, ante cualquier token no reconocido, devuelve \texttt{DIFFERENT\_ENTITY} como veredicto conservador por defecto: en presencia de evidencia ambigua, el sistema no fusiona. Las decisiones de fusión se acumulan en un \texttt{merge\_map} que, una vez completada la pasada, se aplica también a las relaciones para garantizar la consistencia referencial entre nodos y aristas. Los veredictos \texttt{DIFFERENT\_TEMPORAL} se registran en el \emph{log} de depuración (\texttt{stage2\_cger\_resolution\_log.json}) con la decisión \texttt{LLM\_DIFFERENT\_TEMPORAL}, lo que permite auditar a posteriori cuántas separaciones obedecen a una diferencia de referente y cuántas a una diferencia temporal entre estados del mismo referente.
 
-CGRR, implementado en \texttt{entity\_resolution/cgrr.py}, adopta el mismo esquema simplificado de CGER: un prefiltrado por similitud coseno sobre los \emph{embeddings} de descripción del tipo de relación, seguido de una verificación por LLM para los pares cuyo coseno supera el umbral \texttt{cgrr\_cosine\_threshold}. Por cada tipo de relación nuevo se recuperan los \texttt{cgrr\_candidate\_top\_k} tipos canónicos más similares mediante el índice vectorial sobre las relaciones de Neo4j (con respaldo en memoria si el índice no está disponible), filtrando además por solapamiento de entidades extremo: sólo se comparan tipos que comparten al menos un sujeto u objeto con el lote entrante. El mejor candidato $c^\ast$ por coseno $\sigma^\ast$ activa la regla de decisión:
-
-\begin{table}[H]
-\centering
-\small
-\begin{tabular}{p{0.45\linewidth}p{0.45\linewidth}}
-\hline
-\textbf{Condición} & \textbf{Acción} \\ \hline
-$\sigma^\ast \geq$ \texttt{cgrr\_cosine\_threshold} & Verificación por LLM (\texttt{SAME} / \texttt{DIFFERENT}) \\
-$\sigma^\ast <$ \texttt{cgrr\_cosine\_threshold} & Tipo preservado (sin llamada al LLM) \\ \hline
-\end{tabular}
-\caption{Regla de decisión de normalización en CGRR tras la simplificación del \emph{scoring}.}
-\label{tab:impl-cgrr-thresholds}
-\end{table}
-
-El \emph{prompt} de verificación (constante \texttt{CGRR\_VERIFICATION\_PROMPT}) entrega, para cada uno de los dos tipos de relación, su nombre, su descripción y un par sujeto--objeto representativo. A diferencia de CGER, no incluye un período activo: los tipos de relación no portan una temporalidad propia, por lo que la única pregunta significativa es si los dos identificadores designan el mismo predicado. El modelo debe responder exactamente con uno de dos tokens:
-
-\begin{itemize}
-  \item \texttt{SAME}: los dos identificadores designan el mismo predicado (por ejemplo, \texttt{IS\_CEO\_OF} y \texttt{LEADS} entre persona y empresa; \texttt{WORKS\_FOR} y \texttt{EMPLOYED\_BY}). El candidato se normaliza a la forma canónica existente.
-  \item \texttt{DIFFERENT}: los identificadores designan predicados distintos, ya sea por su alcance, su dirección o el tipo de entidades que conectan. El tipo candidato se conserva como entrada separada del vocabulario.
-\end{itemize}
-
-La función \texttt{llm\_verify\_relationship\_match} normaliza la salida del modelo y, ante cualquier token no reconocido, devuelve \texttt{DIFFERENT} como veredicto conservador por defecto. El mapa de normalización resultante se propaga al campo \texttt{cardinality} de las aristas afectadas, garantizando que tanto la clasificación de cardinalidad como la detección de conflictos operen sobre un vocabulario canónico, libre de variantes léxicas.
-
-\section{Clasificación de cardinalidad}\label{sec:impl-cardinality}
+\section{Etapa 3: Clasificación de cardinalidad}\label{sec:impl-cardinality}
 
 La clasificación se realiza en la función \texttt{\_classify\_cardinalities} del orquestador (\texttt{pipeline.py}).
 
@@ -262,7 +238,7 @@ La consulta \texttt{BTGraphRAGConfig.get\_cardinality} resuelve la cardinalidad 
 
 Esta jerarquía permite corregir clasificaciones erróneas sin modificar el código: basta con añadir la entrada correspondiente al archivo de configuración.
 
-\section{Etapa 3: ETCDR}\label{sec:impl-etcdr}
+\section{Etapa 4: ETCDR}\label{sec:impl-etcdr}
 
 ETCDR es el módulo de mayor extensión del subpaquete y constituye la implementación del Algoritmo~\ref{alg:etcdr} (sección~\ref{sec:bt-etcdr}). Su código, ubicado en \texttt{conflict\_detection/etcdr.py}, se organiza en tres bloques funcionales: detección, decisión y aplicación. Las secciones siguientes describen cada bloque en detalle.
 
@@ -299,7 +275,7 @@ La detección bidireccional dirigida por cardinalidad se realiza mediante seis f
 \texttt{run\_object\_any\_type\_query} & $(*, *, o)$ --- cualquier tipo, fijo el objeto \\
 \texttt{run\_source\_target\_query} & $(s, *, o)$ --- cualquier tipo, fijos ambos extremos \\ \hline
 \end{tabular}
-\caption{Consultas Cypher sin restricción de tipo, que habilitan la detección de conflictos cruzados entre relaciones consolidadas por CGRR.}
+\caption{Consultas Cypher sin restricción de tipo, que habilitan la detección de conflictos cruzados entre relaciones de distinta etiqueta pero la misma cardinalidad relevante.}
 \label{tab:impl-etcdr-q-anytype}
 \end{table}
 
@@ -359,14 +335,14 @@ La función \texttt{detect\_and\_resolve} coordina el proceso completo para cada
   \item Generación del \texttt{ConflictResult} correspondiente.
 \end{enumerate}
 
-\section{Etapa 4: Almacén dual}\label{sec:impl-dual-store}
+\section{Etapa 5: Almacén dual}\label{sec:impl-dual-store}
 
 La representación tabular se persiste sin modificaciones a través de la cadena de \emph{workflows} de GraphRAG. Una vez que el orquestador completa las etapas 1 a 3, los \texttt{DataFrame}s enriquecidos se devuelven al \emph{workflow} \texttt{bt\_extract\_graph}, que escribe los \emph{artifacts} Parquet correspondientes (\texttt{entities.parquet}, \texttt{relationships.parquet} y demás artefactos del esquema estándar). El esquema resultante es el de GraphRAG ampliado con las columnas de la Tabla~\ref{tab:bt-schema}. Los \emph{workflows} posteriores y las búsquedas local y global del sistema base consumen estos archivos sin modificación.
 
 La representación en grafo se gestiona desde \texttt{neo4j\_store.py}, que expone las primitivas de acceso a la base de datos. Sus responsabilidades se organizan en cuatro áreas:
 
 \begin{itemize}
-  \item \textbf{Inicialización}: creación del controlador asíncrono y configuración del esquema (índices ordinarios sobre identificadores y \emph{labels}, e índices vectoriales para los prefiltrados de CGER y CGRR).
+  \item \textbf{Inicialización}: creación del controlador asíncrono y configuración del esquema (índices ordinarios sobre identificadores y \emph{labels}, e índices vectoriales para el prefiltrado de CGER).
   \item \textbf{Escritura}: inserción de nodos y aristas en variantes individual y por lotes.
   \item \textbf{Lectura}: consultas para los tres casos de uso del sistema:
     \begin{itemize}
@@ -379,7 +355,7 @@ La representación en grafo se gestiona desde \texttt{neo4j\_store.py}, que expo
 
 La sincronización entre las dos representaciones se realiza al final de la etapa 3, en la función \texttt{\_write\_to\_neo4j} del orquestador, que recibe los \texttt{DataFrame}s ya resueltos y reconciliados y los traduce a operaciones \emph{Cypher} mediante las primitivas anteriores. La operación es idempotente: las aristas y nodos ya presentes se actualizan en lugar de duplicarse, lo que permite reejecutar el \emph{pipeline} sobre el mismo lote sin corromper el estado del grafo.
 
-\section{Etapas 5 y 6: reportes de comunidad temporales y actualización incremental}\label{sec:impl-community}
+\section{Etapa 6 (a): reportes de comunidad temporales y actualización incremental}\label{sec:impl-community}
 
 \paragraph{Generación de reportes temporales.}
 El \emph{workflow} \texttt{bt\_create\_community\_reports.py} sustituye al \emph{workflow} estándar de GraphRAG, manteniendo la misma interfaz pero invocando internamente al módulo \texttt{community\_update.py}. Para cada nivel de la jerarquía y cada comunidad, el \emph{prompt} estándar se reemplaza por \texttt{TEMPORAL\_COMMUNITY\_REPORT\_PROMPT}, que extiende la estructura habitual de los reportes de GraphRAG con una sección adicional de \emph{evolución temporal}, tal como resume la Tabla~\ref{tab:impl-community-sections}.
@@ -413,7 +389,7 @@ La actualización incremental sigue el patrón propuesto por TG-RAG~\cite{tg_rag
 
 Finalmente, la función \texttt{run\_incremental\_community\_update} reejecuta la partición de Leiden y la generación de reportes únicamente sobre las comunidades marcadas como obsoletas. Los reportes nuevos se fusionan con los previamente válidos, respetando los \emph{artifacts} Parquet del sistema base.
 
-\section{Etapa 7: Consulta temporal}\label{sec:impl-query}
+\section{Etapa 6 (b): Consulta temporal}\label{sec:impl-query}
 
 % TODO: figura fig:impl-temporal-query-flow que diagrame el flujo de \texttt{temporal\_search}: consulta del usuario $\to$ \texttt{decompose\_temporal\_query} (etiquetado POINT\_IN\_TIME/RANGE/EVOLUTION/COMPARISON) $\to$ ejecución paralela de sub-consultas con \texttt{local\_temporal\_search} y atenuación por \texttt{temporal\_decay\_score} $\to$ \texttt{dispute\_resolution\_search} para aristas \texttt{disputed} $\to$ \texttt{TEMPORAL\_ANSWER\_SYNTHESIS\_PROMPT} $\to$ respuesta final.
 El módulo \texttt{temporal\_query.py} implementa las funcionalidades de consulta descritas en la sección~\ref{sec:bt-integration}. Su función de alto nivel, \texttt{temporal\_search}, actúa como punto de entrada y coordina las subfunciones siguientes.
@@ -488,7 +464,7 @@ El subdirectorio \texttt{evaluation/} organiza las pruebas por componente e incl
 \begin{itemize}
   \item \textbf{Pruebas unitarias}: verificación aislada de cada componente.
   \item \textbf{Evaluación sobre datos reales}: validación del comportamiento en condiciones de producción.
-  \item \textbf{Búsqueda de hiperparámetros}: optimización de los parámetros de CGER, CGRR, ETCDR e ICUS.
+  \item \textbf{Búsqueda de hiperparámetros}: optimización de los parámetros de CGER y ETCDR.
 \end{itemize}
 
 Adicionalmente, el \emph{script} \texttt{evaluation/inspect\_graph.py} ofrece una vista en consola del grafo persistido en Neo4j, útil tanto para depuración como para inspección manual durante la evaluación.
@@ -504,9 +480,9 @@ Este capítulo ha documentado la realización computacional de BT-GRAPHRAG, trad
 \hline
 \textbf{Componente del diseño} & \textbf{Módulo de implementación} \\ \hline
 Modelo bitemporal & \texttt{models/temporal\_types.py} \\
-Similitud coseno de descripciones (CGER y CGRR) & \texttt{entity\_resolution/scorers.py} \\
+Similitud coseno de descripciones (CGER) & \texttt{entity\_resolution/scorers.py} \\
 Resolución contextual de entidades & \texttt{entity\_resolution/cger.py} \\
-Resolución de tipos de relación & \texttt{entity\_resolution/cgrr.py} \\
+Clasificación de cardinalidad y orquestación del \emph{pipeline} & \texttt{pipeline.py}, \texttt{prompts.py} \\
 Detección bidireccional, \emph{Decision Router} y cinco estrategias & \texttt{conflict\_detection/etcdr.py} \\
 Almacén bitemporal & \texttt{neo4j\_store.py} \\
 Actualización incremental & \texttt{community\_update.py} \\

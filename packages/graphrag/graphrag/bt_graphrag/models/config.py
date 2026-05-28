@@ -165,6 +165,46 @@ class BTGraphRAGConfig:
     temporal_decay_alpha: float = 0.1
     """Exponential decay parameter for temporal proximity scoring."""
 
+    query_seed_embedding_top_k: int = 10
+    """Top-K nearest entities to retrieve by description-embedding cosine
+    at query time, in addition to title-based matches. Mirrors CGER's
+    cosine pre-filter for seed entity resolution. Kept small to avoid
+    flooding the subgraph with semantically related but off-topic
+    entities (siblings, namesakes, related teams/orgs)."""
+
+    query_seed_embedding_threshold: float = 0.4
+    """Minimum cosine similarity required for an entity returned by the
+    embedding search to be kept as a seed. Lower than CGER's threshold
+    (0.85) because we are comparing a short query name against a full
+    entity description, but high enough to filter loose associations."""
+
+    query_seed_prefer_title_match: bool = True
+    """When True, title-based matches are always kept and embedding-based
+    matches only fill the gap up to ``query_seed_embedding_top_k``. The
+    embedding fallback then carries less weight when downstream retrieval
+    expands the subgraph (title seeds appear first in the merged list,
+    so any per-seed edge cap favours them)."""
+
+    # --- Stage 7: Community-aware retrieval (drift-style) ---
+    query_use_communities: bool = True
+    """When True, the temporal query pipeline also retrieves the top-K
+    community reports whose embedding is closest to the user's question
+    and includes them as background context for answer synthesis. This
+    mirrors the primer step of GraphRAG's DRIFT search and helps for
+    questions whose answer is best understood with global context."""
+
+    query_community_top_k: int = 3
+    """Top-K community reports to retrieve and include as background."""
+
+    query_community_threshold: float = 0.30
+    """Minimum cosine similarity for a community report to be included.
+    Cosines for question-to-report embeddings tend to run lower than
+    name-to-description, so the bar is set lower than seed resolution."""
+
+    query_community_max_chars: int = 1500
+    """Per-report character cap when serialising into the synthesis
+    prompt. Prevents long reports from drowning out edge-level evidence."""
+
     # --- Cardinality Ontology (default seed) ---
     default_cardinality_map: dict[str, str] = field(default_factory=lambda: {
         
