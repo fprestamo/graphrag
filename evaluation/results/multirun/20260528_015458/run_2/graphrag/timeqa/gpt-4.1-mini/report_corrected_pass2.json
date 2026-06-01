@@ -1,0 +1,47 @@
+{
+  "benchmark": "timeqa",
+  "split": "hard",
+  "system": "graphrag",
+  "dataset": "evaluation/timeqa/data/timeqa.jsonl",
+  "num_examples": 370,
+  "elapsed_seconds": 262.665,
+  "metrics": {
+    "judge_correct": 0.672972972972973,
+    "judge_incorrect": 0.327027027027027
+  },
+  "truthfulness": {
+    "total": 370,
+    "accuracy": 0.672972972972973,
+    "incorrect_rate": 0.327027027027027
+  },
+  "search_mode": "local",
+  "index_method": "standard",
+  "model": "gpt-4.1-mini",
+  "llm_tokens": {
+    "calls": 1110,
+    "prompt_tokens": 3389164,
+    "completion_tokens": 29752,
+    "total_tokens": 3418916,
+    "by_model": {
+      "text-embedding-3-large": {
+        "calls": 370,
+        "prompt_tokens": 6593,
+        "completion_tokens": 0,
+        "total_tokens": 6593
+      },
+      "gpt-4.1-mini": {
+        "calls": 740,
+        "prompt_tokens": 3382571,
+        "completion_tokens": 29752,
+        "total_tokens": 3412323
+      }
+    }
+  },
+  "rejudged_pass2": {
+    "FP": 2,
+    "FN": 1,
+    "agree": 367,
+    "orig_accuracy": 0.6756756756756757,
+    "corrected_accuracy": 0.672972972972973
+  }
+}
